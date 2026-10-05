@@ -1,0 +1,71 @@
+import { useEffect, useMemo, useState } from 'react';
+import { diffLines } from 'diff';
+import styled from 'styled-components';
+import type { CodeComparison, CodePreview, Profile } from '../shared/types';
+
+const Panel = styled('section')({ minWidth: 0, display: 'flex', flexDirection: 'column', height: 'min(65vh, calc(100dvh - 220px))', border: '1px solid #e1e6ef', borderRadius: 10, overflow: 'hidden' });
+const Bar = styled('div')({ padding: '12px 14px', borderBottom: '1px solid #e1e6ef', flexShrink: 0, '& p': { margin: '5px 0', fontSize: 12 }, '& h3': { margin: 0 } });
+const Workspace = styled('div')({ display: 'grid', gridTemplateColumns: '210px minmax(0, 1fr)', flex: 1, minHeight: 0, '@media (max-width: 1100px)': { gridTemplateColumns: '170px minmax(0, 1fr)' } });
+const Tree = styled('nav')({ overflow: 'auto', borderRight: '1px solid #e1e6ef', padding: 10, fontSize: 12, '& summary': { padding: '5px 0', whiteSpace: 'nowrap' }, '& details > div': { paddingLeft: 12 } });
+const File = styled('button')<{ $selected: boolean }>(({ $selected }) => ({ display: 'block', width: '100%', border: 0, background: $selected ? '#eaf0ff' : 'transparent', textAlign: 'left', padding: '6px 4px', whiteSpace: 'nowrap', color: '#344361', borderRadius: 4 }));
+const Code = styled('div')({ overflow: 'auto', minWidth: 0, background: '#fafbfe', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12, '& table': { width: '100%', fontSize: 12 }, '& td': { border: 0, padding: '2px 6px', whiteSpace: 'pre' }, '& td:last-child': { width: '100%' } });
+const Line = styled('tr')<{ $kind: string }>(({ $kind }) => ({ background: $kind === '+' ? '#e6f6ec' : $kind === '-' ? '#ffebe9' : 'transparent', '& td:not(:last-child)': { color: '#8490a5', textAlign: 'right', userSelect: 'none' } }));
+function lines(preview: CodePreview): { old: number | string; next: number | string; kind: string; text: string }[] {
+  const changes = diffLines(preview.before, preview.after, { timeout: 1000 });
+  if (!changes) return [{ old: '', next: '', kind: '', text: 'Diff слишком сложный для предпросмотра.' }];
+  const rows: ReturnType<typeof lines> = []; let old = 1; let next = 1;
+  for (const change of changes) {
+    const text = change.value.split('\n'); if (text.at(-1) === '') text.pop();
+    for (let i = 0; i < text.length; i++) {
+      const oldLine = change.added ? '' : old++; const nextLine = change.removed ? '' : next++;
+      if (!change.added && !change.removed && text.length > 10 && i >= 3 && i < text.length - 3) {
+        if (i === 3) rows.push({ old: '', next: '', kind: '', text: `⋯ ${text.length - 6} строк без изменений` });
+        continue;
+      }
+      rows.push({ old: oldLine, next: nextLine, kind: change.added ? '+' : change.removed ? '-' : ' ', text: text[i] ?? '' });
+      if (rows.length >= 2000) return [...rows, { old: '', next: '', kind: '', text: '⋯ Показаны первые 2000 строк diff' }];
+    }
+  }
+  return rows;
+}
+export function Comparison({ profile, revision, status, busy, onBusy }: { profile: Profile; revision: number; status: string; busy: boolean; onBusy: (value: boolean) => void }): React.JSX.Element {
+  const [comparison, setComparison] = useState<CodeComparison | null>(null);
+  const [preview, setPreview] = useState<CodePreview | null>(null);
+  const [selected, setSelected] = useState(''); const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false); const [query, setQuery] = useState('');
+  const key = JSON.stringify({ sources: profile.sources, exclusions: profile.exclusions, includeIgnored: profile.includeIgnored });
+  useEffect(() => {
+    let active = true; setComparison(null); setPreview(null); setSelected(''); setError('');
+    if (busy || !Object.values(profile.sources).some(source => source?.location)) return;
+    if (Object.values(profile.sources).some(source => [source?.commit, source?.base?.commit].some(commit => commit && !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(commit)))) return;
+    const timer = setTimeout(() => {
+      setLoading(true); onBusy(true);
+      void window.reposync.previewComparison(profile).then(async value => {
+        if (!active) return; setComparison(value);
+        const first = value.entries[0];
+        if (first) { setSelected(first.path); const code = await window.reposync.previewCode(value.token, first.path); if (active) setPreview(code); }
+      }).catch((cause: unknown) => { if (active) setError(cause instanceof Error ? cause.message : 'Не удалось загрузить сравнение'); })
+        .finally(() => { onBusy(false); if (active) setLoading(false); });
+    }, 150);
+    return () => { active = false; clearTimeout(timer); };
+  }, [key, revision, busy, onBusy]);
+  async function open(name: string): Promise<void> {
+    if (!comparison || loading) return; setSelected(name); setPreview(null); setError(''); setLoading(true); onBusy(true);
+    try { setPreview(await window.reposync.previewCode(comparison.token, name)); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : 'Не удалось прочитать файл'); }
+    finally { setLoading(false); onBusy(false); }
+  }
+  const entries = comparison?.entries.filter(entry => entry.path.toLowerCase().includes(query.toLowerCase())) ?? [];
+  function tree(items: CodeComparison['entries'], prefix = ''): React.JSX.Element[] {
+    const folders = new Map<string, CodeComparison['entries']>(); const files: CodeComparison['entries'] = [];
+    for (const item of items) { const tail = item.path.slice(prefix.length); const slash = tail.indexOf('/');
+      if (slash < 0) files.push(item); else { const folder = tail.slice(0, slash); folders.set(folder, [...(folders.get(folder) ?? []), item]); }
+    }
+    return [...[...folders].map(([folder, nested]) => <details key={folder} open><summary>📁 {folder}</summary><div>{tree(nested, `${prefix}${folder}/`)}</div></details>), ...files.map(entry => <File key={entry.path} $selected={entry.path === selected} disabled={loading || busy} title={entry.oldPath ? `${entry.oldPath} → ${entry.path}` : entry.path} onClick={() => void open(entry.path)}>{entry.operation === 'ADD' ? '+' : entry.operation === 'DELETE' ? '−' : '~'} {entry.path.slice(prefix.length)}</File>)];
+  }
+  const rows = useMemo(() => preview && !preview.message ? lines(preview) : [], [preview]);
+  return <Panel aria-label="Предпросмотр сравнения"><Bar><h3>Изменения файлов</h3><p>{comparison ? `${comparison.from?.slice(0, 12) ?? 'Пустое состояние (Snapshot)'} → ${comparison.to.slice(0, 12)} · ${comparison.entries.length} файлов` : 'Выберите репозиторий и коммиты'}</p>{status && <p role="status">{status}</p>}<small>Красный — удалено, зелёный — добавлено. Чувствительные значения маскируются только в просмотре.</small></Bar>
+    {error && <Bar role="alert">{error}</Bar>}
+    <Workspace><Tree><input aria-label="Поиск файла в diff" placeholder="Найти файл…" value={query} onChange={event => setQuery(event.target.value)} />{tree(entries.slice(0, 1000))}{entries.length > 1000 && <p>Первые 1000 файлов. Уточните поиск.</p>}</Tree><Code><Bar>{selected || (comparison?.entries.length === 0 ? 'Изменений нет' : 'Выберите файл')}{loading && <p>Загрузка…</p>}</Bar>{preview?.message ? <Bar>{preview.message}</Bar> : <table aria-label="Построчный diff"><tbody>{rows.map((row, i) => <Line key={i} $kind={row.kind}><td>{row.old}</td><td>{row.next}</td><td>{row.kind}</td><td>{row.text || ' '}</td></Line>)}</tbody></table>}</Code></Workspace>
+  </Panel>;
+}
