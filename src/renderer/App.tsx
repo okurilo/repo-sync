@@ -1,3 +1,4 @@
+import { AppearanceStyle, BusyNotice, ExportActions, Icon, ScanFile, ScanWorkspace, reveal, type Appearance } from './Appearance';
 import { Comparison } from './Comparison';
 import { useEffect, useRef, useState } from 'react';
 import styled, { createGlobalStyle } from 'styled-components';
@@ -6,34 +7,34 @@ import type { API, Analysis, CommitOption, Environment, ImportPreview, Operation
 declare global { interface Window { reposync: API } }
 const api = window.reposync;
 const GlobalStyle = createGlobalStyle({
-  '*': { boxSizing: 'border-box' }, body: { margin: 0, fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif', color: '#182238', background: '#f6f7fb', fontSize: 14 },
+  '*': { boxSizing: 'border-box' }, body: { margin: 0, fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif', color: 'var(--text)', background: 'var(--bg)', fontSize: 14 },
   button: { font: 'inherit', cursor: 'pointer' }, input: { font: 'inherit' }, textarea: { font: 'inherit' }, select: { font: 'inherit' },
-  'button:disabled': { opacity: 0.5, cursor: 'wait' }, 'input, textarea, select': { width: '100%', minWidth: 0, maxWidth: '100%', border: '1px solid #d9deea', background: '#fff', borderRadius: 8, padding: '10px 12px', color: '#182238' },
+  'button:disabled': { opacity: 0.5, cursor: 'wait' }, 'input, textarea, select': { width: '100%', minWidth: 0, maxWidth: '100%', border: '1px solid var(--line)', background: 'var(--surface)', borderRadius: 8, padding: '10px 12px', color: 'var(--text)' },
   'input[type=checkbox]': { width: 'auto' }, 'input:focus, textarea:focus, select:focus': { outline: '2px solid #b6c4ff', outlineOffset: 1 },
   label: { display: 'grid', gap: 8, alignContent: 'start' }, h1: { fontSize: 28, margin: '0 0 10px', letterSpacing: '-0.7px' }, h2: { fontSize: 19, margin: '0 0 14px' }, h3: { fontSize: 15, margin: '0 0 10px' },
-  p: { lineHeight: 1.6 }, small: { color: '#68748c' }, code: { fontSize: 12, overflowWrap: 'anywhere' },
-  table: { width: '100%', borderCollapse: 'collapse', fontSize: 13 }, 'td, th': { textAlign: 'left', padding: '11px 10px', borderBottom: '1px solid #edf0f5', overflowWrap: 'anywhere' },
-  th: { color: '#68748c', fontWeight: 500 }, 'a, summary': { color: '#405bcc', cursor: 'pointer' }, fieldset: { border: 0, margin: 0, padding: 0, minWidth: 0 },
+  p: { lineHeight: 1.6 }, small: { color: 'var(--muted)' }, code: { fontSize: 12, overflowWrap: 'anywhere' },
+  table: { width: '100%', borderCollapse: 'collapse', fontSize: 13 }, 'td, th': { textAlign: 'left', padding: '11px 10px', borderBottom: '1px solid var(--line)', overflowWrap: 'anywhere' },
+  th: { color: 'var(--muted)', fontWeight: 500 }, 'a, summary': { color: 'var(--accent)', cursor: 'pointer' }, fieldset: { border: 0, margin: 0, padding: 0, minWidth: 0 },
 });
-const Layout = styled('div')({ display: 'grid', gridTemplateColumns: '224px minmax(0, 1fr)', minHeight: '100vh' });
-const Sidebar = styled('aside')({ background: '#fff', borderRight: '1px solid #e5e9f2', padding: '30px 20px', display: 'flex', flexDirection: 'column', gap: 28 });
+const Layout = styled('div')({ display: 'grid', gridTemplateColumns: '196px minmax(0, 1fr)', '@media(max-width: 760px)': { gridTemplateColumns: 'minmax(0, 1fr)' }, minHeight: '100vh' });
+const Sidebar = styled('aside')({ background: 'var(--surface)', borderRight: '1px solid var(--line)', padding: '24px 16px', position: 'sticky', top: 0, height: '100dvh', '@media(max-width: 760px)': { position: 'relative', height: 'auto', gap: 12 }, display: 'flex', flexDirection: 'column', gap: 28 });
 const Brand = styled('div')({ fontWeight: 750, fontSize: 22, letterSpacing: '-0.8px', display: 'flex', gap: 10, alignItems: 'center' });
-const Logo = styled('span')({ display: 'inline-grid', placeItems: 'center', width: 34, height: 34, background: '#425dd8', borderRadius: 10, color: 'white', fontSize: 24 });
-const Nav = styled('button')<{ $active?: boolean }>(({ $active }) => ({ width: '100%', border: 0, background: $active ? '#edf1ff' : 'transparent', color: $active ? '#405bcc' : '#68748c', textAlign: 'left', padding: '12px 14px', borderRadius: 9, fontWeight: $active ? 650 : 500, marginBottom: 5 }));
-const Main = styled('main')({ padding: '34px 40px', maxWidth: 1200, width: '100%' });
+const Logo = styled('span')({ display: 'inline-grid', placeItems: 'center', width: 34, height: 34, background: 'linear-gradient(135deg, #6385ff, #405bcc)', boxShadow: '0 0 24px #547cff35', borderRadius: 10, color: '#fff', fontSize: 24 });
+const Nav = styled('button')<{ $active?: boolean }>(({ $active }) => ({ width: '100%', border: 0, background: $active ? 'var(--tint)' : 'transparent', color: $active ? 'var(--accent)' : 'var(--muted)', textAlign: 'left', overflowWrap: 'anywhere', padding: '12px 14px', borderRadius: 9, fontWeight: $active ? 650 : 500, marginBottom: 5 }));
+const Main = styled('main')({ padding: '30px clamp(18px, 3vw, 44px)', maxWidth: 1600, width: '100%' });
 const Row = styled('div')({ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' });
 const Header = styled(Row)({ justifyContent: 'space-between', marginBottom: 28 });
-const Muted = styled('p')({ color: '#68748c', margin: '0 0 20px' });
-const Badge = styled('span')({ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 12px', borderRadius: 20, background: '#eef2ff', color: '#405bcc', fontSize: 12, fontWeight: 650 });
-const Button = styled('button')<{ $primary?: boolean; $danger?: boolean }>(({ $primary, $danger }) => ({ border: $primary ? '1px solid #425dd8' : '1px solid #dce1ec', borderRadius: 8, padding: '10px 14px', background: $primary ? '#425dd8' : '#fff', color: $primary ? '#fff' : $danger ? '#b33246' : '#344361', fontWeight: 600, whiteSpace: 'nowrap' }));
-const Card = styled('section')({ background: '#fff', border: '1px solid #e1e6ef', borderRadius: 13, padding: 24, marginBottom: 20 });
+const Muted = styled('p')({ color: 'var(--muted)', margin: '0 0 20px' });
+const Badge = styled('span')({ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 12px', borderRadius: 20, background: 'var(--tint)', color: 'var(--accent)', fontSize: 12, fontWeight: 650 });
+const Button = styled('button')<{ $primary?: boolean; $danger?: boolean }>(({ $primary, $danger }) => ({ border: $primary ? '1px solid #425dd8' : '1px solid var(--line)', borderRadius: 8, padding: '10px 14px', background: $primary ? '#425dd8' : 'var(--surface)', color: $primary ? '#fff' : $danger ? 'var(--danger)' : 'var(--text)', fontWeight: 600, whiteSpace: 'nowrap', boxShadow: $primary ? '0 4px 14px #425dd82b' : 'none', display: 'inline-flex', gap: 8, alignItems: 'center', justifyContent: 'center' }));
+const Card = styled('section')({ background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 14, padding: 20, marginBottom: 16, boxShadow: '0 6px 24px #00000010', animation: `${reveal} 200ms ease-out` });
 const Grid = styled('div')({ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 16 });
-const Stat = styled('div')({ background: '#f7f9fc', borderRadius: 8, padding: 14, display: 'grid', gap: 6, '& strong': { fontSize: 22 }, '& span': { color: '#68748c', fontSize: 12 } });
-const ExportSummary = styled('div')({ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(200px, 0.6fr)', gap: 24, padding: 24, marginBottom: 20, border: '1px solid #dfe6fb', borderRadius: 12, background: 'linear-gradient(120deg, #f0f4ff, #fbfcff)', '@media (max-width: 900px)': { gridTemplateColumns: 'minmax(0, 1fr)' } });
-const ExportCount = styled('strong')({ display: 'block', fontSize: 48, lineHeight: 1.1, fontWeight: 750, letterSpacing: '-2px', color: '#304cbd', margin: '8px 0' });
-const CommitPath = styled(Row)({ gap: 10, marginBottom: 20, '& code': { padding: '8px 12px', border: '1px solid #e1e6ef', background: '#f8faff', borderRadius: 7, fontSize: 13 }, '& span': { color: '#68748c', fontSize: 12 } });
-const OperationStat = styled('div')<{ $color: string; $empty: boolean }>(({ $color, $empty }) => ({ minWidth: 0, padding: '16px 18px', border: `1px solid ${$color}25`, borderRadius: 10, background: `${$color}08`, opacity: $empty ? 0.65 : 1, '& strong': { display: 'block', fontSize: 28, color: $color, marginBottom: 6, fontVariantNumeric: 'tabular-nums' }, '& span': { color: '#53617a', fontSize: 12 } }));
-const ChangeBar = styled('div')({ display: 'flex', height: 6, overflow: 'hidden', borderRadius: 6, background: '#edf0f5', margin: '16px 0 20px' });
+const Stat = styled('div')({ background: 'var(--raised)', borderRadius: 8, padding: 14, display: 'grid', gap: 6, '& strong': { fontSize: 22 }, '& span': { color: 'var(--muted)', fontSize: 12 } });
+const ExportSummary = styled('div')({ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(200px, 0.6fr)', gap: 24, padding: 24, marginBottom: 20, border: '1px solid var(--line)', borderRadius: 12, background: 'linear-gradient(120deg, var(--tint), var(--raised))', '@media (max-width: 900px)': { gridTemplateColumns: 'minmax(0, 1fr)' } });
+const ExportCount = styled('strong')({ display: 'block', fontSize: 48, lineHeight: 1.1, fontWeight: 750, letterSpacing: '-2px', color: 'var(--accent)', margin: '8px 0' });
+const CommitPath = styled(Row)({ gap: 10, marginBottom: 20, '& code': { padding: '8px 12px', border: '1px solid var(--line)', background: 'var(--raised)', borderRadius: 7, fontSize: 13 }, '& span': { color: 'var(--muted)', fontSize: 12 } });
+const OperationStat = styled('div')<{ $color: string; $empty: boolean }>(({ $color, $empty }) => ({ minWidth: 0, padding: '16px 18px', border: `1px solid ${$color}25`, borderRadius: 10, background: `${$color}12`, opacity: $empty ? 0.8 : 1, '& strong': { display: 'block', fontSize: 28, color: 'var(--text)', marginBottom: 6, fontVariantNumeric: 'tabular-nums' }, '& span': { color: 'var(--muted)', fontSize: 12 } }));
+const ChangeBar = styled('div')({ display: 'flex', height: 6, overflow: 'hidden', borderRadius: 6, background: 'var(--line)', margin: '16px 0 20px' });
 const operationStats = [
   { operation: 'ADD', label: 'Добавлено', color: '#16805a' },
   { operation: 'MODIFY', label: 'Изменено', color: '#4260d2' },
@@ -41,12 +42,12 @@ const operationStats = [
   { operation: 'RENAME', label: 'Переименовано', color: '#8860c4' },
   { operation: 'REPLACE', label: 'Заменено целиком', color: '#ae6b22' },
 ] as const;
-const FindingGroup = styled('section')({ border: '1px solid #e1e6ef', borderRadius: 10, marginBottom: 12, overflow: 'hidden' });
-const FindingFile = styled(Row)({ justifyContent: 'space-between', gap: 10, padding: '12px 14px', background: '#f6f8fc', borderBottom: '1px solid #e1e6ef', '& strong': { fontSize: 15, overflowWrap: 'anywhere' }, '& small': { display: 'block', marginTop: 3, overflowWrap: 'anywhere' } });
+const FindingGroup = styled('section')({ border: '1px solid var(--line)', borderRadius: 10, marginBottom: 12, overflow: 'hidden' });
+const FindingFile = styled(Row)({ justifyContent: 'space-between', gap: 10, padding: '12px 14px', background: 'var(--raised)', borderBottom: '1px solid var(--line)', '& strong': { fontSize: 15, overflowWrap: 'anywhere' }, '& small': { display: 'block', marginTop: 3, overflowWrap: 'anywhere' } });
 const CompactButton = styled(Button)({ padding: '6px 10px', fontSize: 12 });
-const FindingRow = styled('div')({ padding: '10px 14px', borderBottom: '1px solid #edf0f5', '&:last-child': { borderBottom: 0 } });
-const FindingCode = styled('pre')({ margin: '7px 0 0', padding: '8px 10px', background: '#fafbfe', border: '1px solid #edf0f5', borderRadius: 6, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 12, lineHeight: 1.5 });
-const Notice = styled('div')<{ $error?: boolean }>(({ $error }) => ({ padding: '14px 18px', marginBottom: 18, borderRadius: 9, background: $error ? '#fff0f1' : '#edf7f3', color: $error ? '#a62e40' : '#267057', lineHeight: 1.6, overflowWrap: 'anywhere' }));
+const FindingRow = styled('div')({ padding: '10px 14px', borderBottom: '1px solid var(--line)', '&:last-child': { borderBottom: 0 } });
+const FindingCode = styled('pre')({ margin: '7px 0 0', padding: '8px 10px', background: 'var(--input)', border: '1px solid var(--line)', borderRadius: 6, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 12, lineHeight: 1.5 });
+const Notice = styled('div')<{ $error?: boolean }>(({ $error }) => ({ padding: '14px 18px', marginBottom: 18, borderRadius: 9, background: $error ? 'var(--danger-bg)' : 'var(--success-bg)', color: $error ? 'var(--danger)' : 'var(--success)', animation: `${reveal} 180ms ease-out`, lineHeight: 1.6, overflowWrap: 'anywhere' }));
 const Empty = styled(Card)({ padding: '56px 30px', textAlign: 'center' });
 const Form = styled('div')({
   display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', minWidth: 0, gap: 18,
@@ -56,13 +57,13 @@ const Form = styled('div')({
   [`& ${Button}`]: { maxWidth: '100%', whiteSpace: 'normal', overflowWrap: 'anywhere' },
   '& small': { overflowWrap: 'anywhere' },
 });
-const Overlay = styled('div')({ position: 'fixed', inset: 0, background: '#14213b77', zIndex: 10, padding: 24, display: 'grid', placeItems: 'center' });
+const Overlay = styled('div')({ position: 'fixed', inset: 0, background: '#03070f99', backdropFilter: 'blur(10px)', animation: `${reveal} 180ms ease-out`, zIndex: 10, padding: 24, display: 'grid', placeItems: 'center' });
 const Modal = styled(Card)({ width: 'min(650px, 100%)', maxHeight: 'calc(100dvh - 48px)', overflow: 'hidden', margin: 0, padding: 0, display: 'flex', flexDirection: 'column' });
-const ModalHeader = styled(Row)({ justifyContent: 'space-between', flexWrap: 'nowrap', padding: '20px 24px', flexShrink: 0, borderBottom: '1px solid #edf0f5', '& h2': { margin: 0 } });
+const ModalHeader = styled(Row)({ justifyContent: 'space-between', flexWrap: 'nowrap', padding: '20px 24px', flexShrink: 0, borderBottom: '1px solid var(--line)', '& h2': { margin: 0 } });
 const ModalBody = styled('div')({ padding: 24, overflowY: 'auto', minHeight: 0 });
-const ProfileModal = styled(Modal)({ width: 'min(1500px, 100%)' });
+const ProfileModal = styled(Modal)({ width: 'min(1500px, 100%)', height: 'calc(100dvh - 48px)', justifySelf: 'end', boxShadow: '-20px 0 60px #00000040' });
 const ProfileBody = styled(ModalBody)({ display: 'grid', gridTemplateColumns: 'minmax(320px, 420px) minmax(0, 1fr)', gap: 24, overflow: 'hidden', '& > fieldset': { overflowY: 'auto', maxHeight: 'min(65vh, calc(100dvh - 220px))', paddingRight: 8 }, '@media (max-width: 1100px)': { gridTemplateColumns: '1fr', overflowY: 'auto' } });
-const ModalFooter = styled('fieldset')({ padding: '16px 24px', flexShrink: 0, borderTop: '1px solid #edf0f5' });
+const ModalFooter = styled('fieldset')({ padding: '16px 24px', flexShrink: 0, borderTop: '1px solid var(--line)' });
 const CloseButton = styled(Button)({ padding: 0, width: 32, height: 32, flexShrink: 0, fontSize: 24, lineHeight: 1 });
 const EnvironmentCard = styled(Card)({ display: 'flex', flexDirection: 'column', '& button': { marginTop: 'auto' } });
 const Onboarding = styled('div')({ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 40 });
@@ -94,6 +95,9 @@ function ChangeTable({ entries }: { entries: { path: string; oldPath?: string; o
 </details>;
 }
 export function App(): React.JSX.Element {
+  const [appearance, setAppearance] = useState<Appearance>(() => { try { return localStorage.getItem('reposync-appearance') === 'light' ? 'light' : 'dark'; } catch { return 'dark'; } });
+  const [scanFile, setScanFile] = useState('');
+  useEffect(() => { try { localStorage.setItem('reposync-appearance', appearance); } catch { /* optional UI preference */ } }, [appearance]);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [tab, setTab] = useState<'profiles' | 'import' | 'settings'>('profiles');
   const [selected, setSelected] = useState('');
@@ -178,11 +182,11 @@ export function App(): React.JSX.Element {
 </Onboarding> : !mode ? <Onboarding>
 <div style={{ maxWidth: 720 }}>
 <Brand>
-<Logo>⇄</Logo>RepoSync</Brand>
+<Logo><Icon name="sync" /></Logo>RepoSync</Brand>
 <h1 style={{ marginTop: 40 }}>Где запущен RepoSync?</h1>
 <Muted>Выберите контур. Изменить его можно в Settings.</Muted>
 <Grid>{(['internal', 'global'] as const).map(value => <EnvironmentCard key={value}>
-<h2>{value === 'internal' ? '🏢 Internal' : '🌐 Global'}</h2>
+<h2><Icon name={value === 'internal' ? 'internal' : 'globe'} /> {value === 'internal' ? 'Internal' : 'Global'}</h2>
 <Muted>{value === 'internal' ? 'Корпоративный контур. Внешний Git недоступен.' : 'Есть доступ к внешнему Git. Источник задаёте вы.'}</Muted>
 <Button disabled={busy} $primary onClick={() => void run(() => changeEnvironment(value))}>Выбрать {value}</Button>
 </EnvironmentCard>)}</Grid>{error && <Notice $error>{error}</Notice>}<small>Локальная работа · Без telemetry · Ручной перенос пакетов</small>
@@ -190,18 +194,19 @@ export function App(): React.JSX.Element {
 </Onboarding> : <Layout>
     <Sidebar>
 <Brand>
-<Logo>⇄</Logo>RepoSync</Brand>
+<Logo><Icon name="sync" /></Logo>RepoSync</Brand>
 <div>
-<Nav $active={tab === 'profiles'} onClick={() => setTab('profiles')}>▤ &nbsp; Profiles</Nav>
-<Nav $active={tab === 'import'} onClick={() => setTab('import')}>↓ &nbsp; Import</Nav>
-<Nav $active={tab === 'settings'} onClick={() => setTab('settings')}>⚙ &nbsp; Settings</Nav>
+<Nav $active={tab === 'profiles'} onClick={() => setTab('profiles')}><Icon name="profiles" /> &nbsp; Профили</Nav>
+<Nav $active={tab === 'import'} onClick={() => setTab('import')}><Icon name="import" /> &nbsp; Импорт</Nav>
+<Nav $active={tab === 'settings'} onClick={() => setTab('settings')}><Icon name="settings" /> &nbsp; Настройки</Nav>
 </div>
+{settings.profiles.length > 0 && <div style={{ overflowY: 'auto', minHeight: 0 }}><small style={{ display: 'block', padding: '0 12px 8px', fontSize: 10, letterSpacing: 1.5 }}>РЕПОЗИТОРИИ</small>{settings.profiles.map(p => <Nav key={p.id} $active={p.id === selected && tab === 'profiles'} disabled={busy || previewBusy} onClick={() => { setSelected(p.id); setTab('profiles'); reset(); }}><Icon name="profiles" /> &nbsp; {p.name}</Nav>)}</div>}
 <div style={{ marginTop: 'auto' }}>
-<Badge>{mode === 'internal' ? '🏢 Internal' : '🌐 Global'}</Badge>
+<Badge><Icon name={mode === 'internal' ? 'internal' : 'globe'} /> {mode === 'internal' ? 'Internal' : 'Global'}</Badge>
 <p>
 <small>Пакеты переносите вручную.<br />Данные остаются под вашим контролем.</small>
 </p>
-<small>RepoSync v1.0</small>
+<Button aria-label="Переключить тему" onClick={() => setAppearance(value => value === 'dark' ? 'light' : 'dark')}><Icon name={appearance === 'dark' ? 'sun' : 'moon'} />{appearance === 'dark' ? 'Светлая тема' : 'Тёмная тема'}</Button><p><small>RepoSync · локальная работа</small></p>
 </div>
 </Sidebar>
     <Main>
@@ -210,7 +215,7 @@ export function App(): React.JSX.Element {
 <h1>{tab === 'profiles' ? 'Профили синхронизации' : tab === 'import' ? 'Импорт пакета' : 'Настройки'}</h1>
 <Muted style={{ marginBottom: 0 }}>{tab === 'profiles' ? 'Переносите состояние Git между изолированными контурами.' : tab === 'import' ? 'Проверка всех .md и бинарных вложений, затем preview и применение.' : 'Режим среды и локальные настройки приложения.'}</Muted>
 </div>{tab === 'profiles' && <Button $primary disabled={busy} onClick={() => edit()}>+ Новый профиль</Button>}</Header>
-      {busy && <Notice>Операция выполняется локально. Дождитесь завершения…</Notice>}{error && <Notice $error role="alert">{error}</Notice>}{notice && <Notice role="status">{notice}</Notice>}
+      {busy && <BusyNotice role="status">Операция выполняется локально…</BusyNotice>}{error && <Notice $error role="alert">{error}</Notice>}{notice && <Notice role="status">{notice}</Notice>}
       <fieldset disabled={busy}>
       {tab === 'profiles' && <>
         {settings.profiles.length === 0 ? <Empty>
@@ -218,7 +223,6 @@ export function App(): React.JSX.Element {
 <Muted>Укажите Git repository, branch и правила исключений.</Muted>
 <Button $primary onClick={() => edit()}>Создать профиль</Button>
 </Empty> : <>
-          <Row style={{ marginBottom: 20 }}>{settings.profiles.map(p => <Button key={p.id} $primary={p.id === selected} onClick={() => { setSelected(p.id); reset(); }}>{p.name}</Button>)}</Row>
           {profile && <Card>
 <Header style={{ marginBottom: 16 }}>
 <div>
@@ -233,11 +237,11 @@ export function App(): React.JSX.Element {
 </Row>
 <Grid style={{ marginTop: 22 }}>
 <Stat>
-<span>{mode === 'global' ? 'Last synced commit' : 'Last sync'}</span>
+<span>{mode === 'global' ? 'Последняя синхронизация' : 'Последняя синхронизация'}</span>
 <strong>{short(baseline?.state)}</strong>
 </Stat>
 <Stat>
-<span>{source?.kind === 'remote' ? 'Remote state' : 'Current state'}</span>
+<span>{source?.kind === 'remote' ? 'Целевой коммит' : 'Целевой коммит'}</span>
 <strong>{short(analysis?.state)}</strong>
 </Stat>
 <Stat>
@@ -273,13 +277,13 @@ export function App(): React.JSX.Element {
 </Header>
 <CommitPath><span>ОТ</span><code title={analysis.sourceState ?? 'Полный снимок без исходного состояния'}>{analysis.sourceState ? short(analysis.sourceState) : 'Пустое состояние'}</code><span aria-hidden="true">→</span><span>ДО</span><code title={analysis.state}>{short(analysis.state)}</code></CommitPath>
 <ExportSummary>
-<div><span style={{ color: '#53617a', fontWeight: 600 }}>{analysis.packageType === 'diff' ? 'Файлов в Diff' : 'Файлов в полном снимке'}</span><ExportCount>{analysis.entries.length.toLocaleString('ru-RU')}</ExportCount><small>{analysis.entries.length === 0 ? (analysis.packageType === 'diff' ? 'Изменений нет — выбранные состояния совпадают в рамках исключений.' : 'В снимке нет файлов с учётом исключений.') : analysis.packageType === 'diff' ? 'В пакет входят только изменения этих файлов.' : 'В пакет входит полное содержимое этих файлов.'}</small></div>
-<div style={{ borderLeft: '3px solid #dce4fb', paddingLeft: 20, display: 'grid', alignContent: 'center', gap: 8 }}><small>Размер переносимого пакета</small><strong style={{ fontSize: 26, fontVariantNumeric: 'tabular-nums' }}>{bytes(analysis.estimatedBytes)}</strong><small>Файлов для переноса: <strong style={{ color: '#344361' }}>{analysis.parts}</strong> · Лимит части: {profile?.maxPartMB} MB</small></div>
+<div><span style={{ color: 'var(--muted)', fontWeight: 600 }}>{analysis.packageType === 'diff' ? 'Файлов в Diff' : 'Файлов в полном снимке'}</span><ExportCount>{analysis.entries.length.toLocaleString('ru-RU')}</ExportCount><small>{analysis.entries.length === 0 ? (analysis.packageType === 'diff' ? 'Изменений нет — выбранные состояния совпадают в рамках исключений.' : 'В снимке нет файлов с учётом исключений.') : analysis.packageType === 'diff' ? 'В пакет входят только изменения этих файлов.' : 'В пакет входит полное содержимое этих файлов.'}</small></div>
+<div style={{ borderLeft: '3px solid var(--line)', paddingLeft: 20, display: 'grid', alignContent: 'center', gap: 8 }}><small>Размер переносимого пакета</small><strong style={{ fontSize: 26, fontVariantNumeric: 'tabular-nums' }}>{bytes(analysis.estimatedBytes)}</strong><small>Файлов для переноса: <strong style={{ color: 'var(--text)' }}>{analysis.parts}</strong> · Лимит части: {profile?.maxPartMB} MB</small></div>
 </ExportSummary>
 <Grid style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))' }}>{operationStats.map(stat => <OperationStat key={stat.operation} $color={stat.color} $empty={analysis.changes[stat.operation] === 0}><strong>{analysis.changes[stat.operation].toLocaleString('ru-RU')}</strong><span>{stat.label}</span></OperationStat>)}</Grid>
-<ChangeBar role="img" aria-label={operationStats.map(stat => `${stat.label}: ${analysis.changes[stat.operation]}`).join(', ')}>{operationStats.map(stat => <div key={stat.operation} style={{ width: `${100 * analysis.changes[stat.operation] / Math.max(1, analysis.entries.length)}%`, background: stat.color }} />)}</ChangeBar>
-<Row style={{ marginBottom: 20, gap: 18, color: '#68748c', fontSize: 12 }}><span>Всего файлов в целевом состоянии: <strong style={{ color: '#344361' }}>{analysis.files}</strong></span><span>Исключено Git: {analysis.excludedGit}</span><span>Исключено правилами RepoSync: {analysis.excludedCustom}</span></Row>
-<ChangeTable entries={analysis.entries} />
+<ChangeBar style={{ transition: 'width 200ms ease' }} role="img" aria-label={operationStats.map(stat => `${stat.label}: ${analysis.changes[stat.operation]}`).join(', ')}>{operationStats.map(stat => <div key={stat.operation} style={{ width: `${100 * analysis.changes[stat.operation] / Math.max(1, analysis.entries.length)}%`, background: stat.color }} />)}</ChangeBar>
+<Row style={{ marginBottom: 20, gap: 18, color: 'var(--muted)', fontSize: 12 }}><span>Всего файлов в целевом состоянии: <strong style={{ color: 'var(--text)' }}>{analysis.files}</strong></span><span>Исключено Git: {analysis.excludedGit}</span><span>Исключено правилами RepoSync: {analysis.excludedCustom}</span></Row>
+<small style={{ display: 'block', marginBottom: 12 }}>Открытый текст и diff · бинарные вложения в исходном формате</small><ChangeTable entries={analysis.entries} />
               {analysis.local && <Notice style={{ marginTop: 18 }}>Экспортируется состояние выбранного commit. Staged: {analysis.workingChanges.staged}, unstaged: {analysis.workingChanges.unstaged}, untracked: {analysis.workingChanges.untracked}. Незакоммиченные изменения не входят в пакет.</Notice>}
               {analysis.local && analysis.ignored.length > 0 && <details>
 <summary>Ignored-файлы: вернуть вручную</summary>
@@ -296,19 +300,19 @@ export function App(): React.JSX.Element {
 <Badge>{analysis.findings.length ? `${analysis.findings.length} срабатываний · ${findingGroups.length} файлов` : '✓ Срабатываний нет'}</Badge>
 </Header>
 {analysis.findings.length > 0 && <>
-<Row style={{ marginBottom: 12, fontSize: 12, color: '#68748c' }}><span>Блокируют: <strong style={{ color: '#b33246' }}>{analysis.findings.filter(f => f.severity === 'block').length}</strong></span><span>Нужна проверка: {analysis.findings.filter(f => f.severity === 'warning').length}</span><span>Решений принято: {kept.length} / {analysis.findings.length}</span><CompactButton onClick={() => setKept(analysis.findings.map(f => f.id))}>Игнорировать все без решения</CompactButton><details><summary>О правилах проверки</summary><p>Проверка эвристическая. Правило имён EN ищет два слова с заглавных букв и может совпасть с названием компонента. Подсвечено найденное значение в исходном тексте. Для ложного срабатывания выберите «Оставить».</p></details></Row>
-<Scroll style={{ maxHeight: 450, marginTop: 0 }}>{findingGroups.map(([file, findings]) => <FindingGroup key={file} aria-label={`Срабатывания в ${file}`}>
-<FindingFile><div style={{ minWidth: 0, flex: '1 1 260px' }}><strong title={file}>▤ {file.split('/').at(-1)}</strong><small><code>{file}</code> · {findings.length} срабатываний</small></div><Row style={{ gap: 6 }}><CompactButton title={`Открыть ${file}`} onClick={() => void run(() => api.openFinding(analysis.token, findings[0]!.id))}>Открыть файл ↗</CompactButton><CompactButton $danger title={`Исключить ${file} целиком`} onClick={() => void run(() => exclude(findings[0]!.id))}>Исключить файл</CompactButton></Row></FindingFile>
+<Row style={{ marginBottom: 12, fontSize: 12, color: 'var(--muted)' }}><span>Блокируют: <strong style={{ color: 'var(--danger)' }}>{analysis.findings.filter(f => f.severity === 'block').length}</strong></span><span>Нужна проверка: {analysis.findings.filter(f => f.severity === 'warning').length}</span><span>Решений принято: {kept.length} / {analysis.findings.length}</span><CompactButton onClick={() => setKept(analysis.findings.map(f => f.id))}>Игнорировать все без решения</CompactButton><details><summary>О правилах проверки</summary><p>Проверка эвристическая. Правило имён EN ищет два слова с заглавных букв и может совпасть с названием компонента. Подсвечено найденное значение в исходном тексте. Для ложного срабатывания выберите «Оставить».</p></details></Row>
+<ScanWorkspace><nav aria-label="Файлы Security Scan">{findingGroups.map(([file, items]) => <ScanFile key={file} $selected={file === (findingGroups.some(([name]) => name === scanFile) ? scanFile : findingGroups[0]?.[0])} onClick={() => setScanFile(file)}><strong><Icon name="file" /> {file.split('/').at(-1)}</strong><small>{file} · {items.length} совпадений</small></ScanFile>)}</nav><Scroll style={{ maxHeight: 390, marginTop: 0 }}>{findingGroups.filter(([file]) => file === (findingGroups.some(([name]) => name === scanFile) ? scanFile : findingGroups[0]?.[0])).map(([file, findings]) => <FindingGroup key={file} aria-label={`Срабатывания в ${file}`}>
+<FindingFile><div style={{ minWidth: 0, flex: '1 1 260px' }}><strong title={file}><Icon name="file" /> {file.split('/').at(-1)}</strong><small><code>{file}</code> · {findings.length} срабатываний</small></div><Row style={{ gap: 6 }}><CompactButton title={`Открыть ${file}`} onClick={() => void run(() => api.openFinding(analysis.token, findings[0]!.id))}>Открыть файл ↗</CompactButton><CompactButton $danger title={`Исключить ${file} целиком`} onClick={() => void run(() => exclude(findings[0]!.id))}>Исключить файл</CompactButton></Row></FindingFile>
 {findings.map(finding => <FindingRow key={finding.id}>
-<Row style={{ justifyContent: 'space-between', gap: 8 }}><Row style={{ gap: 8, flex: '1 1 300px' }}><span style={{ fontSize: 11, fontWeight: 650, color: finding.severity === 'block' ? '#b33246' : '#956719', background: finding.severity === 'block' ? '#fff0f1' : '#fff7df', borderRadius: 4, padding: '3px 6px' }}>{finding.severity === 'block' ? 'Блокирует' : 'Проверить'}</span><span style={{ fontSize: 12 }}>{finding.reason}</span><button title={`${file} · ${finding.context?.location ?? `строка ${finding.line}`}`} style={{ border: 0, padding: '2px 4px', background: 'transparent', color: '#405bcc', fontSize: 12 }} onClick={() => void run(() => api.openFinding(analysis.token, finding.id))}>стр. {finding.line} ↗</button></Row><Row style={{ gap: 8 }}><CompactButton disabled={!finding.canRedact} title={finding.canRedact ? 'Заменить совпадение на *** только в пакете, сохранить файл' : 'Совпадение в удалённой строке, имени файла или неподдерживаемом фрагменте'} onClick={() => void run(async () => { const next = await api.redactFinding(analysis.token, finding.id); setAnalysis(next); setKept([]); setOverride(false); setNotice('Значение заменено на *** в пакете. Исходный файл сохранён без изменений; Scan обновлён.'); })}>Заменить на ***</CompactButton>{finding.canReplace && <CompactButton onClick={() => void run(async () => setReplacement(await api.previewReplacement(analysis.token, finding.id)))}>Заменить</CompactButton>}<Check style={{ fontSize: 12, gap: 6 }}><input type="checkbox" checked={kept.includes(finding.id)} onChange={e => setKept(previous => e.target.checked ? [...previous, finding.id] : previous.filter(id => id !== finding.id))} />Оставить</Check></Row></Row>
+<Row style={{ justifyContent: 'space-between', gap: 8 }}><Row style={{ gap: 8, flex: '1 1 300px' }}><span style={{ fontSize: 11, fontWeight: 650, color: finding.severity === 'block' ? 'var(--danger)' : 'var(--warning)', background: finding.severity === 'block' ? 'var(--danger-bg)' : 'var(--warning-bg)', borderRadius: 4, padding: '3px 6px' }}>{finding.severity === 'block' ? 'Блокирует' : 'Проверить'}</span><span style={{ fontSize: 12 }}>{finding.reason}</span><button title={`${file} · ${finding.context?.location ?? `строка ${finding.line}`}`} style={{ border: 0, padding: '2px 4px', background: 'transparent', color: 'var(--accent)', fontSize: 12 }} onClick={() => void run(() => api.openFinding(analysis.token, finding.id))}>стр. {finding.line} ↗</button></Row><Row style={{ gap: 8 }}><CompactButton disabled={!finding.canRedact} title={finding.canRedact ? 'Заменить совпадение на *** только в пакете, сохранить файл' : 'Совпадение в удалённой строке, имени файла или неподдерживаемом фрагменте'} onClick={() => void run(async () => { const next = await api.redactFinding(analysis.token, finding.id); setAnalysis(next); setKept([]); setOverride(false); setNotice('Значение заменено на *** в пакете. Исходный файл сохранён без изменений; Scan обновлён.'); })}>Заменить на ***</CompactButton>{finding.canReplace && <CompactButton onClick={() => void run(async () => setReplacement(await api.previewReplacement(analysis.token, finding.id)))}>Заменить</CompactButton>}<Check style={{ fontSize: 12, gap: 6 }}><input type="checkbox" checked={kept.includes(finding.id)} onChange={e => setKept(previous => e.target.checked ? [...previous, finding.id] : previous.filter(id => id !== finding.id))} />Оставить</Check></Row></Row>
 {finding.context ? <FindingCode title={`${finding.context.location} · ${finding.preview}`}><code>{finding.context.before}<mark style={{ background: finding.severity === 'block' ? '#ffd5dc' : '#ffedb5', borderRadius: 3 }}>{finding.context.match}</mark>{finding.context.after}</code></FindingCode> : <small>{finding.preview}</small>}
 </FindingRow>)}
-</FindingGroup>)}</Scroll>{analysis.findings.some(f => f.severity === 'block') && <Check style={{ marginTop: 20 }}>
+</FindingGroup>)}</Scroll></ScanWorkspace>{analysis.findings.some(f => f.severity === 'block') && <Check style={{ marginTop: 20 }}>
 <input type="checkbox" checked={override} onChange={e => setOverride(e.target.checked)} />Я явно разрешаю экспорт обнаруженных secrets и понимаю, что они попадут в переносимый пакет.</Check>}</>}
-              <Row style={{ marginTop: 22 }}>
+              <ExportActions>
 <Button $primary disabled={!settings.outputDirectory || analysis.findings.some(f => !kept.includes(f.id)) || (analysis.findings.some(f => f.severity === 'block') && !override)} onClick={() => void run(async () => { setExported(await api.exportPackage(analysis.token, kept, override)); setSettings(await api.settings()); setAnalysis(null); setNotice('Пакет сохранён. Перенесите все .md и бинарные вложения, затем подтвердите передачу.'); })}>Создать {mode === 'global' ? 'пакет для Internal' : 'пакет'}</Button>
-<div><small>{settings.outputDirectory || 'Папка экспорта не выбрана: откройте Settings'}</small><div role="status" style={{ color: '#b33246', fontSize: 12 }}>{[busy ? 'Операция выполняется' : '', analysis.findings.some(f => !kept.includes(f.id)) ? `Без решения: ${analysis.findings.filter(f => !kept.includes(f.id)).length}. Выберите «Оставить», замените значение или игнорируйте все без решения.` : '', analysis.findings.some(f => f.severity === 'block') && !override ? 'Подтвердите разрешение на экспорт оставшихся secrets.' : ''].filter(Boolean).join(' ')}</div></div>
-</Row>
+<div><small>{settings.outputDirectory || 'Папка экспорта не выбрана: откройте Settings'}</small><div role="status" style={{ color: 'var(--danger)', fontSize: 12 }}>{[busy ? 'Операция выполняется' : '', analysis.findings.some(f => !kept.includes(f.id)) ? `Без решения: ${analysis.findings.filter(f => !kept.includes(f.id)).length}. Выберите «Оставить», замените значение или игнорируйте все без решения.` : '', analysis.findings.some(f => f.severity === 'block') && !override ? 'Подтвердите разрешение на экспорт оставшихся secrets.' : ''].filter(Boolean).join(' ')}</div></div>
+</ExportActions>
             </Card>
           </>}
           {exported.length > 0 && <Card>
@@ -411,7 +415,7 @@ export function App(): React.JSX.Element {
     void run(async () => setCommits(await api.listCommits({ ...draftSource, branch, commit: '' })));
   }
   return <>
-<GlobalStyle />{content}{draft && draftSource && <Overlay>
+<GlobalStyle /><AppearanceStyle $appearance={appearance} />{content}{draft && draftSource && <Overlay>
 <ProfileModal role="dialog" aria-modal="true" aria-labelledby="profile-modal-title">
 <ModalHeader><h2 id="profile-modal-title">{settings?.profiles.some(p => p.id === draft.id) ? 'Настройка профиля' : 'Новый профиль'}</h2><CloseButton aria-label="Закрыть" disabled={busy || previewBusy} onClick={() => setDraft(null)}>×</CloseButton></ModalHeader>
 <ProfileBody>

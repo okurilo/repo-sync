@@ -95,3 +95,7 @@
 ### Открытый transport v2 — 2026-10-05
 
 Временный fixture: несколько частей по 4096 bytes, Unicode/emoji/CRLF/BOM/Markdown fences и разделители восстановлены byte-exact; binary sidecar соответствует исходным bytes; в md нет BASE64/BROTLI_BASE64. Повреждённые/недостающие части, повреждённый binary, symlink и oversized binary отклонены. Импорт прежнего v1 с Brotli/Base64 успешен. Cross-branch/reverse/equal Diff, import interference и явная redaction повторно пройдены с v2. Typecheck/production build успешны. Нативная визуальная проверка недоступна (Computer Use mismatch).
+
+### Дизайн — 2026-10-05
+
+Проверены временным SSR fixture обе темы, отображение причин disabled и bulk actions, автоматический fallback выбранного файла после удаления, unified/split diff с подсветкой и указанием пути, генерация CSS reduced-motion. Найден и исправлен runtime throw от интерполяции styled keyframes в object string: animation names задаются global object @keyframes. Typecheck/build проходят. Computer Use вернул client/server mismatch; нативная визуальная проверка ширины, resize и эффектов не выполнена.

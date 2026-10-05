@@ -1,15 +1,17 @@
+import { Icon, reveal } from './Appearance';
 import { useEffect, useMemo, useState } from 'react';
 import { diffLines } from 'diff';
 import styled from 'styled-components';
 import type { CodeComparison, CodePreview, Profile } from '../shared/types';
 
-const Panel = styled('section')({ minWidth: 0, display: 'flex', flexDirection: 'column', height: 'min(65vh, calc(100dvh - 220px))', border: '1px solid #e1e6ef', borderRadius: 10, overflow: 'hidden' });
-const Bar = styled('div')({ padding: '12px 14px', borderBottom: '1px solid #e1e6ef', flexShrink: 0, '& p': { margin: '5px 0', fontSize: 12 }, '& h3': { margin: 0 } });
-const Workspace = styled('div')({ display: 'grid', gridTemplateColumns: '210px minmax(0, 1fr)', flex: 1, minHeight: 0, '@media (max-width: 1100px)': { gridTemplateColumns: '170px minmax(0, 1fr)' } });
-const Tree = styled('nav')({ overflow: 'auto', borderRight: '1px solid #e1e6ef', padding: 10, fontSize: 12, '& summary': { padding: '5px 0', whiteSpace: 'nowrap' }, '& details > div': { paddingLeft: 12 } });
-const File = styled('button')<{ $selected: boolean }>(({ $selected }) => ({ display: 'block', width: '100%', border: 0, background: $selected ? '#eaf0ff' : 'transparent', textAlign: 'left', padding: '6px 4px', whiteSpace: 'nowrap', color: '#344361', borderRadius: 4 }));
-const Code = styled('div')({ overflow: 'auto', minWidth: 0, background: '#fafbfe', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12, '& table': { width: '100%', fontSize: 12 }, '& td': { border: 0, padding: '2px 6px', whiteSpace: 'pre' }, '& td:last-child': { width: '100%' } });
-const Line = styled('tr')<{ $kind: string }>(({ $kind }) => ({ background: $kind === '+' ? '#e6f6ec' : $kind === '-' ? '#ffebe9' : 'transparent', '& td:not(:last-child)': { color: '#8490a5', textAlign: 'right', userSelect: 'none' } }));
+const Panel = styled('section')({ animation: `${reveal} 200ms ease-out`, minWidth: 0, display: 'flex', flexDirection: 'column', height: 'min(65vh, calc(100dvh - 220px))', border: '1px solid var(--line)', borderRadius: 10, overflow: 'hidden' });
+const Bar = styled('div')({ padding: '12px 14px', borderBottom: '1px solid var(--line)', flexShrink: 0, '& p': { margin: '5px 0', fontSize: 12 }, '& h3': { margin: 0 }, background: 'var(--raised)' });
+const Workspace = styled('div')({ display: 'grid', gridTemplateColumns: 'auto minmax(0, 1fr)', flex: 1, minHeight: 0, '@media (max-width: 700px)': { gridTemplateColumns: 'minmax(0, 1fr)' } });
+const Tree = styled('nav')({ overflow: 'auto', width: 210, minWidth: 130, maxWidth: 380, resize: 'horizontal', '@media(max-width: 700px)': { width: '100%', maxWidth: 'none', maxHeight: 180, resize: 'none' }, borderRight: '1px solid var(--line)', padding: 10, fontSize: 12, '& summary': { padding: '5px 0', whiteSpace: 'nowrap' }, '& details > div': { paddingLeft: 12 } });
+const File = styled('button')<{ $selected: boolean }>(({ $selected }) => ({ display: 'block', width: '100%', border: 0, boxShadow: $selected ? 'inset 2px 0 var(--accent)' : 'none', background: $selected ? 'var(--tint)' : 'transparent', textAlign: 'left', padding: '6px 4px', whiteSpace: 'nowrap', color: 'var(--text)', borderRadius: 4 }));
+const Switch = styled('button')<{ $active: boolean }>(({ $active }) => ({ border: '1px solid var(--line)', borderRadius: 6, padding: '5px 8px', background: $active ? 'var(--tint)' : 'var(--surface)', color: $active ? 'var(--accent)' : 'var(--muted)', fontSize: 11 }));
+const Code = styled('div')({ overflow: 'auto', minWidth: 0, background: 'var(--input)', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12, '& table': { width: '100%', fontSize: 12 }, '& td': { border: 0, padding: '2px 6px', whiteSpace: 'pre' }, '& td:last-child': { width: '100%' }, '& .syntax-keyword': { color: 'var(--accent)' }, '& .syntax-string': { color: 'var(--success)' }, '& .syntax-comment': { color: 'var(--muted)', fontStyle: 'italic' }, '& .syntax-number': { color: 'var(--warning)' }, '& .split td': { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', verticalAlign: 'top', borderRight: '1px solid var(--line)' }, '& .split td:nth-child(even)': { width: '50%' }, '& .split td:nth-child(odd)': { color: 'var(--muted)', width: 36, userSelect: 'none' } });
+const Line = styled('tr')<{ $kind: string }>(({ $kind }) => ({ background: $kind === '+' ? 'var(--added)' : $kind === '-' ? 'var(--removed)' : 'transparent', '& td:not(:last-child)': { color: 'var(--muted)', textAlign: 'right', userSelect: 'none' } }));
 function lines(preview: CodePreview): { old: number | string; next: number | string; kind: string; text: string }[] {
   const changes = diffLines(preview.before, preview.after, { timeout: 1000 });
   if (!changes) return [{ old: '', next: '', kind: '', text: 'Diff слишком сложный для предпросмотра.' }];
@@ -28,7 +30,20 @@ function lines(preview: CodePreview): { old: number | string; next: number | str
   }
   return rows;
 }
+function syntax(text: string): React.ReactNode[] {
+  return text.split(/(\/\/.*$|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`[^`]*`|\b(?:const|let|var|function|return|if|else|import|export|from|type|interface|class|async|await|new|null|true|false|throw|try|catch)\b|\b\d+(?:\.\d+)?\b)/g).map((token, index) => <span key={index} className={token.startsWith('//') ? 'syntax-comment' : /^["'`]/.test(token) ? 'syntax-string' : /^\d/.test(token) ? 'syntax-number' : /^(?:const|let|var|function|return|if|else|import|export|from|type|interface|class|async|await|new|null|true|false|throw|try|catch)$/.test(token) ? 'syntax-keyword' : undefined}>{token}</span>);
+}
+function paired(rows: ReturnType<typeof lines>): { left?: ReturnType<typeof lines>[number]; right?: ReturnType<typeof lines>[number] }[] {
+  const result: ReturnType<typeof paired> = [];
+  for (let index = 0; index < rows.length;) {
+    const row = rows[index]!;
+    if (row.kind === '-') { const removed = []; const added = []; while (rows[index]?.kind === '-') removed.push(rows[index++]!); while (rows[index]?.kind === '+') added.push(rows[index++]!); for (let i = 0; i < Math.max(removed.length, added.length); i++) result.push({ left: removed[i], right: added[i] }); }
+    else { result.push(row.kind === '+' ? { right: row } : { left: row, right: row }); index++; }
+  }
+  return result;
+}
 export function Comparison({ profile, revision, status, busy, onBusy }: { profile: Profile; revision: number; status: string; busy: boolean; onBusy: (value: boolean) => void }): React.JSX.Element {
+  const [sideBySide, setSideBySide] = useState(false);
   const [comparison, setComparison] = useState<CodeComparison | null>(null);
   const [preview, setPreview] = useState<CodePreview | null>(null);
   const [selected, setSelected] = useState(''); const [error, setError] = useState('');
@@ -61,11 +76,11 @@ export function Comparison({ profile, revision, status, busy, onBusy }: { profil
     for (const item of items) { const tail = item.path.slice(prefix.length); const slash = tail.indexOf('/');
       if (slash < 0) files.push(item); else { const folder = tail.slice(0, slash); folders.set(folder, [...(folders.get(folder) ?? []), item]); }
     }
-    return [...[...folders].map(([folder, nested]) => <details key={folder} open><summary>📁 {folder}</summary><div>{tree(nested, `${prefix}${folder}/`)}</div></details>), ...files.map(entry => <File key={entry.path} $selected={entry.path === selected} disabled={loading || busy} title={entry.oldPath ? `${entry.oldPath} → ${entry.path}` : entry.path} onClick={() => void open(entry.path)}>{entry.operation === 'ADD' ? '+' : entry.operation === 'DELETE' ? '−' : '~'} {entry.path.slice(prefix.length)}</File>)];
+    return [...[...folders].map(([folder, nested]) => <details key={folder} open><summary>{folder}/</summary><div>{tree(nested, `${prefix}${folder}/`)}</div></details>), ...files.map(entry => <File key={entry.path} $selected={entry.path === selected} disabled={loading || busy} title={entry.oldPath ? `${entry.oldPath} → ${entry.path}` : entry.path} onClick={() => void open(entry.path)}>{entry.operation === 'ADD' ? '+' : entry.operation === 'DELETE' ? '−' : '~'} {entry.path.slice(prefix.length)}</File>)];
   }
   const rows = useMemo(() => preview && !preview.message ? lines(preview) : [], [preview]);
   return <Panel aria-label="Предпросмотр сравнения"><Bar><h3>Изменения файлов</h3><p>{comparison ? `${comparison.from?.slice(0, 12) ?? 'Пустое состояние (Snapshot)'} → ${comparison.to.slice(0, 12)} · ${comparison.entries.length} файлов` : 'Выберите репозиторий и коммиты'}</p>{status && <p role="status">{status}</p>}<small>Красный — удалено, зелёный — добавлено. Чувствительные значения маскируются только в просмотре.</small></Bar>
     {error && <Bar role="alert">{error}</Bar>}
-    <Workspace><Tree><input aria-label="Поиск файла в diff" placeholder="Найти файл…" value={query} onChange={event => setQuery(event.target.value)} />{tree(entries.slice(0, 1000))}{entries.length > 1000 && <p>Первые 1000 файлов. Уточните поиск.</p>}</Tree><Code><Bar>{selected || (comparison?.entries.length === 0 ? 'Изменений нет' : 'Выберите файл')}{loading && <p>Загрузка…</p>}</Bar>{preview?.message ? <Bar>{preview.message}</Bar> : <table aria-label="Построчный diff"><tbody>{rows.map((row, i) => <Line key={i} $kind={row.kind}><td>{row.old}</td><td>{row.next}</td><td>{row.kind}</td><td>{row.text || ' '}</td></Line>)}</tbody></table>}</Code></Workspace>
+    <Workspace><Tree><input aria-label="Поиск файла в diff" placeholder="Найти файл…" value={query} onChange={event => setQuery(event.target.value)} />{tree(entries.slice(0, 1000))}{entries.length > 1000 && <p>Первые 1000 файлов. Уточните поиск.</p>}</Tree><Code><Bar style={{ position: 'sticky', top: 0, zIndex: 1 }}><div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}><Icon name="file" /><span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>{selected || (comparison?.entries.length === 0 ? 'Изменений нет' : 'Выберите файл')}</span><Switch $active={!sideBySide} onClick={() => setSideBySide(false)}>Единый</Switch><Switch $active={sideBySide} onClick={() => setSideBySide(true)}>Рядом</Switch></div>{loading && <p>Загрузка…</p>}</Bar>{preview?.message ? <Bar>{preview.message}</Bar> : sideBySide ? <table className="split" aria-label="Сравнение рядом"><thead><tr><th colSpan={2}>Исходное</th><th colSpan={2}>Целевое</th></tr></thead><tbody>{paired(rows).map((row, index) => <tr key={index}><td style={{ background: row.left?.kind === '-' ? 'var(--removed)' : undefined }}>{row.left?.old}</td><td style={{ background: row.left?.kind === '-' ? 'var(--removed)' : undefined }}>{syntax(row.left?.text ?? '')}</td><td style={{ background: row.right?.kind === '+' ? 'var(--added)' : undefined }}>{row.right?.next}</td><td style={{ background: row.right?.kind === '+' ? 'var(--added)' : undefined }}>{syntax(row.right?.text ?? '')}</td></tr>)}</tbody></table> : <table aria-label="Построчный diff"><tbody>{rows.map((row, i) => <Line key={i} $kind={row.kind}><td>{row.old}</td><td>{row.next}</td><td>{row.kind}</td><td>{syntax(row.text || ' ')}</td></Line>)}</tbody></table>}</Code></Workspace>
   </Panel>;
 }
