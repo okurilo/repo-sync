@@ -6,7 +6,7 @@ SDD означает разработку на основе спецификац
 
 Центральная сущность — Repository Profile. Роль `internal` / `external` принадлежит профилю. Глобального режима среды нет. Два направления: External → Internal из внешнего Git и Internal → External через `.md`. External profile принимает пакет из контура; произвольные Git comparisons не входят в основной UI.
 
-`Profile.sources.internal` хранит локальный Git, `sources.global` — внешний remote для Internal profile. Имена этих двух технических ключей сохранены ради небольшой правки существующих Git API; они не обозначают режим приложения. Профиль хранит одну общую baseline, pending, дату синхронизации, exclusions, максимальный размер части и readable/compact transport. Branch HEAD выбирается автоматически, commit/base selectors отсутствуют.
+`Profile.sources.internal` хранит локальный Git, `sources.global` — внешний remote для Internal profile. Имена этих двух технических ключей сохранены ради небольшой правки существующих Git API; они не обозначают режим приложения. Профиль хранит одну общую baseline, pending, дату синхронизации, exclusions, максимальный размер части и readable/compact transport. Входящий workflow выбирает commit/range/repositories/zero; selectors хранятся только в IPC/сессии. Persisted source selectors по-прежнему отсутствуют.
 
 ## Границы процессов
 
@@ -18,9 +18,9 @@ Engine: выбор направления, immutable common bytes, diff/scan, to
 
 ## Синхронизация
 
-Входящее направление сравнивает common state → external branch HEAD. При отсутствии common state сравниваются текущие состояния выбранных локальной и внешней веток. Исходный tree читается из локального committed HEAD без сохранения baseline до Apply; общая история не требуется. Первое применение переносит показанные отличия, включая удаления локальных файлов, отсутствующих во внешней ветке. Перед preflight проверяются оба HEAD. Исходящее — common state → local branch committed HEAD. Common bytes нужны независимо от доступности чужого commit в локальном Git; поэтому сохраняются по SHA256 в существующей папке cache, отдельно от mutable working tree.
+Входящий workflow по умолчанию переносит diff выбранного внешнего коммита относительно первого родителя; range — суммарный diff выбранных состояний. Repositories и zero — отдельные явные способы. Перед preflight проверяется актуальность floating HEAD; закреплённый выбранный SHA не расширяется при продвижении ветки. Исходящее направление использует common state → local committed HEAD.
 
-При входящем Apply canonical пакет сначала восстанавливается из common bytes и проверяется по всем target hashes/modes. Затем операции готовятся против текущих local bytes. Independent hunks допускаются при точном и однозначном контексте, конфликт останавливает preflight. Незатронутые файлы не сверяются с внешним inventory и не заменяются. Common state после Apply соответствует canonical отправленной стороне, а не сумме её данных и независимых принимающих изменений.
+Canonical transport восстанавливается из immutable выбранных before bytes, затем операции готовятся против текущих local bytes. Независимые hunks допускаются при точном однозначном контексте; конфликт останавливает preflight. Commit/range не обновляют common baseline, поскольку частичный diff не означает полного совпадения inventory. Repositories/zero сохраняют canonical внешний target. Чужие before bytes сохраняются в existing sync-bytes для повторной проверки Apply; они не обязаны быть доступны в локальной Git-истории.
 
 После Apply выставляется commitRequired: перед следующим исходящим переносом незакоммиченный результат нужно закоммитить. Export сохраняет pending и common bytes; baseline обновляется только при подтверждении применения снаружи. Пока есть pending, другие переносы заблокированы.
 

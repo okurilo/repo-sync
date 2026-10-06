@@ -134,8 +134,8 @@ export async function listBranches(source: Source, environment: Environment, cac
 export async function listCommits(source: Source, environment: Environment, cache: string): Promise<CommitOption[]> {
   const resolved = await resolveSource({ ...source, commit: '' }, environment, cache); const key = `${resolved.root}:${resolved.commit}`;
   const cached = histories.get(key); if (cached) return cached;
-  const output = (await git(resolved.root, ['log', '--format=%H%x09%cs', resolved.commit, '--'])).toString('utf8');
-  const commits = output.trim().split('\n').filter(Boolean).map(line => { const [sha, date] = line.split('\t'); if (!sha || !date) throw new Error('Не удалось прочитать историю коммитов.'); return { sha, date }; });
+  const output = (await git(resolved.root, ['log', '--format=%H%x09%cs%x09%s', resolved.commit, '--'])).toString('utf8');
+  const commits = output.trim().split('\n').filter(Boolean).map(line => { const [sha, date, ...subject] = line.split('\t'); if (!sha || !date) throw new Error('Не удалось прочитать историю коммитов.'); return { sha, date, subject: subject.join('\t') }; });
   if (histories.size >= 8) histories.delete(histories.keys().next().value!); histories.set(key, commits); return commits;
 }
 const refreshes = new Map<string, Promise<RemoteUpdate>>();

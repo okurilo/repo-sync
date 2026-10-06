@@ -7,7 +7,8 @@ export type Operation = 'ADD' | 'MODIFY' | 'DELETE' | 'RENAME' | 'REPLACE';
 export type Encoding = 'RAW' | 'BASE64' | 'BROTLI_BASE64';
 export interface GitRevision { branch: string; commit?: string }
 export interface Source { kind: 'local' | 'remote'; location: string; branch: string; commit?: string; base?: GitRevision }
-export interface CommitOption { sha: string; date: string }
+export interface CommitOption { sha: string; date: string; subject?: string }
+export interface IncomingSelection { mode: 'commit' | 'range' | 'repositories' | 'zero'; commit?: string; from?: string }
 export interface RemoteUpdate { changedBranches: string[]; branches: string[]; commits: CommitOption[]; baseCommits: CommitOption[] }
 export interface FileEntry { path: string; sha256: string; size: number; mode: number }
 export interface Baseline { state: string; files: FileEntry[]; scope: string; localRepository?: string }
@@ -37,6 +38,7 @@ export interface Finding {
   severity: 'warning' | 'block'; replacement: string; canReplace: boolean;
 }
 export interface Analysis {
+  incomingMode?: IncomingSelection['mode'];
   token: string; state: string; sourceState: string | null; packageType: PackageType;
   files: number; changes: Record<Operation, number>; excludedGit: number;
   excludedCustom: number; estimatedBytes: number; parts: number; findings: Finding[];
@@ -46,6 +48,7 @@ export interface Analysis {
   entries: { path: string; oldPath?: string; operation: Operation; size: number; ignoredBy?: number[] }[];
 }
 export interface ImportPreview {
+  incomingMode?: IncomingSelection['mode'];
   workingChanges: Analysis['workingChanges'];
   token: string; packageId: string; sourceState: string | null; targetState: string;
   packageType: PackageType; changes: Record<Operation, number>; files: number; lineChanges: { added: number; removed: number };
@@ -66,7 +69,7 @@ export interface API {
   listCommits(source: Source): Promise<CommitOption[]>;
   previewComparison(profile: Profile, direction: Direction): Promise<CodeComparison>;
   previewCode(token: string, path: string): Promise<CodePreview>;
-  analyze(id: string, direction: Direction): Promise<Analysis>;
+  analyze(id: string, direction: Direction, selection?: IncomingSelection): Promise<Analysis>;
   exportPackage(token: string, keep: string[], override: boolean): Promise<string[]>;
   confirmTransfer(id: string): Promise<Settings>;
   discardPending(id: string): Promise<Settings>;

@@ -3,7 +3,7 @@ import { matchingComparisonFilters } from './comparison';
 import { chmod, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, rmdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { applyPatch, createTwoFilesPatch, parsePatch } from 'diff';
-import type { Analysis, Baseline, CodeComparison, CodePreview, Direction, Environment, FileEntry, ImportPreview, Operation, PackageType, Profile, RecordData, Settings, Transport } from '../shared/types';
+import type { Analysis, Baseline, CodeComparison, CodePreview, Direction, Environment, FileEntry, ImportPreview, IncomingSelection, Operation, PackageType, Profile, RecordData, Settings, Transport } from '../shared/types';
 import { git, readTree, refreshSource, resolveSource, safePath, scopeHash, sha256, type ResolvedSource, type Tree } from './infra/git';
 import { atomicJSON, SettingsStore } from './infra/settings';
 import { decode, encode, exportArtifacts, loadTransport, MAX_BYTES, newPackageId, parseTransport, splitTransport } from './transport';
@@ -15,11 +15,12 @@ export const counts = (records: RecordData[]): Record<Operation, number> => {
   return result;
 };
 interface ExportSession {
+  incomingMode?: IncomingSelection['mode']; sourceBaseline?: Baseline; sourceBytes?: Map<string, Buffer>;
   token: string; profileId: string; environment: Environment; resolved: ResolvedSource;
   tree: Tree; workingChanges: Analysis['workingChanges']; transport: Transport; findings: PrivateFinding[]; target: Baseline; maxBytes: number;
 }
 interface PreparedFile { path: string; before: Buffer | null; after: Buffer | null; beforeMode: number | null; afterMode: number }
-interface ImportSession { token: string; environment: Environment; profileId: string; target: string; transport: Transport; files: PreparedFile[]; baseline?: Baseline }
+interface ImportSession { token: string; environment: Environment; profileId: string; target: string; transport: Transport; files: PreparedFile[]; baseline?: Baseline; updateCommon: boolean }
 interface BackupEntry { path: string; file: string | null; mode: number | null; beforeSha256: string | null; afterSha256: string | null; touched: boolean }
 interface Journal { target: string; entries: BackupEntry[]; createdDirectories: string[]; temporaryFiles: string[]; settingsBefore: Settings; committed: boolean }
 interface CodeSession { token: string; mask: boolean; from: string | null; to: string; entries: Analysis['entries']; before: Map<string, Buffer>; after: Map<string, Buffer> }
@@ -102,7 +103,8 @@ export class Engine {
     };
     return { before: masked(before, entry.oldPath ?? name), after: masked(after, name) };
   }
-  async analyze(id: string, direction: Direction): Promise<Analysis> {
+  async analyze(id: string, direction: Direction, selection?: IncomingSelection): Promise<Analysis> {
+    const incoming = direction === 'incoming' ? parseIncomingSelection(selection) : undefined;
     this.invalidate();
     const mode: Environment = direction === 'incoming' ? 'global' : 'internal';
     const { profile } = this.context(id, mode);
@@ -110,20 +112,36 @@ export class Engine {
     if (!profile.sources.internal) throw new Error('Укажите локальный репозиторий в настройках.');
     if (profile.commitRequired && direction === 'outgoing' && (await git(profile.sources.internal.location, ['status', '--porcelain=v1'])).length) throw new Error('Перед подготовкой пакета создайте коммит с применёнными изменениями.');
     if (profile.pending) throw new Error('Предыдущий пакет ожидает подтверждения. Подтвердите его применение или отмените ожидание перед новой синхронизацией.');
-    const source = profile.sources[mode];
+    let source = profile.sources[mode];
     if (!source) throw new Error('Укажите источник изменений в настройках репозитория.');
     if (source.kind === 'remote') await refreshSource(source, 'global', this.cache);
+    const branch = incoming ? await resolveSource({ ...source, commit: undefined, base: undefined }, mode, this.cache) : undefined;
+    if (incoming) source = { ...source, commit: incoming.commit, base: undefined };
     const resolved = await resolveSource(source, mode, this.cache);
+    if (branch) await selectedAncestor(resolved.root, resolved.commit, branch.commit);
     const tree = await readTree(resolved, profile);
     if (tree.files.reduce((total, file) => total + file.size, 0) > MAX_BYTES) throw new Error('Размер выбранных файлов превышает 512 МБ. Исключите часть файлов.');
     const scope = scopeHash(profile);
     let baseline = profile.baseline;
     let initialBytes: Map<string, Buffer> | undefined;
-    if (!baseline && direction === 'incoming') {
-      const local = await resolveSource(profile.sources.internal, 'internal', this.cache);
-      const initial = await readTree(local, profile);
-      baseline = { state: local.commit, files: initial.files, scope };
-      initialBytes = initial.bytes;
+    if (incoming) {
+      baseline = undefined;
+      if (incoming.mode !== 'zero') {
+        let initial: Tree; let state: string;
+        if (incoming.mode === 'repositories') {
+          const local = await resolveSource(profile.sources.internal, 'internal', this.cache);
+          initial = await readTree(local, profile); state = local.commit;
+        } else {
+          state = incoming.from ?? '';
+          if (incoming.mode === 'commit') {
+            state = (await git(resolved.root, ['rev-list', '--parents', '-n', '1', resolved.commit])).toString().trim().split(' ')[1] ?? '';
+            if (!state) throw new Error('У корневого коммита нет родителя. Для полного переноса выберите «От нулевого состояния».');
+          }
+          await selectedAncestor(resolved.root, state, resolved.commit);
+          initial = await readTree({ ...resolved, commit: state }, profile);
+        }
+        baseline = { state, files: initial.files, scope }; initialBytes = initial.bytes;
+      }
     }
     if (baseline && baseline.scope !== scope) throw new Error('Исключения изменились после синхронизации. Верните прежний список или создайте отдельный профиль для первичной синхронизации.');
     const type: PackageType = baseline ? 'diff' : 'snapshot';
@@ -143,11 +161,11 @@ export class Engine {
     const parts = splitTransport(transport, maxBytes, profile.transportMode);
     const target: Baseline = { state: targetState, files: tree.files, scope };
     if (profile.includeIgnored.length) target.localRepository = resolved.root;
-    this.exportSession = { token: randomUUID(), profileId: id, environment: mode, resolved, tree, workingChanges: { staged: 0, unstaged: 0, untracked: 0 }, transport, findings, target, maxBytes };
+    this.exportSession = { incomingMode: incoming?.mode, sourceBaseline: incoming ? baseline : undefined, sourceBytes: incoming ? before : undefined, token: randomUUID(), profileId: id, environment: mode, resolved, tree, workingChanges: { staged: 0, unstaged: 0, untracked: 0 }, transport, findings, target, maxBytes };
     const workingChanges = await workingStatus(profile.sources.internal.location);
     this.exportSession.workingChanges = workingChanges;
     const entries = this.codeFor(this.exportSession.token, transport, before, tree.bytes, direction === 'outgoing', new Map(baseline?.files.map(file => [file.path, file.mode]) ?? []));
-    return { token: this.exportSession.token, state: targetState, sourceState: transport.sourceState, packageType: type,
+    return { incomingMode: incoming?.mode, token: this.exportSession.token, state: targetState, sourceState: transport.sourceState, packageType: type,
       files: tree.files.length, changes: counts(records), excludedGit: tree.excludedGit, excludedCustom: tree.excludedCustom,
       estimatedBytes: parts.reduce((sum, part) => sum + part.length, 0), parts: parts.length,
       findings: findings.map(f => f.public), lineChanges: textChanges(transport, before), local: source.kind === 'local', ignored: tree.ignored, workingChanges,
@@ -307,22 +325,22 @@ export class Engine {
     const session = this.session(token);
     if (session.environment !== 'global') throw new Error('Для применения нужно сравнение входящих изменений.');
     const { profile } = this.context(session.profileId);
-    const source = profile.sources.global!;
+    const source = session.resolved.source;
     await refreshSource(source, 'global', this.cache);
     const latest = await resolveSource(source, 'global', this.cache);
     if (latest.commit !== session.resolved.commit) throw new Error('Внешняя ветка изменилась. Запустите синхронизацию заново.');
-    if (!profile.baseline) {
+    if (session.incomingMode === 'repositories') {
       const local = await resolveSource(profile.sources.internal!, 'internal', this.cache);
       if (local.commit !== session.transport.sourceState) throw new Error('Локальная ветка изменилась. Обновите сравнение перед применением.');
     }
-    return this.prepareTransport(session.transport, profile.sources.internal!.location, profile.id);
+    return this.prepareTransport(session.transport, profile.sources.internal!.location, profile.id, session);
   }
   async preflight(filename: string, target: string, profileId: string): Promise<ImportPreview> {
     const { profile } = this.context(profileId);
     if (profile.role !== 'external') throw new Error('Для применения пакета выберите внешний репозиторий.');
     return this.prepareTransport(await loadTransport(filename), target, profileId);
   }
-  private async prepareTransport(transport: Transport, target: string, profileId: string): Promise<ImportPreview> {
+  private async prepareTransport(transport: Transport, target: string, profileId: string, incoming?: ExportSession): Promise<ImportPreview> {
     this.invalidate();
     const { profile } = this.context(profileId);
     if (profile.pending) throw new Error('Сначала подтвердите применение созданного пакета или отмените ожидание.');
@@ -333,18 +351,19 @@ export class Engine {
     if (await realpath(top) !== root) throw new Error('Выберите корневую папку Git-репозитория.');
     const branch = (await git(root, ['symbolic-ref', '--short', 'HEAD'])).toString().trim();
     if (branch !== configured.branch) throw new Error('Переключите локальный репозиторий на ветку, указанную в настройках.');
-    const baseline = await this.importBaseline(root, transport, profile);
-    const before = baseline ? await this.baselineContent(baseline) : new Map<string, Buffer>();
+    const baseline = incoming ? incoming.sourceBaseline : await this.importBaseline(root, transport, profile);
+    const before = incoming?.sourceBytes ?? (baseline ? await this.baselineContent(baseline) : new Map<string, Buffer>());
+    if (baseline) await this.saveBaseline(before);
     const files = await prepare(root, transport, baseline, before);
     const canonical = materialize(transport, before);
     await this.saveBaseline(canonical);
     const token = randomUUID();
-    this.importSession = { token, profileId, environment: 'internal', target: root, transport, files, baseline };
+    this.importSession = { token, profileId, environment: 'internal', target: root, transport, files, baseline, updateCommon: !incoming || incoming.incomingMode === 'repositories' || incoming.incomingMode === 'zero' };
     const localBefore = new Map<string, Buffer>(); const localAfter = new Map<string, Buffer>();
     for (const file of files) { if (file.before) localBefore.set(file.path, file.before); if (file.after) localAfter.set(file.path, file.after); }
     const entries = this.codeFor(token, transport, localBefore, localAfter, false, new Map(files.filter(file => file.beforeMode !== null).map(file => [file.path, file.beforeMode!])));
     // For renames, the old name has a separate delete operation in the prepared set.
-    return { token, workingChanges: await workingStatus(root), packageId: transport.packageId, sourceState: transport.sourceState, targetState: transport.targetState,
+    return { incomingMode: incoming?.incomingMode, token, workingChanges: await workingStatus(root), packageId: transport.packageId, sourceState: transport.sourceState, targetState: transport.targetState,
       packageType: transport.packageType, changes: counts(transport.records), files: transport.files.length, lineChanges: textChanges(transport, before),
       entries };
   }
@@ -401,7 +420,7 @@ export class Engine {
         const filename = await safePath(session.target, file.path);
         if (!sameBuffer(await optionalRead(filename), file.after) || (file.after !== null && process.platform !== 'win32' && ((await lstat(filename)).mode & 0o777) !== file.afterMode)) throw new Error('Результат записи не прошёл проверку. Операция остановлена.');
       }
-      profile.baseline = { state: session.transport.targetState, files: session.transport.files, scope: session.transport.scope };
+      if (session.updateCommon) profile.baseline = { state: session.transport.targetState, files: session.transport.files, scope: session.transport.scope };
       profile.syncedAt = new Date().toISOString();
       if (files.length) profile.commitRequired = true;
       settings.lastRepositories = [session.target, ...settings.lastRepositories.filter(p => p !== session.target)].slice(0, 10);
@@ -435,6 +454,23 @@ export class Engine {
         await rm(path.join(folder, 'journal.json'));
       }
     }
+  }
+}
+export function parseIncomingSelection(value: unknown): IncomingSelection {
+  if (value === undefined) return { mode: 'commit' };
+  if (!value || typeof value !== 'object' || !('mode' in value) || typeof value.mode !== 'string' || !['commit', 'range', 'repositories', 'zero'].includes(value.mode)) throw new Error('Выберите режим входящего сравнения.');
+  const input = value as Record<string, unknown>;
+  for (const key of ['commit', 'from']) if (input[key] !== undefined && (typeof input[key] !== 'string' || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(input[key]))) throw new Error('Выберите полный SHA коммита из истории внешней ветки.');
+  if (input.mode === 'range' && (!input.from || !input.commit)) throw new Error('Выберите начало и конец диапазона.');
+  if (input.mode !== 'range' && input.from !== undefined) throw new Error('Начальный коммит доступен только для диапазона.');
+  if ((input.mode === 'zero' || input.mode === 'repositories') && input.commit !== undefined) throw new Error('Для этого режима используется вершина внешней ветки.');
+  return { mode: input.mode as IncomingSelection['mode'], commit: input.commit as string | undefined, from: input.from as string | undefined };
+}
+async function selectedAncestor(root: string, from: string, to: string): Promise<void> {
+  try { await git(root, ['merge-base', '--is-ancestor', from, to]); }
+  catch (error) {
+    if (error instanceof Error && error.message.startsWith('Git завершился с кодом 1.')) throw new Error('Начальный коммит не является предком конечного. Выберите коммиты одной цепочки внешней ветки.');
+    throw error;
   }
 }
 async function workingStatus(root: string): Promise<Analysis['workingChanges']> {

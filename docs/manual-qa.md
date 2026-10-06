@@ -170,3 +170,16 @@ Renderer визуально проверен в локальном in-app browse
 - Проверены независимые CRLF/LF, края строк и пустые строки, а также сочетание всех трёх. Пробелы внутри литералов, разделение непустой строки, комментарии/директивы lint, отсутствие завершающего LF, Unicode, binary/invalid UTF-8 сохраняются как различия. End-to-end Git fixture подтвердил metadata Analyze/Preview, неизменные mode/ADD/DELETE/RENAME и побайтово точный Apply.
 - Реальные React-компоненты с временным mock API: 4→3→2→1 файл при последовательном включении флагов, 0/3 при полном скрытии; отдельные счётчики и общий итог. Тёмная/светлая темы, переключение «Рядом»/«В одном списке», ширина 900×700 без горизонтального overflow. Вставленный комментарий и пустая строка имеют штрихованную отсутствующую сторону; 400→450 выровнены и выделены внутри строки.
 - Typecheck/build и 19 групп sync/recovery/compatibility прошли; macOS arm64 .app/DMG/ZIP пересобраны. Все 11 dist-файлов побайтово совпадают с app.asar. Автоматическое первичное слияние с сохранением внутренних доработок этой правкой не реализовано.
+
+## 2026-10-06 — режим compare-projects
+
+- Нормализация сверена с TextDecoder + replace(/\s+/gu, " ").trim(): обычные/Unicode whitespace, переносы, пробелы внутри строк, пустые файлы, BOM и UTF-8 на границах 64 КБ. 60 дополнительных больших Unicode fixtures; binary/invalid UTF-8 guard сохранён. End-to-end проверка прежних фильтров и точного Apply прошла.
+- UI 900×700: новый режим заменяет частные флаги, скрытый список 0/3, возвращение частного флага отключает режим и возвращает 2/3; scrollWidth 892.
+- Typecheck/build и macOS .app/DMG/ZIP прошли; 11 packaged dist-файлов совпали со сборкой.
+
+## 2026-10-06 — выбранный входящий diff
+
+- Реальные Git fixtures: parent SHA отсутствует во внутреннем Git; выбранный старый commit переносит только свой diff, сохраняет независимый внутренний hunk и internal-only файл. Range from exclusive → to inclusive включает только итоговые изменения выбранных состояний.
+- Проверены latest default, reverse range и root commit errors, IPC SHA/mode validation, merge first-parent, сохранение прежней common baseline после частичного переноса, продвижение ветки при pinned SHA и отказ устаревшего floating HEAD, explicit zero conflict и whole comparison с удалениями. Overlap останавливается до записи. Incoming scanner подменён на throwing stub — вызовов нет.
+- Повторно пройдены full-mode сравнение независимых историй/HEAD guards/retry; mid-apply I/O rollback, branch race, startup recovery, migration v1–v3, legacy v1/v2 import и replacement masking/branch/symlink.
+- UI проверен на actual App с mock IPC при 900 px: default commit, четыре способа, range labels/exclusive/inclusive, запрет неполного range, поиск, передача выбранных SHA, Compare → preflight → Apply без КБ и возврат к выбору. Горизонтального overflow нет; screenshot `/tmp/reposync-commits-900.png`. Это UI-проверка, не живое сетевое тестирование GitHub.
