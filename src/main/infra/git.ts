@@ -87,18 +87,6 @@ export const validateSource = (source: Source, environment: Environment): void =
   }
 };
 export interface ResolvedSource { root: string; commit: string; source: Source }
-export async function commonRevision(local: ResolvedSource, external: ResolvedSource): Promise<string | null> {
-  // Only import local Git objects into the private cache; no remote is written to.
-  await git(external.root, ['-c', 'protocol.file.allow=always', 'fetch', '--no-write-fetch-head', '--no-tags', '--no-recurse-submodules', '--', local.root, local.commit]);
-  let bases: string[];
-  try { bases = (await git(external.root, ['merge-base', '--all', local.commit, external.commit])).toString().trim().split('\n').filter(Boolean); }
-  catch (error) {
-    if (error instanceof Error && error.message.startsWith('Git завершился с кодом 1.')) return null;
-    throw error;
-  }
-  if (bases.length !== 1) throw new Error('У веток несколько общих точек истории. Выберите ветки с однозначной общей историей.');
-  return bases[0]!;
-}
 const fetches = new Map<string, Promise<void>>();
 const queues = new Map<string, Promise<void>>();
 const histories = new Map<string, CommitOption[]>();

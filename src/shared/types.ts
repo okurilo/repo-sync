@@ -43,13 +43,13 @@ export interface Analysis {
   lineChanges: { added: number; removed: number };
   local: boolean; ignored: string[];
   workingChanges: { staged: number; unstaged: number; untracked: number };
-  entries: { path: string; oldPath?: string; operation: Operation; size: number }[];
+  entries: { path: string; oldPath?: string; operation: Operation; size: number; ignoredBy?: number[] }[];
 }
 export interface ImportPreview {
   workingChanges: Analysis['workingChanges'];
   token: string; packageId: string; sourceState: string | null; targetState: string;
   packageType: PackageType; changes: Record<Operation, number>; files: number; lineChanges: { added: number; removed: number };
-  entries: { path: string; oldPath?: string; operation: Operation; size: number }[];
+  entries: { path: string; oldPath?: string; operation: Operation; size: number; ignoredBy?: number[] }[];
 }
 export interface ReplacementPreview { token: string; path: string; line: number; preview: string; replacement: string }
 export interface CodeComparison { token: string; from: string | null; to: string; entries: Analysis['entries']; lineChanges?: { added: number; removed: number } }

@@ -1,10 +1,10 @@
 import { Icon, reveal } from './Appearance';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { diffLines } from 'diff';
+import { diffLines, diffWordsWithSpace } from 'diff';
 import styled, { css } from 'styled-components';
 import type { CodeComparison, CodePreview } from '../shared/types';
 
-const Panel = styled('section')({ minWidth: 0, display: 'flex', flexDirection: 'column', height: 'max(260px, calc(100dvh - 430px))', border: '1px solid var(--line)', borderRadius: 10, overflow: 'hidden' }, css`animation: ${reveal} 180ms ease-out;`);
+const Panel = styled('section')({ minWidth: 0, display: 'flex', flexDirection: 'column', height: 'max(360px, calc(100dvh - 430px))', border: '1px solid var(--line)', borderRadius: 10, overflow: 'hidden' }, css`animation: ${reveal} 180ms ease-out;`);
 const Bar = styled('div')({ padding: '12px 14px', borderBottom: '1px solid var(--line)', flexShrink: 0, '& p': { margin: '5px 0', fontSize: 12 }, '& h3': { margin: 0 }, background: 'var(--raised)' });
 const Workspace = styled('div')({ display: 'grid', gridTemplateColumns: 'auto minmax(0, 1fr)', flex: 1, minHeight: 0, '@media (max-width: 700px)': { gridTemplateColumns: 'minmax(0, 1fr)' } });
 const Tree = styled('nav')({ overflow: 'auto', width: 210, minWidth: 130, maxWidth: 380, resize: 'horizontal', '@media(max-width: 700px)': { width: '100%', maxWidth: 'none', maxHeight: 180, resize: 'none' }, borderRight: '1px solid var(--line)', padding: 10, fontSize: 12, '& summary': { padding: '5px 0', whiteSpace: 'nowrap' }, '& details > div': { paddingLeft: 12 } });
@@ -33,11 +33,22 @@ function lines(preview: CodePreview): { old: number | string; next: number | str
 function syntax(text: string): React.ReactNode[] {
   return text.split(/(\/\/.*$|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`[^`]*`|\b(?:const|let|var|function|return|if|else|import|export|from|type|interface|class|async|await|new|null|true|false|throw|try|catch)\b|\b\d+(?:\.\d+)?\b)/g).map((token, index) => <span key={index} className={token.startsWith('//') ? 'syntax-comment' : /^["'`]/.test(token) ? 'syntax-string' : /^\d/.test(token) ? 'syntax-number' : /^(?:const|let|var|function|return|if|else|import|export|from|type|interface|class|async|await|new|null|true|false|throw|try|catch)$/.test(token) ? 'syntax-keyword' : undefined}>{token}</span>);
 }
+function fragments(text: string, other: string | undefined, side: 'left' | 'right', changed: boolean, deadline: number): React.ReactNode {
+  if (!changed || other === undefined || text.length + other.length > 4096 || performance.now() >= deadline) return syntax(text);
+  const changes = diffWordsWithSpace(side === 'left' ? text : other, side === 'left' ? other : text, { timeout: 5 });
+  if (!changes) return syntax(text);
+  return changes.filter(part => side === 'left' ? !part.added : !part.removed).map((part, index) => <span key={index} style={part.added || part.removed ? { background: `color-mix(in srgb, ${side === 'left' ? 'var(--danger)' : 'var(--success)'} 24%, transparent)`, boxShadow: `inset 0 -2px ${side === 'left' ? 'var(--danger)' : 'var(--success)'}`, borderRadius: 2 } : undefined}>{syntax(part.value)}</span>);
+}
 function paired(rows: ReturnType<typeof lines>): { left?: ReturnType<typeof lines>[number]; right?: ReturnType<typeof lines>[number] }[] {
   const result: ReturnType<typeof paired> = [];
   for (let index = 0; index < rows.length;) {
     const row = rows[index]!;
-    if (row.kind === '-') { const removed = []; const added = []; while (rows[index]?.kind === '-') removed.push(rows[index++]!); while (rows[index]?.kind === '+') added.push(rows[index++]!); for (let i = 0; i < Math.max(removed.length, added.length); i++) result.push({ left: removed[i], right: added[i] }); }
+    if (row.kind === '-') { const removed = []; const added = []; while (rows[index]?.kind === '-') removed.push(rows[index++]!); while (rows[index]?.kind === '+') added.push(rows[index++]!); let left = 0; let right = 0;
+      while (left < removed.length || right < added.length) {
+        if (removed[left]?.text.trim() && added[right]?.text.trim() === '') result.push({ right: added[right++] });
+        else if (removed[left]?.text.trim() === '' && added[right]?.text.trim()) result.push({ left: removed[left++] });
+        else result.push({ left: removed[left++], right: added[right++] });
+      } }
     else { result.push(row.kind === '+' ? { right: row } : { left: row, right: row }); index++; }
   }
   return result;
@@ -45,15 +56,18 @@ function paired(rows: ReturnType<typeof lines>): { left?: ReturnType<typeof line
 export function Comparison({ comparison, busy, onBusy, request }: { comparison: CodeComparison; busy: boolean; onBusy: (value: boolean) => void; request: React.MutableRefObject<Promise<void> | null> }): React.JSX.Element {
   const pending = request;
   const generation = useRef(0);
-  const [sideBySide, setSideBySide] = useState(false);
+  const [sideBySide, setSideBySide] = useState(true);
+  const [filters, setFilters] = useState(0);
+  const options = [{ bit: 1, label: 'CRLF / LF' }, { bit: 2, label: 'отступы и пробелы в конце строк' }, { bit: 4, label: 'пустые строки' }];
+  const visibleEntries = useMemo(() => comparison.entries.filter(entry => !filters || !entry.ignoredBy?.includes(filters)), [comparison.entries, filters]);
   const [preview, setPreview] = useState<CodePreview | null>(null);
   const [selected, setSelected] = useState(''); const [error, setError] = useState('');
   const [loading, setLoading] = useState(false); const [query, setQuery] = useState('');
   useEffect(() => {
     const current = ++generation.current; let active = true;
-    setPreview(null); setError(''); setSelected(comparison.entries[0]?.path ?? '');
-    const first = comparison.entries[0];
-    if (!first) return;
+    setPreview(null); setError(''); setSelected(visibleEntries[0]?.path ?? '');
+    const first = visibleEntries[0];
+    if (!first) { setLoading(false); onBusy(false); return; }
     onBusy(true); setLoading(true);
     const previous = pending.current;
     const task = (async (): Promise<void> => {
@@ -64,7 +78,7 @@ export function Comparison({ comparison, busy, onBusy, request }: { comparison: 
       finally { if (active) setLoading(false); onBusy(false); }
     })(); pending.current = task;
     return () => { active = false; onBusy(false); };
-  }, [comparison.token, onBusy, pending]);
+  }, [comparison.token, visibleEntries, onBusy, pending]);
   async function open(name: string): Promise<void> {
     if (!comparison || loading) return; setSelected(name); setPreview(null); setError(''); setLoading(true); onBusy(true);
     const current = generation.current;
@@ -75,7 +89,7 @@ export function Comparison({ comparison, busy, onBusy, request }: { comparison: 
     })();
     pending.current = task; await task;
   }
-  const entries = comparison?.entries.filter(entry => entry.path.toLowerCase().includes(query.toLowerCase())) ?? [];
+  const entries = visibleEntries.filter(entry => entry.path.toLowerCase().includes(query.toLowerCase())) ?? [];
   function tree(items: CodeComparison['entries'], prefix = ''): React.JSX.Element[] {
     const folders = new Map<string, CodeComparison['entries']>(); const files: CodeComparison['entries'] = [];
     for (const item of items) { const tail = item.path.slice(prefix.length); const slash = tail.indexOf('/');
@@ -84,8 +98,9 @@ export function Comparison({ comparison, busy, onBusy, request }: { comparison: 
     return [...[...folders].map(([folder, nested]) => <details key={folder} open><summary>{folder}/</summary><div>{tree(nested, `${prefix}${folder}/`)}</div></details>), ...files.map(entry => <File key={entry.path} $selected={entry.path === selected} disabled={loading || busy} title={entry.oldPath ? `${entry.oldPath} → ${entry.path}` : entry.path} onClick={() => void open(entry.path)}>{entry.operation === 'ADD' ? '+' : entry.operation === 'DELETE' ? '−' : '~'} {entry.path.slice(prefix.length)}</File>)];
   }
   const rows = useMemo(() => preview && !preview.message ? lines(preview) : [], [preview]);
-  return <Panel aria-label="Просмотр изменений"><Bar><h3>Изменения файлов</h3><div style={{ margin: '5px 0', fontSize: 12 }}>Изменено файлов: {comparison.entries.length} {comparison.lineChanges && <span>· <span style={{ color: 'var(--success)' }}>+{comparison.lineChanges.added}</span> <span style={{ color: 'var(--danger)' }}>−{comparison.lineChanges.removed}</span> строк текста </span>}· <details style={{ display: 'inline' }}><summary>Подробности</summary><code>{comparison.from ?? 'Первичная синхронизация'} → {comparison.to}</code></details></div><small>Красным отмечены удаления, зелёным — добавления.</small></Bar>
+  const highlightDeadline = performance.now() + 40;
+  return <Panel aria-label="Просмотр изменений"><Bar><h3>Изменения файлов</h3><div style={{ margin: '5px 0', fontSize: 12 }}>Показано файлов: {visibleEntries.length} из {comparison.entries.length} {comparison.lineChanges && <span>· <span style={{ color: 'var(--success)' }}>+{comparison.lineChanges.added}</span> <span style={{ color: 'var(--danger)' }}>−{comparison.lineChanges.removed}</span> строк в точном сравнении </span>}· <details style={{ display: 'inline' }}><summary>Подробности</summary><code>{comparison.from ?? 'Первичная синхронизация'} → {comparison.to}</code></details></div><div style={{ display: 'flex', gap: '8px 16px', margin: '10px 0', flexWrap: 'wrap', fontSize: 12 }}>{options.map(option => <label key={option.bit} style={{ display: 'flex', alignItems: 'center', gap: 6 }}><input type="checkbox" checked={!!(filters & option.bit)} disabled={loading || busy} onChange={event => setFilters(previous => event.target.checked ? previous | option.bit : previous & ~option.bit)} />Не учитывать {option.label} · {comparison.entries.filter(entry => entry.ignoredBy?.includes(option.bit)).length}</label>)}</div><small>Скрыто файлов: {comparison.entries.length - visibleEntries.length}. Фильтры меняют только список, не пакет и применение. Пробелы внутри строк и комментарии учитываются.</small></Bar>
     {error && <Bar role="alert">{error}</Bar>}
-    <Workspace><Tree><input aria-label="Поиск файла в изменениях" placeholder="Найти файл…" value={query} onChange={event => setQuery(event.target.value)} />{tree(entries.slice(0, 1000))}{entries.length > 1000 && <p>Показаны первые 1000 файлов. Уточните поиск.</p>}</Tree><Code><Bar style={{ position: 'sticky', top: 0, zIndex: 1 }}><div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}><Icon name="file" /><span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>{selected || (comparison?.entries.length === 0 ? 'Изменений нет' : 'Выберите файл')}</span><Switch $active={!sideBySide} onClick={() => setSideBySide(false)}>В одном списке</Switch><Switch $active={sideBySide} onClick={() => setSideBySide(true)}>Рядом</Switch></div>{loading && <p>Загрузка…</p>}</Bar>{preview?.message ? <Bar>{preview.message}</Bar> : sideBySide ? <table className="split" aria-label="Сравнение рядом"><thead><tr><th colSpan={2}>До</th><th colSpan={2}>После</th></tr></thead><tbody>{paired(rows).map((row, index) => <tr key={index}><td style={{ background: row.left?.kind === '-' ? 'var(--removed)' : undefined }}>{row.left?.old}</td><td style={{ background: row.left?.kind === '-' ? 'var(--removed)' : undefined }}>{syntax(row.left?.text ?? '')}</td><td style={{ background: row.right?.kind === '+' ? 'var(--added)' : undefined }}>{row.right?.next}</td><td style={{ background: row.right?.kind === '+' ? 'var(--added)' : undefined }}>{syntax(row.right?.text ?? '')}</td></tr>)}</tbody></table> : <table aria-label="Построчное сравнение"><tbody>{rows.map((row, i) => <Line key={i} $kind={row.kind}><td>{row.old}</td><td>{row.next}</td><td>{row.kind}</td><td>{syntax(row.text || ' ')}</td></Line>)}</tbody></table>}</Code></Workspace>
+    <Workspace><Tree><input aria-label="Поиск файла в изменениях" placeholder="Найти файл…" value={query} onChange={event => setQuery(event.target.value)} />{tree(entries.slice(0, 1000))}{entries.length > 1000 && <p>Показаны первые 1000 файлов. Уточните поиск.</p>}</Tree><Code><Bar style={{ position: 'sticky', top: 0, zIndex: 1 }}><div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}><Icon name="file" /><span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>{selected || (visibleEntries.length === 0 ? filters && comparison.entries.length ? 'Все различия скрыты фильтром' : 'Изменений нет' : 'Выберите файл')}</span><Switch $active={!sideBySide} onClick={() => setSideBySide(false)}>В одном списке</Switch><Switch $active={sideBySide} onClick={() => setSideBySide(true)}>Рядом</Switch></div>{loading && <p>Загрузка…</p>}</Bar>{preview?.message ? <Bar>{preview.message}</Bar> : sideBySide ? <table className="split" aria-label="Сравнение рядом"><thead><tr><th colSpan={2}>До</th><th colSpan={2}>После</th></tr></thead><tbody>{paired(rows).map((row, index) => <tr key={index}><td style={{ background: !row.left ? 'repeating-linear-gradient(135deg, var(--raised) 0 4px, var(--line) 4px 5px)' : row.left.kind === '-' ? 'var(--removed)' : undefined }}>{row.left?.old}</td><td style={{ background: !row.left ? 'repeating-linear-gradient(135deg, var(--raised) 0 4px, var(--line) 4px 5px)' : row.left.kind === '-' ? 'var(--removed)' : undefined }}>{fragments(row.left?.text ?? '', row.right?.text, 'left', row.left?.kind === '-', highlightDeadline)}</td><td style={{ background: !row.right ? 'repeating-linear-gradient(135deg, var(--raised) 0 4px, var(--line) 4px 5px)' : row.right.kind === '+' ? 'var(--added)' : undefined }}>{row.right?.next}</td><td style={{ background: !row.right ? 'repeating-linear-gradient(135deg, var(--raised) 0 4px, var(--line) 4px 5px)' : row.right.kind === '+' ? 'var(--added)' : undefined }}>{fragments(row.right?.text ?? '', row.left?.text, 'right', row.right?.kind === '+', highlightDeadline)}</td></tr>)}</tbody></table> : <table aria-label="Построчное сравнение"><tbody>{rows.map((row, i) => <Line key={i} $kind={row.kind}><td>{row.old}</td><td>{row.next}</td><td>{row.kind}</td><td>{syntax(row.text || ' ')}</td></Line>)}</tbody></table>}</Code></Workspace>
   </Panel>;
 }
