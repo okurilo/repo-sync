@@ -20,7 +20,7 @@ interface ExportSession {
   tree: Tree; workingChanges: Analysis['workingChanges']; transport: Transport; findings: PrivateFinding[]; target: Baseline; maxBytes: number;
 }
 interface PreparedFile { path: string; before: Buffer | null; after: Buffer | null; beforeMode: number | null; afterMode: number }
-interface ImportSession { token: string; environment: Environment; profileId: string; target: string; transport: Transport; files: PreparedFile[]; baseline?: Baseline; updateCommon: boolean }
+interface ImportSession { token: string; environment: Environment; profileId: string; target: string; transport: Transport; records: RecordData[]; files: PreparedFile[]; baseline?: Baseline; updateCommon: boolean }
 interface BackupEntry { path: string; file: string | null; mode: number | null; beforeSha256: string | null; afterSha256: string | null; touched: boolean }
 interface Journal { target: string; entries: BackupEntry[]; createdDirectories: string[]; temporaryFiles: string[]; settingsBefore: Settings; committed: boolean }
 interface CodeSession { token: string; mask: boolean; from: string | null; to: string; entries: Analysis['entries']; before: Map<string, Buffer>; after: Map<string, Buffer> }
@@ -323,7 +323,7 @@ export class Engine {
     await this.saveBaseline(tree.bytes);
     return { state: transport.sourceState, files: tree.files, scope: transport.scope };
   }
-  async prepareIncoming(token: string): Promise<ImportPreview> {
+  async prepareIncoming(token: string, selectedPaths?: string[]): Promise<ImportPreview> {
     const session = this.session(token);
     if (session.environment !== 'global') throw new Error('Для применения нужно сравнение входящих изменений.');
     const { profile } = this.context(session.profileId);
@@ -335,14 +335,21 @@ export class Engine {
       const local = await resolveSource(profile.sources.internal!, 'internal', this.cache);
       if (local.commit !== session.transport.sourceState) throw new Error('Локальная ветка изменилась. Обновите сравнение перед применением.');
     }
-    return this.prepareTransport(session.transport, profile.sources.internal!.location, profile.id, session);
+    let records = session.transport.records;
+    if (selectedPaths !== undefined) {
+      const selected = new Set(selectedPaths);
+      const available = new Set(records.map(record => record.path));
+      if (!selected.size || selected.size !== selectedPaths.length || selectedPaths.length > records.length || selectedPaths.some(name => !available.has(name))) throw new Error('Список выбранных файлов устарел. Обновите сравнение.');
+      records = records.filter(record => selected.has(record.path));
+    }
+    return this.prepareTransport(session.transport, profile.sources.internal!.location, profile.id, session, records);
   }
   async preflight(filename: string, target: string, profileId: string): Promise<ImportPreview> {
     const { profile } = this.context(profileId);
     if (profile.role !== 'external') throw new Error('Для применения пакета выберите внешний репозиторий.');
     return this.prepareTransport(await loadTransport(filename), target, profileId);
   }
-  private async prepareTransport(transport: Transport, target: string, profileId: string, incoming?: ExportSession): Promise<ImportPreview> {
+  private async prepareTransport(transport: Transport, target: string, profileId: string, incoming?: ExportSession, selectedRecords: RecordData[] = transport.records): Promise<ImportPreview> {
     this.invalidate();
     const { profile } = this.context(profileId);
     if (profile.pending) throw new Error('Сначала подтвердите применение созданного пакета или отмените ожидание.');
@@ -356,15 +363,16 @@ export class Engine {
     const baseline = incoming ? incoming.sourceBaseline : await this.importBaseline(root, transport, profile);
     const before = incoming?.sourceBytes ?? (baseline ? await this.baselineContent(baseline) : new Map<string, Buffer>());
     if (baseline) await this.saveBaseline(before);
-    const files = await prepare(root, transport, baseline, before);
+    const files = await prepare(root, transport, baseline, before, selectedRecords);
     const canonical = materialize(transport, before);
     await this.saveBaseline(canonical);
     const token = randomUUID();
-    this.importSession = { token, profileId, environment: 'internal', target: root, transport, files, baseline, updateCommon: !incoming || incoming.incomingMode === 'repositories' || incoming.incomingMode === 'zero' };
+    const completeSelection = selectedRecords.length === transport.records.length;
+    this.importSession = { token, profileId, environment: 'internal', target: root, transport, records: selectedRecords, files, baseline, updateCommon: !incoming || (completeSelection && (incoming.incomingMode === 'repositories' || incoming.incomingMode === 'zero')) };
     const localBefore = new Map<string, Buffer>(); const localAfter = new Map<string, Buffer>();
     for (const file of files) { if (file.before) localBefore.set(file.path, file.before); if (file.after) localAfter.set(file.path, file.after); }
     const changedPaths = new Set(files.map(file => file.path));
-    const previewTransport = { ...transport, records: transport.records.filter(record => changedPaths.has(record.path)) };
+    const previewTransport = { ...transport, records: selectedRecords.filter(record => changedPaths.has(record.path)) };
     const entries = this.codeFor(token, previewTransport, localBefore, localAfter, false, new Map(files.filter(file => file.beforeMode !== null).map(file => [file.path, file.beforeMode!])));
     // For renames, the old name has a separate delete operation in the prepared set.
     return { incomingMode: incoming?.incomingMode, token, workingChanges: await workingStatus(root), packageId: transport.packageId, sourceState: transport.sourceState, targetState: transport.targetState,
@@ -378,7 +386,7 @@ export class Engine {
     const configured = profile.sources.internal;
     if (!configured || await realpath(configured.location) !== await realpath(session.target) || (await git(session.target, ['symbolic-ref', '--short', 'HEAD'])).toString().trim() !== configured.branch) throw new Error('Локальный репозиторий или ветка изменились. Запустите синхронизацию заново.');
     const baseline = session.baseline;
-    const files = await prepare(session.target, session.transport, baseline, baseline ? await this.baselineContent(baseline) : new Map());
+    const files = await prepare(session.target, session.transport, baseline, baseline ? await this.baselineContent(baseline) : new Map(), session.records);
     if (files.length !== session.files.length || files.some((file, i) => file.path !== session.files[i]?.path || !sameBuffer(file.before, session.files[i]?.before ?? null) || file.beforeMode !== session.files[i]?.beforeMode)) throw new Error('Локальные файлы изменились после просмотра. Запустите синхронизацию заново.');
     const directory = path.join(this.store.directory, 'backups', randomUUID());
     await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -581,7 +589,7 @@ function materialize(transport: Transport, before: Map<string, Buffer>): Map<str
   if (result.size !== transport.files.length || transport.files.some(file => { const bytes = result.get(file.path); return !bytes || bytes.length !== file.size || sha256(bytes) !== file.sha256; })) throw new Error('Состав файлов не соответствует результату пакета. Получите исходный пакет заново.');
   return result;
 }
-async function prepare(root: string, transport: Transport, baseline: Baseline | undefined, before: Map<string, Buffer>): Promise<PreparedFile[]> {
+async function prepare(root: string, transport: Transport, baseline: Baseline | undefined, before: Map<string, Buffer>, records: RecordData[] = transport.records): Promise<PreparedFile[]> {
   if (transport.packageType === 'diff' && (!baseline || baseline.state !== transport.sourceState || baseline.scope !== transport.scope)) throw new Error('Общее состояние не соответствует пакету. Проверьте порядок применения пакетов и выбранный профиль.');
   const canonical = materialize(transport, before);
   if (baseline) {
@@ -591,7 +599,7 @@ async function prepare(root: string, transport: Transport, baseline: Baseline | 
   }
   const inventory = new Map(baseline?.files.map(file => [file.path, file]) ?? []);
   const prepared: PreparedFile[] = [];
-  for (const record of transport.records) {
+  for (const record of records) {
     const name = record.oldPath ?? record.path; const filename = await safePath(root, name);
     const old = await optionalRead(filename); const mode = old === null ? null : (await lstat(filename)).mode & 0o777;
     const prior = inventory.get(name);
@@ -622,24 +630,10 @@ async function prepare(root: string, transport: Transport, baseline: Baseline | 
     }
     else if (old === null) conflict(`Исходного файла «${name}» нет во внутреннем репозитории, поэтому применить эту операцию невозможно.`);
     else if (record.operation === 'MODIFY') {
-      if (old.includes(0) || !Buffer.from(old.toString('utf8')).equals(old)) conflict('Локальный файл не является допустимым UTF-8 текстом, поэтому текстовый diff нельзя применить.');
-      // A local edit to mode can coexist with incoming text, but conflicting mode changes cannot.
-      if (!modeMatches && prior?.mode !== record.mode) conflict('Права на выполнение файла локально изменены и расходятся с правами в выбранном diff.');
-      if (prior?.mode === record.mode) afterMode = mode!;
-      const payload = decode(record).toString('utf8');
-      if (!contentMatches) {
-        const lines = old.toString('utf8').split('\n');
-        for (const hunk of parsePatch(payload).flatMap(patch => patch.hunks)) {
-          const expected = hunk.lines.filter(line => line.startsWith(' ') || line.startsWith('-')).map(line => line.slice(1));
-          let matches = 0;
-          if (!expected.length) conflict('В diff нет однозначного контекста для проверки локальной версии файла.');
-          for (let i = 0; i + expected.length <= lines.length; i++) if (expected.every((line, offset) => lines[i + offset] === line)) matches++;
-          if (matches !== 1) conflict(matches === 0 ? 'Локальный файл изменён в тех же строках, что и входящий diff.' : 'Контекст diff встречается в локальном файле несколько раз, поэтому место изменения неоднозначно.');
-        }
-      }
-      const next = applyPatch(old.toString('utf8'), payload, { fuzzFactor: 0, autoConvertLineEndings: false });
-      if (next === false) conflict('Git diff не совпал с локальными строками файла.');
-      else after = Buffer.from(next);
+      const target = canonical.get(record.path);
+      if (!target) return conflict('Не удалось прочитать входящую версию файла.');
+      after = target;
+      afterMode = record.mode;
     } else if (!contentMatches) conflict('Локальное содержимое отличается от исходного файла, на котором построен diff.');
     else if (!modeMatches) conflict('Права на выполнение файла отличаются от исходного состояния diff.');
     if (record.operation === 'RENAME') {
