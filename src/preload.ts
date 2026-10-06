@@ -8,7 +8,6 @@ async function call<T>(command: Command, args: unknown[] = []): Promise<T> {
 }
 const api: API = {
   settings: () => call('settings'),
-  setEnvironment: mode => call('setEnvironment', [mode]),
   saveProfile: profile => call('saveProfile', [profile]),
   deleteProfile: id => call('deleteProfile', [id]),
   chooseDirectory: () => call('chooseDirectory'),
@@ -17,7 +16,7 @@ const api: API = {
   refreshSource: source => call('refreshSource', [source]),
   listBranches: source => call('listBranches', [source]),
   listCommits: source => call('listCommits', [source]),
-  previewComparison: profile => call('previewComparison', [profile]),
+  previewComparison: (profile, direction) => call('previewComparison', [profile, direction]),
   previewCode: (token, name) => call('previewCode', [token, name]),
   analyze: (id, type) => call('analyze', [id, type]),
   exportPackage: (token, keep, override) => call('exportPackage', [token, keep, override]),
@@ -26,8 +25,9 @@ const api: API = {
   excludeFinding: (token, id) => call('excludeFinding', [token, id]),
   openFinding: (token, id) => call('openFinding', [token, id]),
   previewReplacement: (token, id) => call('previewReplacement', [token, id]),
-  redactFinding: (token, id) => call('redactFinding', [token, id]),
   applyReplacement: token => call('applyReplacement', [token]),
+  prepareIncoming: token => call('prepareIncoming', [token]),
+  openRepository: id => call('openRepository', [id]),
   preflight: (name, target, id) => call('preflight', [name, target, id]),
   applyImport: token => call('applyImport', [token]),
 };

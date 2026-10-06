@@ -1,54 +1,21 @@
-# Открытый transport v2
+# Transport v3
 
-Новый экспорт использует `protocolVersion: 2`, `schemaVersion: 2`. Тексты и unified diff записываются буквально в UTF-8, без Base64, Brotli, архивирования и шифрования. Бинарные файлы записываются рядом исходными bytes с исходным расширением: `<UUID>.binary<номер record>.<extension>`. Переносить нужно все `.md` и бинарные вложения; имена сохраняются. Import начинается с любой `.partNNN.md` и требует эту версию приложения на принимающей стороне.
+Новые exports содержат только UTF-8 `.md` части. Binary sidecars не создаются. protocolVersion/schemaVersion = 3; v1/v2 остаются read-only совместимостью. Для v2 импорт всё ещё требует его оригинальные sidecars.
 
-Каждая Markdown-часть начинается с `# RepoSync transport v2`, открытого форматированного JSON внешнего manifest и разделителя `\n\n---\n`. Manifest содержит версии, packageId, partNumber, totalParts, totalBytes, packageSha256 и partSha256. После разделителя находится буквальный фрагмент документа. SHA256 служит проверке целостности и ничего не скрывает. Части собираются по номеру; пропуск, дубликат, несовпадение manifest или checksum блокирует Import.
+## Представление
 
-Логический документ начинается с форматированного JSON прежнего inventory/records контракта с версиями 2, затем тем же разделителем. Текстовый record имеет encoding RAW, пустой payload в metadata и payloadBytes. Его содержание ниже metadata: `\n## <operation> <path>\n\n`, затем ровно payloadBytes исходного текста и один служебный LF. Разделители внутри текста не имеют специального значения: parser читает по длине. CRLF, BOM, отсутствие final newline, executable mode и Unicode сохраняются. При разбиении не разрывается UTF-8 символ; очень длинная строка может продолжаться в следующей части.
+Часть начинается с `# RepoSync transport v3`, далее JSON part manifest и delimiter `\n\n---\n`, затем literal UTF-8 fragment. Manifest содержит UUID, partNumber/totalParts, totalBytes, packageSha256 и partSha256. В компактном представлении JSON minified; в читаемом — отступы.
 
-Бинарный record имеет encoding FILE, payload с фиксированным именем вложения, payloadBytes и payloadSha256; текстового блока у него нет. Проверяются имя, размер, hash и regular-file тип; symlink запрещён. Бинарный файл не разбивается и должен укладываться в Maximum part size. Иначе нужно увеличить лимит или исключить файл. Каждый выходной файл ≤ указанного лимита; открытый документ плюс бинарные bytes ≤512 MiB. Неизменившиеся бинарные файлы в Diff не переносятся.
+Логический документ: JSON transport metadata с file inventory, operations и record descriptors, тот же delimiter и последовательность payload blocks. В descriptor payload пуст, encoding и payloadBytes задают точную длину UTF-8 representation. В читаемом варианте `readable: true`, перед каждым payload расположен заголовок `\n## OP path\n\n`, после — newline. Компактный вариант не добавляет заголовки или разделы между payload blocks. Length delimiting исключает влияние Markdown fences/разделителей внутри исходника.
 
-Внутри Main для совместимости с existing encode/decode API бинарные bytes могут временно представляться строкой Base64 в памяти. В файлах нового экспорта нет Base64 или сжатого payload. Reader v2 допускает только RAW/FILE, затем нормализует records для прежнего lossless Apply. Settings schema 3 не менялась.
+RAW хранит валидный UTF-8 без NUL. BASE64 хранит binary bytes. В compact Brotli quality 4 + Base64 выбирается, если короче RAW/BASE64. Readable использует RAW для текста и BASE64 для binary. Минификация касается только metadata; исходники не форматируются и не минифицируются.
 
-## Совместимость
+Документ фрагментируется по UTF-8 границам на `${uuid}.partNNN.md`; encoded binary может пересекать любые части. Размер каждого артефакта с manifest не превышает заданный лимит. Все части переносить вместе с исходными именами; можно выбрать любую из них.
 
-Старые пакеты v1 остаются доступными для импорта, включая Base64/Brotli; новые пакеты всегда записываются в v2. Старое приложение v1 не импортирует v2. Старые уже созданные пакеты не преобразуются автоматически: отмените pending и выполните Compare/экспорт заново, если нужен открытый формат.
+## Проверки
 
-## Архивное описание v1 (только импорт)
+Part SHA256 проверяется до сборки. UUID, protocol/schema, общий manifest и длина должны совпадать; дубли, пропуски и повреждения отклоняются. После сборки проверяются package SHA256 и record lengths. Paths проходят traversal, symlink, case collision и file/directory guards. Canonical результат проверяется относительно baseline и полного target inventory с hashes/sizes/modes. При направленном Apply независимые локальные изменения отдельно проверяются и сохраняются; результат canonical payload и local merged result различаются явно.
 
+512 MiB — предел логического документа и canonical восстановленного inventory; Brotli decode bounded, сумма decoded records ограничена. Не более 10 000 частей / 100 000 records. Maximum part size 1–512 MiB в UI. Snapshot — только ADD, sourceState null; Diff — операции от общей sourceState. RENAME не содержит payload и требует одинаковых before/after hashes. DELETE не содержит payload.
 
-Файл: `<packageId>.part001.md`; последующие части сохраняют UUID и numbering. Номер может иметь больше трёх цифр. Markdown состоит из заголовка `# RepoSync transport v1`, пустой строки и fenced `json` block, final LF.
-
-Outer manifest: `protocolVersion: 1`, UUID `packageId`, `packageType`, `sourceState`, `targetState`, `partNumber` (1-based), `totalParts`, `records` (count), `packageSha256`, `partSha256`, `totalBytes`, `fragment` (canonical BASE64).
-
-`fragment` декодируется в фрагмент UTF-8 bytes логического JSON; SHA256 проверяется отдельно для части и для конкатенации частей в numerical order. Metadata всех частей должна совпадать. Дубликаты или отсутствие parts блокируют import. Остальные части обнаруживаются в той же папке по UUID в имени; переименование всех частей не поддерживается.
-
-Logical JSON:
-
-```text
-protocolVersion: 1
-schemaVersion: 1
-packageId
-packageType: snapshot | diff
-sourceState: null (snapshot) | baseline state ID (diff)
-targetState: commit SHA | content:<inventory SHA256>
-scope: SHA256 rules fingerprint
-files: [{ path, sha256, size, mode }]
-records: [{ path, operation, size, mode, beforeSha256?, afterSha256?, oldPath?, encoding, payload }]
-```
-
-`size` — длина результирующего файла, не encoded payload; для DELETE — 0. `mode`: 420 (0644) или 493 (0755). SHA256 lowercase hex.
-
-| Operation | Payload | Before / after |
-| --- | --- | --- |
-| ADD | Полные bytes нового файла | after |
-| MODIFY | UTF-8 unified patch (`a/path`, `b/path`) | before + after |
-| REPLACE | Полные bytes бинарного файла | before + after |
-| DELETE | Пустая строка | before |
-| RENAME | Пустая строка, oldPath / path | одинаковые before + after |
-
-Snapshot содержит ADD для всех included files. Diff inventory описывает полное target included state и должен равняться baseline inventory после указанных операций. Paths операций и inventory не могут конфликтовать, включая case-insensitive aliases. OldPath разрешён только для RENAME.
-
-Encoding: `RAW` — JSON string с lossless UTF-8 bytes; `BASE64` — стандартная base64; `BROTLI_BASE64` — Brotli bytes в base64, quality 4 в прежнем экспорте. RAW используется только когда UTF-8 roundtrip совпадает с исходными bytes. Выбирается минимальная сериализация record encoding/payload. Ни formatter, ни line-ending normalizer не применяется.
-
-Max part MB — целые 1…512, единица фактически MiB (1 048 576 bytes). Каждый выходной `.md` целиком, включая metadata и fences, не превышает заданный размер. Логический JSON и restored inventory ≤512 MiB. Decode и сборка bounded. Protocol/schema других версий отклоняются; миграций до появления версии 2 нет.
+SHA256(original canonical bytes) = SHA256(restored canonical bytes). LF/CRLF/BOM/whitespace сохраняются. Transport не является шифрованием; `.md`, cache и backups конфиденциальны.

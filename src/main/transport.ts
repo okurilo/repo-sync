@@ -1,8 +1,8 @@
-import { brotliDecompressSync } from 'node:zlib';
+import { brotliCompressSync, brotliDecompressSync, constants } from 'node:zlib';
 import { randomUUID } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
-import type { Encoding, FileEntry, Operation, RecordData, Transport } from '../shared/types';
+import type { Encoding, FileEntry, Operation, RecordData, Transport, TransportMode } from '../shared/types';
 import { sha256, validatePath } from './infra/git';
 
 export const MAX_BYTES = 512 * 1024 * 1024;
@@ -15,7 +15,7 @@ interface Part {
   records: number; packageSha256: string; partSha256: string; totalBytes: number; fragment: string;
 }
 export function object(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Ожидался объект');
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Некорректная структура данных: ожидался объект.');
   return value as Record<string, unknown>;
 }
 export function string(value: unknown, limit = 8192): string {
@@ -28,12 +28,12 @@ export function integer(value: unknown, min: number, max: number): number {
 }
 function digest(value: unknown): string {
   const result = string(value, 64);
-  if (!/^[a-f0-9]{64}$/.test(result)) throw new Error('Некорректный SHA256');
+  if (!/^[a-f0-9]{64}$/.test(result)) throw new Error('Некорректная контрольная сумма SHA256.');
   return result;
 }
 function state(value: unknown): string {
   const result = string(value, 128);
-  if (!/^[a-zA-Z0-9:-]+$/.test(result)) throw new Error('Некорректный state');
+  if (!/^[a-zA-Z0-9:-]+$/.test(result)) throw new Error('Некорректный идентификатор состояния синхронизации.');
   return result;
 }
 function base64(value: string): Buffer {
@@ -52,16 +52,16 @@ export function decode(record: Pick<RecordData, 'encoding' | 'payload'>): Buffer
   if (record.encoding === 'RAW') return Buffer.from(record.payload, 'utf8');
   const bytes = base64(record.payload);
   if (record.encoding === 'BASE64') return bytes;
-  if (record.encoding !== 'BROTLI_BASE64') throw new Error('Неизвестный encoding');
+  if (record.encoding !== 'BROTLI_BASE64') throw new Error('Кодирование данных не поддерживается.');
   return brotliDecompressSync(bytes, { maxOutputLength: MAX_BYTES });
 }
 function parsePart(bytes: Buffer): Part {
   const text = bytes.toString('utf8');
-  if (!text.startsWith(HEADER) || !text.endsWith(FOOTER)) throw new Error('Неизвестный формат Markdown-пакета');
+  if (!text.startsWith(HEADER) || !text.endsWith(FOOTER)) throw new Error('Файл не похож на пакет RepoSync. Выберите исходную часть .md.');
   const raw = object(JSON.parse(text.slice(HEADER.length, -FOOTER.length)) as unknown);
-  if (raw.protocolVersion !== 1) throw new Error('Protocol version не поддерживается');
+  if (raw.protocolVersion !== 1) throw new Error('Версия пакета не поддерживается. Проверьте версию RepoSync.');
   const packageId = string(raw.packageId, 36);
-  if (!/^[0-9a-f-]{36}$/.test(packageId)) throw new Error('Некорректный packageId');
+  if (!/^[0-9a-f-]{36}$/.test(packageId)) throw new Error('Некорректный идентификатор пакета.');
   if (raw.packageType !== 'snapshot' && raw.packageType !== 'diff') throw new Error('Некорректный тип пакета');
   const part: Part = { protocolVersion: 1, packageId, packageType: raw.packageType,
     sourceState: raw.sourceState === null ? null : state(raw.sourceState), targetState: state(raw.targetState),
@@ -69,7 +69,7 @@ function parsePart(bytes: Buffer): Part {
     records: integer(raw.records, 0, 100_000), packageSha256: digest(raw.packageSha256), partSha256: digest(raw.partSha256),
     totalBytes: integer(raw.totalBytes, 1, MAX_BYTES), fragment: string(raw.fragment, MAX_BYTES * 2) };
   if (part.fragment.length > Math.ceil(part.totalBytes / 3) * 4) throw new Error('Фрагмент превышает заявленный размер пакета');
-  if (part.partNumber > part.totalParts || sha256(base64(part.fragment)) !== part.partSha256) throw new Error('Checksum части не совпадает');
+  if (part.partNumber > part.totalParts || sha256(base64(part.fragment)) !== part.partSha256) throw new Error('Часть пакета повреждена. Получите исходный файл заново.');
   return part;
 }
 export function parseFile(value: unknown): FileEntry {
@@ -77,14 +77,14 @@ export function parseFile(value: unknown): FileEntry {
   const name = string(raw.path);
   validatePath(name);
   const mode = integer(raw.mode, 0o644, 0o755);
-  if (mode !== 0o644 && mode !== 0o755) throw new Error('Некорректный file mode');
+  if (mode !== 0o644 && mode !== 0o755) throw new Error('Некорректные права доступа к файлу в пакете.');
   return { path: name, sha256: digest(raw.sha256), size: integer(raw.size, 0, MAX_BYTES), mode };
 }
 export function parseTransport(value: unknown): Transport {
   const raw = object(value);
-  if (!((raw.protocolVersion === 1 && raw.schemaVersion === 1) || (raw.protocolVersion === 2 && raw.schemaVersion === 2))) throw new Error('Версия transport не поддерживается');
-  if (raw.packageType !== 'snapshot' && raw.packageType !== 'diff') throw new Error('Неизвестный transport type');
-  if (!Array.isArray(raw.files) || !Array.isArray(raw.records) || raw.files.length > 100_000 || raw.records.length > 100_000) throw new Error('Некорректные records');
+  if (!((raw.protocolVersion === 1 && raw.schemaVersion === 1) || (raw.protocolVersion === 2 && raw.schemaVersion === 2) || (raw.protocolVersion === 3 && raw.schemaVersion === 3))) throw new Error('Версия пакета не поддерживается. Проверьте версию RepoSync.');
+  if (raw.packageType !== 'snapshot' && raw.packageType !== 'diff') throw new Error('Тип пакета не поддерживается.');
+  if (!Array.isArray(raw.files) || !Array.isArray(raw.records) || raw.files.length > 100_000 || raw.records.length > 100_000) throw new Error('Некорректный список файлов или изменений в пакете.');
   const files = raw.files.map(parseFile);
   const records = raw.records.map((value: unknown): RecordData => {
     const item = object(value);
@@ -93,7 +93,7 @@ export function parseTransport(value: unknown): Transport {
     const operation = string(item.operation) as Operation;
     if (!['ADD', 'MODIFY', 'DELETE', 'RENAME', 'REPLACE'].includes(operation)) throw new Error('Неизвестная операция');
     const encoding = string(item.encoding) as Encoding;
-    if (!['RAW', 'BASE64', 'BROTLI_BASE64'].includes(encoding)) throw new Error('Неизвестный encoding');
+    if (!['RAW', 'BASE64', 'BROTLI_BASE64'].includes(encoding)) throw new Error('Кодирование данных не поддерживается.');
     const record: RecordData = { path: name, operation, size: integer(item.size, 0, MAX_BYTES), mode: integer(item.mode, 0o644, 0o755), encoding,
       payload: string(item.payload, MAX_BYTES * 2) };
     if (item.oldPath !== undefined) { record.oldPath = string(item.oldPath); validatePath(record.oldPath); }
@@ -102,8 +102,8 @@ export function parseTransport(value: unknown): Transport {
     if ((operation !== 'ADD' && !record.beforeSha256) || (operation !== 'DELETE' && !record.afterSha256)
       || (operation !== 'RENAME' && record.oldPath !== undefined)
       || (operation === 'RENAME' && (!record.oldPath || record.oldPath === name || record.beforeSha256 !== record.afterSha256 || record.payload !== ''))
-      || (operation === 'DELETE' && record.payload !== '') || (operation === 'ADD' && record.beforeSha256)) throw new Error('Несогласованный manifest операции');
-    if (record.mode !== 0o644 && record.mode !== 0o755) throw new Error('Некорректный file mode');
+      || (operation === 'DELETE' && record.payload !== '') || (operation === 'ADD' && record.beforeSha256)) throw new Error('Описание изменения противоречит данным пакета.');
+    if (record.mode !== 0o644 && record.mode !== 0o755) throw new Error('Некорректные права доступа к файлу в пакете.');
     return record;
   });
   const seen = new Set<string>();
@@ -114,21 +114,21 @@ export function parseTransport(value: unknown): Transport {
   const filePaths = new Set<string>();
   let size = 0;
   for (const file of files) {
-    if (filePaths.has(file.path.toLowerCase()) || (file.mode !== 0o644 && file.mode !== 0o755)) throw new Error('Некорректный inventory');
+    if (filePaths.has(file.path.toLowerCase()) || (file.mode !== 0o644 && file.mode !== 0o755)) throw new Error('Некорректный состав файлов в пакете.');
     filePaths.add(file.path.toLowerCase()); size += file.size;
-    if (size > MAX_BYTES) throw new Error('Восстановленное состояние превышает 512 MB');
+    if (size > MAX_BYTES) throw new Error('Восстановленное состояние превышает 512 МБ');
   }
   for (const name of filePaths) {
     const segments = name.split('/');
     segments.pop();
     while (segments.length) { if (filePaths.has(segments.join('/'))) throw new Error('Конфликт файла и каталога'); segments.pop(); }
   }
-  if (raw.packageType === 'snapshot' && (records.length !== files.length || records.some(r => r.operation !== 'ADD'))) throw new Error('Некорректный Snapshot');
-  if ((raw.packageType === 'snapshot' && raw.sourceState !== null) || (raw.packageType === 'diff' && raw.sourceState === null)) throw new Error('Некорректный sourceState');
+  if (raw.packageType === 'snapshot' && (records.length !== files.length || records.some(r => r.operation !== 'ADD'))) throw new Error('Некорректный пакет первичной синхронизации.');
+  if ((raw.packageType === 'snapshot' && raw.sourceState !== null) || (raw.packageType === 'diff' && raw.sourceState === null)) throw new Error('Некорректное исходное состояние синхронизации.');
   const inventory = new Map(files.map(file => [file.path, file]));
   for (const record of records) {
     const file = inventory.get(record.path);
-    if (record.operation === 'DELETE' ? !!file : !file || file.sha256 !== record.afterSha256 || file.size !== record.size || file.mode !== record.mode) throw new Error('Операция не соответствует target inventory');
+    if (record.operation === 'DELETE' ? !!file : !file || file.sha256 !== record.afterSha256 || file.size !== record.size || file.mode !== record.mode) throw new Error('Изменение не соответствует описанному результату пакета.');
   }
   return { protocolVersion: raw.protocolVersion, schemaVersion: raw.schemaVersion, packageId: string(raw.packageId, 36), packageType: raw.packageType,
     sourceState: raw.sourceState === null ? null : state(raw.sourceState), targetState: state(raw.targetState),
@@ -136,6 +136,7 @@ export function parseTransport(value: unknown): Transport {
 }
 export async function loadTransport(filename: string): Promise<Transport> {
   const firstBytes = await limitedRead(filename);
+  if (firstBytes.subarray(0, TEXT_HEADER.length).equals(Buffer.from(TEXT_HEADER))) return loadOpenTransport(filename, firstBytes);
   if (firstBytes.subarray(0, OPEN_HEADER.length).equals(Buffer.from(OPEN_HEADER))) return loadOpenTransport(filename, firstBytes);
   const first = parsePart(firstBytes);
   const names = await readdir(path.dirname(filename));
@@ -149,26 +150,26 @@ export async function loadTransport(filename: string): Promise<Transport> {
     part = parsePart(await limitedRead(candidate));
     if (part.packageId !== first.packageId) continue;
     if (part.totalParts !== first.totalParts || part.packageSha256 !== first.packageSha256 || part.totalBytes !== first.totalBytes
-      || part.sourceState !== first.sourceState || part.targetState !== first.targetState || part.packageType !== first.packageType || part.records !== first.records) throw new Error('Manifest частей не совпадает');
-    if (parts.has(part.partNumber)) throw new Error('Дублирующая часть пакета');
+      || part.sourceState !== first.sourceState || part.targetState !== first.targetState || part.packageType !== first.packageType || part.records !== first.records) throw new Error('Выбраны части разных пакетов. Соберите все части одного пакета в отдельной папке.');
+    if (parts.has(part.partNumber)) throw new Error('Часть пакета повторяется. Проверьте набор файлов.');
     const bytes = base64(part.fragment);
     assembled += bytes.length;
     if (assembled > first.totalBytes) throw new Error('Превышен размер логического пакета');
     parts.set(part.partNumber, bytes);
   }
-  if (parts.size !== first.totalParts) throw new Error('Не все части пакета присутствуют. Сохраните исходные имена частей.');
+  if (parts.size !== first.totalParts) throw new Error('Не найдены все части пакета. Соберите их в одной папке и сохраните исходные имена.');
   const result = Buffer.concat(Array.from({ length: first.totalParts }, (_, i) => parts.get(i + 1)!));
-  if (result.length !== first.totalBytes || sha256(result) !== first.packageSha256) throw new Error('Integrity логического пакета нарушена');
+  if (result.length !== first.totalBytes || sha256(result) !== first.packageSha256) throw new Error('Пакет не прошёл проверку целостности. Получите все исходные части заново.');
   const transport = parseTransport(JSON.parse(result.toString('utf8')) as unknown);
   if (transport.packageId !== first.packageId || transport.sourceState !== first.sourceState || transport.targetState !== first.targetState
-    || transport.packageType !== first.packageType || transport.records.length !== first.records) throw new Error('Transport не соответствует внешнему manifest');
+    || transport.packageType !== first.packageType || transport.records.length !== first.records) throw new Error('Описание пакета не соответствует его содержимому.');
   return transport;
 }
 async function limitedRead(filename: string, expectedSize?: number): Promise<Buffer> {
   const { lstat } = await import('node:fs/promises');
   const info = await lstat(filename);
   if (!info.isFile() || info.isSymbolicLink() || (expectedSize !== undefined && info.size !== expectedSize)) throw new Error('Файл пакета отсутствует, заменён или имеет неверный размер');
-  if (info.size > MAX_BYTES) throw new Error('Размер части превышает защитный лимит');
+  if (info.size > MAX_BYTES) throw new Error('Размер части превышает допустимый лимит. Проверьте выбранный файл.');
   return readFile(filename);
 }
 export const newPackageId = (): string => randomUUID();
@@ -178,52 +179,55 @@ const OPEN_HEADER = '# RepoSync transport v2\n\n';
 const OPEN_BODY = '\n\n---\n';
 interface Artifact { name: string; bytes: Buffer }
 const binaryName = (id: string, index: number, name: string): string => `${id}.binary${String(index + 1).padStart(3, '0')}${path.posix.extname(name)}`;
-function openDocument(transport: Transport): { bytes: Buffer; binaries: Artifact[] } {
-  const binaries: Artifact[] = []; const bodies: Buffer[] = [];
-  const records = transport.records.map((record, index) => {
-    const bytes = decode(record); const text = bytes.toString('utf8');
-    if (Buffer.from(text).equals(bytes) && !bytes.includes(0)) {
-      bodies.push(Buffer.from(`\n## ${record.operation} ${record.path}\n\n`), bytes, Buffer.from('\n'));
-      return { ...record, encoding: 'RAW', payload: '', payloadBytes: bytes.length };
+const TEXT_HEADER = '# RepoSync transport v3\n\n';
+function textDocument(transport: Transport, mode: TransportMode): Buffer {
+  const bodies: Buffer[] = [];
+  const records = transport.records.map(record => {
+    const bytes = decode(record); let encoded = encode(bytes);
+    if (mode === 'compact' && bytes.length) {
+      const compressed = brotliCompressSync(bytes, { params: { [constants.BROTLI_PARAM_QUALITY]: 4 } }).toString('base64');
+      const rawLength = Buffer.byteLength(encoded.payload);
+      if (compressed.length + 'BROTLI_BASE64'.length + String(compressed.length).length < rawLength + encoded.encoding.length + String(rawLength).length) encoded = { encoding: 'BROTLI_BASE64', payload: compressed };
     }
-    const name = binaryName(transport.packageId, index, record.path); binaries.push({ name, bytes });
-    return { ...record, encoding: 'FILE', payload: name, payloadBytes: bytes.length, payloadSha256: sha256(bytes) };
+    const payload = Buffer.from(encoded.payload);
+    if (mode === 'readable') bodies.push(Buffer.from(`\n## ${record.operation} ${record.path}\n\n`));
+    bodies.push(payload);
+    if (mode === 'readable') bodies.push(Buffer.from('\n'));
+    return { ...record, ...encoded, payload: '', payloadBytes: payload.length };
   });
-  const metadata = { ...transport, protocolVersion: 2, schemaVersion: 2, records };
-  return { bytes: Buffer.concat([Buffer.from(JSON.stringify(metadata, null, 2) + OPEN_BODY), ...bodies]), binaries };
+  const metadata = { ...transport, protocolVersion: 3, schemaVersion: 3, readable: mode === 'readable', records };
+  return Buffer.concat([Buffer.from(JSON.stringify(metadata, null, mode === 'readable' ? 2 : undefined) + OPEN_BODY), ...bodies]);
 }
-export function exportArtifacts(transport: Transport, maxBytes: number): Artifact[] {
+export function exportArtifacts(transport: Transport, maxBytes: number, mode: TransportMode = 'compact'): Artifact[] {
   integer(maxBytes, 4096, MAX_BYTES);
-  const document = openDocument(transport);
-  if (document.bytes.length + document.binaries.reduce((sum, file) => sum + file.bytes.length, 0) > MAX_BYTES) throw new Error('Открытый пакет превышает 512 MB');
-  if (document.binaries.some(file => file.bytes.length > maxBytes)) throw new Error('Бинарный файл больше лимита части: увеличьте Maximum part size или исключите файл');
-  const template = { protocolVersion: 2, schemaVersion: 2, packageId: transport.packageId, partNumber: MAX_PARTS, totalParts: MAX_PARTS, totalBytes: document.bytes.length, packageSha256: sha256(document.bytes), partSha256: sha256(document.bytes) };
-  const prefix = (metadata: typeof template): Buffer => Buffer.from(OPEN_HEADER + JSON.stringify(metadata, null, 2) + OPEN_BODY);
+  const document = textDocument(transport, mode);
+  if (document.length > MAX_BYTES) throw new Error('Пакет превышает 512 МБ');
+  const template = { protocolVersion: 3, schemaVersion: 3, packageId: transport.packageId, partNumber: MAX_PARTS, totalParts: MAX_PARTS, totalBytes: document.length, packageSha256: sha256(document), partSha256: sha256(document) };
+  const prefix = (metadata: typeof template): Buffer => Buffer.from(TEXT_HEADER + JSON.stringify(metadata, null, mode === 'readable' ? 2 : undefined) + OPEN_BODY);
   const capacity = maxBytes - prefix(template).length;
-  if (capacity < 4) throw new Error('Лимит слишком мал для manifest');
+  if (capacity < 4) throw new Error('Размер части слишком мал для описания пакета. Увеличьте его в настройках.');
   const fragments: Buffer[] = []; let offset = 0;
-  while (offset < document.bytes.length) {
-    let end = Math.min(offset + capacity, document.bytes.length);
-    while (end < document.bytes.length && (document.bytes[end]! & 0xc0) === 0x80) end--;
-    // Prefer complete lines, but allow a long line to span parts without changing bytes.
-    if (end < document.bytes.length) { const newline = document.bytes.lastIndexOf(10, end - 1); if (newline > offset + capacity / 2) end = newline + 1; }
-    fragments.push(document.bytes.subarray(offset, end)); offset = end;
-    if (fragments.length > MAX_PARTS) throw new Error('Слишком много частей: увеличьте размер');
+  while (offset < document.length) {
+    let end = Math.min(offset + capacity, document.length);
+    while (end < document.length && (document[end]! & 0xc0) === 0x80) end--;
+    fragments.push(document.subarray(offset, end)); offset = end;
+    if (fragments.length > MAX_PARTS) throw new Error('Пакет содержит слишком много частей. Увеличьте размер части в настройках.');
   }
-  return [...fragments.map((fragment, index) => ({ name: `${transport.packageId}.part${String(index + 1).padStart(3, '0')}.md`, bytes: Buffer.concat([prefix({ ...template, partNumber: index + 1, totalParts: fragments.length, partSha256: sha256(fragment) }), fragment]) })), ...document.binaries];
+  return fragments.map((fragment, index) => ({ name: `${transport.packageId}.part${String(index + 1).padStart(3, '0')}.md`, bytes: Buffer.concat([prefix({ ...template, partNumber: index + 1, totalParts: fragments.length, partSha256: sha256(fragment) }), fragment]) }));
 }
-export function splitTransport(transport: Transport, maxBytes: number): Buffer[] { return exportArtifacts(transport, maxBytes).map(file => file.bytes); }
+export function splitTransport(transport: Transport, maxBytes: number, mode: TransportMode = 'compact'): Buffer[] { return exportArtifacts(transport, maxBytes, mode).map(file => file.bytes); }
 function openPart(bytes: Buffer): { metadata: Record<string, unknown>; body: Buffer } {
-  if (!bytes.subarray(0, OPEN_HEADER.length).equals(Buffer.from(OPEN_HEADER))) throw new Error('Неизвестный формат открытого пакета');
-  const boundary = bytes.indexOf(OPEN_BODY, OPEN_HEADER.length);
-  if (boundary < 0) throw new Error('Manifest отсутствует');
-  const metadata = object(JSON.parse(bytes.subarray(OPEN_HEADER.length, boundary).toString('utf8')) as unknown);
-  if (metadata.protocolVersion !== 2 || metadata.schemaVersion !== 2) throw new Error('Версия открытого пакета не поддерживается');
+  const header = bytes.subarray(0, TEXT_HEADER.length).equals(Buffer.from(TEXT_HEADER)) ? TEXT_HEADER : OPEN_HEADER;
+  if (!bytes.subarray(0, header.length).equals(Buffer.from(header))) throw new Error('Файл не похож на пакет RepoSync. Выберите исходную часть .md.');
+  const boundary = bytes.indexOf(OPEN_BODY, header.length);
+  if (boundary < 0) throw new Error('В пакете отсутствует описание содержимого.');
+  const metadata = object(JSON.parse(bytes.subarray(header.length, boundary).toString('utf8')) as unknown);
+  if (metadata.protocolVersion !== (header === TEXT_HEADER ? 3 : 2) || metadata.schemaVersion !== metadata.protocolVersion) throw new Error('Версия пакета не поддерживается. Проверьте версию RepoSync.');
   const body = bytes.subarray(boundary + Buffer.byteLength(OPEN_BODY));
   integer(metadata.partNumber, 1, MAX_PARTS); integer(metadata.totalParts, 1, MAX_PARTS); integer(metadata.totalBytes, 1, MAX_BYTES);
-  if (Number(metadata.partNumber) > Number(metadata.totalParts) || sha256(body) !== digest(metadata.partSha256)) throw new Error('Checksum части не совпадает');
+  if (Number(metadata.partNumber) > Number(metadata.totalParts) || sha256(body) !== digest(metadata.partSha256)) throw new Error('Часть пакета повреждена. Получите исходный файл заново.');
   digest(metadata.packageSha256);
-  if (!/^[0-9a-f-]{36}$/.test(string(metadata.packageId, 36))) throw new Error('Некорректный packageId');
+  if (!/^[0-9a-f-]{36}$/.test(string(metadata.packageId, 36))) throw new Error('Некорректный идентификатор пакета.');
   return { metadata, body };
 }
 async function loadOpenTransport(filename: string, bytes: Buffer): Promise<Transport> {
@@ -232,16 +236,35 @@ async function loadOpenTransport(filename: string, bytes: Buffer): Promise<Trans
     const candidate = path.join(path.dirname(filename), name);
     if (candidate !== filename && (!name.startsWith(`${id}.part`) || !name.endsWith('.md'))) continue;
     const part = openPart(candidate === filename ? bytes : await limitedRead(candidate));
-    for (const key of ['packageId', 'totalParts', 'totalBytes', 'packageSha256']) if (part.metadata[key] !== first.metadata[key]) throw new Error('Manifest частей не совпадает');
-    const number = Number(part.metadata.partNumber); if (parts.has(number)) throw new Error('Дублирующая часть');
+    for (const key of ['protocolVersion', 'schemaVersion', 'packageId', 'totalParts', 'totalBytes', 'packageSha256']) if (part.metadata[key] !== first.metadata[key]) throw new Error('Выбраны части разных пакетов. Соберите все части одного пакета в отдельной папке.');
+    const number = Number(part.metadata.partNumber); if (parts.has(number)) throw new Error('Часть пакета повторяется. Проверьте набор файлов.');
     assembled += part.body.length; if (assembled > Number(first.metadata.totalBytes)) throw new Error('Превышен размер пакета'); parts.set(number, part.body);
   }
-  if (parts.size !== Number(first.metadata.totalParts)) throw new Error('Не все части пакета присутствуют');
+  if (parts.size !== Number(first.metadata.totalParts)) throw new Error('Не найдены все части пакета. Соберите их в одной папке и сохраните исходные имена.');
   const document = Buffer.concat(Array.from({ length: parts.size }, (_, index) => parts.get(index + 1)!));
-  if (document.length !== Number(first.metadata.totalBytes) || sha256(document) !== first.metadata.packageSha256) throw new Error('Integrity пакета нарушена');
-  const boundary = document.indexOf(OPEN_BODY); if (boundary < 0) throw new Error('Manifest отсутствует');
+  if (document.length !== Number(first.metadata.totalBytes) || sha256(document) !== first.metadata.packageSha256) throw new Error('Пакет не прошёл проверку целостности. Получите все исходные части заново.');
+  const boundary = document.indexOf(OPEN_BODY); if (boundary < 0) throw new Error('В пакете отсутствует описание содержимого.');
   const raw = object(JSON.parse(document.subarray(0, boundary).toString('utf8')) as unknown);
-  if (raw.protocolVersion !== 2 || raw.schemaVersion !== 2 || raw.packageId !== id || !Array.isArray(raw.records) || raw.records.length > 100_000) throw new Error('Некорректный открытый transport');
+  if (raw.protocolVersion !== first.metadata.protocolVersion || raw.schemaVersion !== first.metadata.schemaVersion || raw.packageId !== id || !Array.isArray(raw.records) || raw.records.length > 100_000) throw new Error('Описание пакета повреждено или не соответствует его частям.');
+  if (raw.protocolVersion === 3) {
+    if (typeof raw.readable !== 'boolean') throw new Error('Некорректное представление пакета');
+    let offset = boundary + Buffer.byteLength(OPEN_BODY);
+    const records: RecordData[] = [];
+    for (const value of raw.records) {
+      const record = object(value); const size = integer(record.payloadBytes, 0, MAX_BYTES);
+      if (raw.readable) {
+        const header = Buffer.from(`\n## ${string(record.operation)} ${string(record.path)}\n\n`);
+        if (!document.subarray(offset, offset + header.length).equals(header)) throw new Error('Заголовок данных не соответствует описанию пакета.'); offset += header.length;
+      }
+      const bytes = document.subarray(offset, offset + size); offset += size;
+      if (bytes.length !== size || (raw.readable && document[offset++] !== 10)) throw new Error('Размер данных не соответствует описанию пакета.');
+      const payload = bytes.toString('utf8');
+      if (!Buffer.from(payload).equals(bytes)) throw new Error('Текст пакета повреждён: неверная кодировка UTF-8.');
+      records.push({ ...record, payload } as unknown as RecordData);
+    }
+    if (offset !== document.length) throw new Error('Пакет содержит лишние данные.');
+    return parseTransport({ ...raw, records });
+  }
   let offset = boundary + Buffer.byteLength(OPEN_BODY); let binaryBytes = 0;
   const records: RecordData[] = [];
   for (let index = 0; index < raw.records.length; index++) {
@@ -249,21 +272,21 @@ async function loadOpenTransport(filename: string, bytes: Buffer): Promise<Trans
     const size = integer(record.payloadBytes, 0, MAX_BYTES); let payload: string; let encoding: Encoding;
     if (record.encoding === 'RAW') {
       const header = Buffer.from(`\n## ${string(record.operation)} ${name}\n\n`);
-      if (!document.subarray(offset, offset + header.length).equals(header)) throw new Error('Заголовок payload не совпадает'); offset += header.length;
+      if (!document.subarray(offset, offset + header.length).equals(header)) throw new Error('Заголовок данных не соответствует описанию пакета.'); offset += header.length;
       const content = document.subarray(offset, offset + size); offset += size;
-      if (content.length !== size || document[offset++] !== 10) throw new Error('Размер payload не совпадает');
-      payload = content.toString('utf8'); if (!Buffer.from(payload).equals(content) || content.includes(0)) throw new Error('Некорректный текстовый payload'); encoding = 'RAW';
+      if (content.length !== size || document[offset++] !== 10) throw new Error('Размер данных не соответствует описанию пакета.');
+      payload = content.toString('utf8'); if (!Buffer.from(payload).equals(content) || content.includes(0)) throw new Error('Текстовые данные пакета повреждены.'); encoding = 'RAW';
     } else if (record.encoding === 'FILE') {
       const attachment = binaryName(id, index, name);
       if (record.payload !== attachment) throw new Error('Некорректный путь бинарного файла');
-      binaryBytes += size; if (binaryBytes + document.length > MAX_BYTES) throw new Error('Пакет превышает 512 MB');
+      binaryBytes += size; if (binaryBytes + document.length > MAX_BYTES) throw new Error('Пакет превышает 512 МБ');
       const content = await limitedRead(path.join(path.dirname(filename), attachment), size);
-      if (content.length !== size || sha256(content) !== digest(record.payloadSha256)) throw new Error('Бинарный файл повреждён или отсутствует');
+      if (content.length !== size || sha256(content) !== digest(record.payloadSha256)) throw new Error('Бинарное вложение повреждено или отсутствует. Получите его заново вместе с пакетом.');
       // Internal representation only; exported attachment retains original bytes.
       payload = content.toString('base64'); encoding = 'BASE64';
-    } else throw new Error('В v2 разрешены только RAW и FILE');
+    } else throw new Error('В пакете v2 допустимы только кодирования RAW и FILE.');
     records.push({ ...record, encoding, payload } as unknown as RecordData);
   }
-  if (offset !== document.length) throw new Error('Лишние bytes в открытом пакете');
+  if (offset !== document.length) throw new Error('Пакет содержит лишние данные.');
   return parseTransport({ ...raw, records });
 }

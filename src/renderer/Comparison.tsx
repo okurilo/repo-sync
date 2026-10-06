@@ -1,10 +1,10 @@
 import { Icon, reveal } from './Appearance';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { diffLines } from 'diff';
-import styled from 'styled-components';
-import type { CodeComparison, CodePreview, Profile } from '../shared/types';
+import styled, { css } from 'styled-components';
+import type { CodeComparison, CodePreview } from '../shared/types';
 
-const Panel = styled('section')({ animation: `${reveal} 200ms ease-out`, minWidth: 0, display: 'flex', flexDirection: 'column', height: 'min(65vh, calc(100dvh - 220px))', border: '1px solid var(--line)', borderRadius: 10, overflow: 'hidden' });
+const Panel = styled('section')({ minWidth: 0, display: 'flex', flexDirection: 'column', height: 'max(260px, calc(100dvh - 430px))', border: '1px solid var(--line)', borderRadius: 10, overflow: 'hidden' }, css`animation: ${reveal} 180ms ease-out;`);
 const Bar = styled('div')({ padding: '12px 14px', borderBottom: '1px solid var(--line)', flexShrink: 0, '& p': { margin: '5px 0', fontSize: 12 }, '& h3': { margin: 0 }, background: 'var(--raised)' });
 const Workspace = styled('div')({ display: 'grid', gridTemplateColumns: 'auto minmax(0, 1fr)', flex: 1, minHeight: 0, '@media (max-width: 700px)': { gridTemplateColumns: 'minmax(0, 1fr)' } });
 const Tree = styled('nav')({ overflow: 'auto', width: 210, minWidth: 130, maxWidth: 380, resize: 'horizontal', '@media(max-width: 700px)': { width: '100%', maxWidth: 'none', maxHeight: 180, resize: 'none' }, borderRight: '1px solid var(--line)', padding: 10, fontSize: 12, '& summary': { padding: '5px 0', whiteSpace: 'nowrap' }, '& details > div': { paddingLeft: 12 } });
@@ -14,7 +14,7 @@ const Code = styled('div')({ overflow: 'auto', minWidth: 0, background: 'var(--i
 const Line = styled('tr')<{ $kind: string }>(({ $kind }) => ({ background: $kind === '+' ? 'var(--added)' : $kind === '-' ? 'var(--removed)' : 'transparent', '& td:not(:last-child)': { color: 'var(--muted)', textAlign: 'right', userSelect: 'none' } }));
 function lines(preview: CodePreview): { old: number | string; next: number | string; kind: string; text: string }[] {
   const changes = diffLines(preview.before, preview.after, { timeout: 1000 });
-  if (!changes) return [{ old: '', next: '', kind: '', text: 'Diff слишком сложный для предпросмотра.' }];
+  if (!changes) return [{ old: '', next: '', kind: '', text: 'Не удалось показать различия: сравнение слишком сложное.' }];
   const rows: ReturnType<typeof lines> = []; let old = 1; let next = 1;
   for (const change of changes) {
     const text = change.value.split('\n'); if (text.at(-1) === '') text.pop();
@@ -42,38 +42,29 @@ function paired(rows: ReturnType<typeof lines>): { left?: ReturnType<typeof line
   }
   return result;
 }
-export function Comparison({ profile, revision, status, busy, onBusy, request }: { profile: Profile; revision: number; status: string; busy: boolean; onBusy: (value: boolean) => void; request?: React.MutableRefObject<Promise<void> | null> }): React.JSX.Element {
-  const localRequest = useRef<Promise<void> | null>(null);
-  const pending = request ?? localRequest;
+export function Comparison({ comparison, busy, onBusy, request }: { comparison: CodeComparison; busy: boolean; onBusy: (value: boolean) => void; request: React.MutableRefObject<Promise<void> | null> }): React.JSX.Element {
+  const pending = request;
   const generation = useRef(0);
   const [sideBySide, setSideBySide] = useState(false);
-  const [comparison, setComparison] = useState<CodeComparison | null>(null);
   const [preview, setPreview] = useState<CodePreview | null>(null);
   const [selected, setSelected] = useState(''); const [error, setError] = useState('');
   const [loading, setLoading] = useState(false); const [query, setQuery] = useState('');
-  const key = JSON.stringify({ sources: profile.sources, exclusions: profile.exclusions, includeIgnored: profile.includeIgnored });
   useEffect(() => {
-    generation.current++;
-    let active = true; setComparison(null); setPreview(null); setSelected(''); setError('');
-    if (busy || !Object.values(profile.sources).some(source => source?.location)) return;
-    if (Object.values(profile.sources).some(source => [source?.commit, source?.base?.commit].some(commit => commit && !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(commit)))) return;
-    const timer = setTimeout(() => {
-      const previous = pending.current;
-      const task = (async (): Promise<void> => {
-        await previous;
-        if (!active) return;
-        setLoading(true); onBusy(true);
-        await window.reposync.previewComparison(profile).then(async value => {
-        if (!active) return; setComparison(value);
-        const first = value.entries[0];
-        if (first) { setSelected(first.path); const code = await window.reposync.previewCode(value.token, first.path); if (active) setPreview(code); }
-      }).catch((cause: unknown) => { if (active) setError(cause instanceof Error ? cause.message : 'Не удалось загрузить сравнение'); })
-        .finally(() => { onBusy(false); if (active) setLoading(false); });
-      })();
-      pending.current = task;
-    }, 150);
-    return () => { active = false; clearTimeout(timer); };
-  }, [key, revision, busy, onBusy, pending]);
+    const current = ++generation.current; let active = true;
+    setPreview(null); setError(''); setSelected(comparison.entries[0]?.path ?? '');
+    const first = comparison.entries[0];
+    if (!first) return;
+    onBusy(true); setLoading(true);
+    const previous = pending.current;
+    const task = (async (): Promise<void> => {
+      await previous;
+      if (!active) return;
+      try { const result = await window.reposync.previewCode(comparison.token, first.path); if (active && generation.current === current) setPreview(result); }
+      catch (cause) { if (active) setError(cause instanceof Error ? cause.message : 'Ошибка предпросмотра'); }
+      finally { if (active) setLoading(false); onBusy(false); }
+    })(); pending.current = task;
+    return () => { active = false; onBusy(false); };
+  }, [comparison.token, onBusy, pending]);
   async function open(name: string): Promise<void> {
     if (!comparison || loading) return; setSelected(name); setPreview(null); setError(''); setLoading(true); onBusy(true);
     const current = generation.current;
@@ -93,8 +84,8 @@ export function Comparison({ profile, revision, status, busy, onBusy, request }:
     return [...[...folders].map(([folder, nested]) => <details key={folder} open><summary>{folder}/</summary><div>{tree(nested, `${prefix}${folder}/`)}</div></details>), ...files.map(entry => <File key={entry.path} $selected={entry.path === selected} disabled={loading || busy} title={entry.oldPath ? `${entry.oldPath} → ${entry.path}` : entry.path} onClick={() => void open(entry.path)}>{entry.operation === 'ADD' ? '+' : entry.operation === 'DELETE' ? '−' : '~'} {entry.path.slice(prefix.length)}</File>)];
   }
   const rows = useMemo(() => preview && !preview.message ? lines(preview) : [], [preview]);
-  return <Panel aria-label="Предпросмотр сравнения"><Bar><h3>Изменения файлов</h3><p>{comparison ? `${comparison.from?.slice(0, 12) ?? 'Пустое состояние (Snapshot)'} → ${comparison.to.slice(0, 12)} · ${comparison.entries.length} файлов` : 'Выберите репозиторий и коммиты'}</p>{status && <p role="status">{status}</p>}<small>Красный — удалено, зелёный — добавлено. Чувствительные значения маскируются только в просмотре.</small></Bar>
+  return <Panel aria-label="Просмотр изменений"><Bar><h3>Изменения файлов</h3><div style={{ margin: '5px 0', fontSize: 12 }}>Изменено файлов: {comparison.entries.length} {comparison.lineChanges && <span>· <span style={{ color: 'var(--success)' }}>+{comparison.lineChanges.added}</span> <span style={{ color: 'var(--danger)' }}>−{comparison.lineChanges.removed}</span> строк текста </span>}· <details style={{ display: 'inline' }}><summary>Подробности</summary><code>{comparison.from ?? 'Первичная синхронизация'} → {comparison.to}</code></details></div><small>Красным отмечены удаления, зелёным — добавления. Найденные чувствительные значения скрыты только в просмотре.</small></Bar>
     {error && <Bar role="alert">{error}</Bar>}
-    <Workspace><Tree><input aria-label="Поиск файла в diff" placeholder="Найти файл…" value={query} onChange={event => setQuery(event.target.value)} />{tree(entries.slice(0, 1000))}{entries.length > 1000 && <p>Первые 1000 файлов. Уточните поиск.</p>}</Tree><Code><Bar style={{ position: 'sticky', top: 0, zIndex: 1 }}><div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}><Icon name="file" /><span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>{selected || (comparison?.entries.length === 0 ? 'Изменений нет' : 'Выберите файл')}</span><Switch $active={!sideBySide} onClick={() => setSideBySide(false)}>Единый</Switch><Switch $active={sideBySide} onClick={() => setSideBySide(true)}>Рядом</Switch></div>{loading && <p>Загрузка…</p>}</Bar>{preview?.message ? <Bar>{preview.message}</Bar> : sideBySide ? <table className="split" aria-label="Сравнение рядом"><thead><tr><th colSpan={2}>Исходное</th><th colSpan={2}>Целевое</th></tr></thead><tbody>{paired(rows).map((row, index) => <tr key={index}><td style={{ background: row.left?.kind === '-' ? 'var(--removed)' : undefined }}>{row.left?.old}</td><td style={{ background: row.left?.kind === '-' ? 'var(--removed)' : undefined }}>{syntax(row.left?.text ?? '')}</td><td style={{ background: row.right?.kind === '+' ? 'var(--added)' : undefined }}>{row.right?.next}</td><td style={{ background: row.right?.kind === '+' ? 'var(--added)' : undefined }}>{syntax(row.right?.text ?? '')}</td></tr>)}</tbody></table> : <table aria-label="Построчный diff"><tbody>{rows.map((row, i) => <Line key={i} $kind={row.kind}><td>{row.old}</td><td>{row.next}</td><td>{row.kind}</td><td>{syntax(row.text || ' ')}</td></Line>)}</tbody></table>}</Code></Workspace>
+    <Workspace><Tree><input aria-label="Поиск файла в изменениях" placeholder="Найти файл…" value={query} onChange={event => setQuery(event.target.value)} />{tree(entries.slice(0, 1000))}{entries.length > 1000 && <p>Показаны первые 1000 файлов. Уточните поиск.</p>}</Tree><Code><Bar style={{ position: 'sticky', top: 0, zIndex: 1 }}><div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}><Icon name="file" /><span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>{selected || (comparison?.entries.length === 0 ? 'Изменений нет' : 'Выберите файл')}</span><Switch $active={!sideBySide} onClick={() => setSideBySide(false)}>В одном списке</Switch><Switch $active={sideBySide} onClick={() => setSideBySide(true)}>Рядом</Switch></div>{loading && <p>Загрузка…</p>}</Bar>{preview?.message ? <Bar>{preview.message}</Bar> : sideBySide ? <table className="split" aria-label="Сравнение рядом"><thead><tr><th colSpan={2}>До</th><th colSpan={2}>После</th></tr></thead><tbody>{paired(rows).map((row, index) => <tr key={index}><td style={{ background: row.left?.kind === '-' ? 'var(--removed)' : undefined }}>{row.left?.old}</td><td style={{ background: row.left?.kind === '-' ? 'var(--removed)' : undefined }}>{syntax(row.left?.text ?? '')}</td><td style={{ background: row.right?.kind === '+' ? 'var(--added)' : undefined }}>{row.right?.next}</td><td style={{ background: row.right?.kind === '+' ? 'var(--added)' : undefined }}>{syntax(row.right?.text ?? '')}</td></tr>)}</tbody></table> : <table aria-label="Построчное сравнение"><tbody>{rows.map((row, i) => <Line key={i} $kind={row.kind}><td>{row.old}</td><td>{row.next}</td><td>{row.kind}</td><td>{syntax(row.text || ' ')}</td></Line>)}</tbody></table>}</Code></Workspace>
   </Panel>;
 }

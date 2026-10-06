@@ -1,38 +1,37 @@
-# Synchronization contract
+# Синхронизация
 
-Settings schemaVersion 3 добавляет optional source.base. Версии 1/2 мигрируют без включения произвольного сравнения; прежние источники, baseline и pending сохраняются. Версия 1 использует branch HEAD по умолчанию. Каждый профиль хранит source/baseline/pending отдельно для Internal и Global. Exclusions, ignored opt-ins и max part MB общие. Baseline содержит state, inventory, scope digest и optional localRepository.
+## Два направления
 
-## Export
+Internal profile связывает локальный repository/branch и внешний Git URL/branch. External profile хранит только локальный repository/branch для применения пакетов.
 
-Source branch и selected commit читаются как commit tree; пустой выбор commit означает branch HEAD. Snapshot передаёт все included files. Diff сравнивает baseline bytes с target bytes: unchanged не передаются; text modifications → patch; binary → REPLACE; exact-content moves → RENAME; остальные изменения → ADD/DELETE/MODIFY. Mode changes включаются в records.
+Одна общая sync state содержит canonical inventory, state ID и fingerprint exclusions. Направление определяет target: входящее — внешний HEAD, исходящее — локальный committed HEAD. При отсутствии baseline автоматически строится полный snapshot; при наличии — diff. SHA, baseline и тип пакета пользователь не выбирает.
 
-Scope digest = SHA256 JSON `{exclusions, includeIgnored}`; ignored opt-ins сортируются. Exclusions меняют scope: старый baseline нельзя использовать для Diff. Before bytes читаются из lastSyncedCommit в выбранном Git source. При отсутствии этого commit они читаются из localRepository baseline, сохранённого после Import. Если bytes не совпадают с baseline hashes, нужен Snapshot. При ручном возвращении ignored bytes state становится content inventory digest и сохраняется ссылка на working tree.
+Не сравнивать целиком актуальный internal tree с актуальным external tree: это смешало бы независимые изменения. В обоих направлениях before bytes читаются из immutable common state, сохранённой локально по SHA256. Добавление exclusions безопасно сужает baseline inventory/scope; примените те же правила на обеих сторонах. Расширение scope (удаление прежних правил) блокирует перенос: верните exclusions обратно или настройте новый профиль для первичного переноса. Исключение конкретного файла в Security Review одновременно фильтрует baseline и меняет scope; принимающая сторона должна иметь те же exclusions.
 
-Compare создаёт in-memory token, inventory, scan findings и оценку real transport bytes/part count. Export требует решений по всем findings и explicit override для blocking findings. Перед записью branch и included bytes проверяются повторно. Части создаются без overwrite; ошибка удаляет созданные этой операцией части. Все части записаны → сохраняется pending. Подтверждение передачи продвигает baseline; отмена pending его сохраняет. Никакого commit/push.
+## External → Internal
 
-## Import preflight
+Перед Compare проверяются актуальные remote refs, при изменении ветки выполняется fetch в bare cache. Compare → Security → preflight → Preview → Apply. Перед preflight внешняя ветка проверяется повторно: изменившийся HEAD требует нового Compare.
 
-1. Полный набор parts / protocol / UUID / SHA256 / согласованный manifest.
-2. Paths: relative slash paths, no traversal, no `.git` и платформенных aliases, no incompatible Windows names/control/bidi/invisible characters, NFC. Canonical root не должен измениться; existing parents не symlink. Только regular files.
-3. Target — корень существующего local Git repository.
-4. Для Diff: используется совпадающий profile baseline либо inventory исходного Git commit в принимающем repository при совпадении scope. Во втором случае наличие SHA проверяется через cat-file; все исходные files на target должны иметь ожидаемые hashes/modes. Если SHA отсутствует, требуется сначала Snapshot исходного состояния.
-5. ADD не перезаписывает другие bytes; RENAME destination отсутствует; MODIFY/DELETE/REPLACE имеют before SHA.
-6. Inventory действительно получается применением операций к baseline. Декодирование bounded, patch fuzz=0, EOL conversion выключена; hashes/size всех подготовленных result bytes совпадают.
+Сначала canonical пакет проверяется относительно common bytes, включая операции, SHA256, размеры и modes. Затем проверяется направленное применение к текущим локальным файлам. Text MODIFY может сохранять независимые внутренние изменения, если hunk context совпадает без fuzz и однозначен. Неоднозначный контекст, конфликт содержимого, DELETE/RENAME/REPLACE с несовпавшим before или конфликт modes останавливают операцию до backup/mutation. Автоматический conflict merge отсутствует.
 
-Preview показывает операции и проверки. Apply повторяет весь preflight, сравнивает с preview и лишь затем создаёт backup. Import не меняет Git index или history. Snapshot не удаляет непереданные target files и не перезаписывает чужие файлы: для новой копии нужен empty `git init` repository.
+ADD допускает отсутствующий путь либо уже существующий точно такой же файл. Первичный полный перенос не заменяет repository целиком; остальные локальные файлы сохраняются. Полный snapshot при уже существующей common state отклоняется.
+
+Рабочая ветка target должна совпадать с профилем. Незакоммиченные данные не экспортируются; если они затрагивают Apply, проходят те же проверки применимости. После успеха common state становится canonical внешним target, независимые внутренние bytes остаются локальными и попадут в следующее исходящее сравнение после commit.
+
+## Internal → External
+
+Committed local HEAD → diff от common state → Security Review → `.md` parts → pending. Незакоммиченные staged/unstaged/untracked показываются как предупреждение. После входящего Apply непустой Git status блокирует вынос: сначала закоммитьте применённый результат обычными Git-инструментами.
+
+Получатель выбирает External profile и любую `.md` часть. Preflight проверяет весь набор и готовит actual local before/after для Comparison. Если у нового получателя ещё нет common state, diff baseline может быть прочитан из исходного коммита в его Git при том же scope; иначе нужен первичный перенос. Имеющаяся baseline должна точно соответствовать sourceState; произвольные source selectors не используются.
+
+Export не меняет baseline. Подтверждать «Пакет применён снаружи» можно только после успешного применения. Подтверждение сохраняет pending target как common state; отмена сохраняет предыдущую baseline и файлы пакета. Pending блокирует остальные переносы. Точность ручного подтверждения — ответственность пользователя; межконтурного acknowledgment по сети нет.
 
 ## Apply / rollback / recovery
 
-Оригинальные bytes/modes записываются в `backups/<uuid>/`, после этого journal сохраняет target, settingsBefore, entries и intent. Перед mutation — повторная проверка live bytes и сохранение touched intent. Записи выполняются через временный файл в том же каталоге и rename, затем chmod. Созданные каталоги/temporary paths отмечаются в journal.
+Перед mutation повторяются root/branch, applicability, bytes и modes. Изменившийся после Preview файл останавливает Apply. Backup и journal создаются до записи, touched intent — перед каждой операцией. Проверяются actual merged bytes/modes затронутых файлов; независимые local файлы не обязаны совпадать с canonical внешним inventory.
 
-После Apply проверяются весь target inventory, hashes, executable bits (кроме Windows) и отсутствующие удалённые пути. Settings baseline обновляется только затем. Journal становится committed; backup сохраняется локально.
+После успеха атомарно сохраняются common state и дата, затем committed marker. При ошибке откатываются затронутые пути и settingsBefore. При посторонних bytes recovery останавливается. Незавершённые journals откатываются при следующем запуске. Backup остаётся локально. Git index, history и commit/push не меняются.
 
-Failure: touched entries восстанавливаются из backup, созданные файлы удаляются, пустые созданные каталоги очищаются, settingsBefore восстанавливается. Если live bytes не соответствуют ни before, ни prepared after, rollback останавливается, чтобы не удалить чужие изменения. Дальнейшие engine операции блокируются. Backup/journal оставляются для восстановления. На следующем запуске uncommitted journals автоматически проходят такой же rollback до открытия UI.
+## Миграция
 
-Пользователь должен остановить процессы, изменяющие target. Между syscall проверкой и записью возможна внешняя гонка: приложение не предоставляет OS lock на весь repository. Внезапный сбой диска/питания не равнозначен поддерживаемому process crash recovery.
-
-## Произвольное сравнение
-
-При source.base исходное дерево читается из указанной ветки/коммита с теми же exclusions; buildDiff сравнивает его напрямую с целевым деревом. Не используется merge-base; порядок сторон имеет значение, одинаковые commits дают пустой Diff. Last sync не меняется при Compare. Ignored opt-ins недоступны в этом режиме, поскольку относятся к working tree. Snapshot игнорирует source.base. Transport protocol/schema остаются v1: sourceState/targetState уже описывают оба commits. Перед Apply исходный inventory повторно проверяется без предварительного изменения сохранённого baseline; успешный Import сохраняет target baseline обычным путём.
-
-Текущий export использует открытый transport v2; импорт поддерживает v1/v2. Pending.paths и rollback охватывают и `.md` части, и отдельные native binary вложения. Весь набор переносится в одну папку. Settings schema 3 не менялась.
+Settings v4 убирает environment и независимые baselines по средам. Старые sources переводятся в role/local/external; SHA/base selectors сбрасываются. Исходный settings JSON сохраняется как `settings.vN.backup.json`. Старые baselines не объявляются общей точкой автоматически: это могло бы смешать направления. Первая новая синхронизация первичная. Старый pending сохраняется для явной отмены/разбора, но подтверждение требует доступных immutable bytes; при их отсутствии отмените ожидание и создайте пакет заново. Recovery snapshots прежних versions проходят ту же миграцию при сохранении.
