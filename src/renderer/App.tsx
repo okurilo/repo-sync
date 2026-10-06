@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import type { API, Analysis, CommitOption, IncomingSelection, CodeComparison, Direction, Finding, ImportPreview, Profile, ReplacementPreview, Settings } from '../shared/types';
+import type { API, Analysis, BranchContext, ExportReview, CommitOption, IncomingSelection, CodeComparison, Direction, Finding, ImportPreview, Profile, ReplacementPreview, Settings } from '../shared/types';
 import { AppearanceStyle, BusyNotice, Icon, type Appearance } from './Appearance';
-import { RepositoryCard, syncDate } from './features/Repositories';
+import { RepositoryCard, RepositoryGrid, RepositorySummary, syncDate } from './features/Repositories';
 import { RepositorySettings } from './features/RepositorySettings';
 import { IncomingSource } from './features/IncomingSource';
 import { SyncWorkflow, type SyncStep } from './features/SyncWorkflow';
@@ -22,7 +22,11 @@ export function App(): React.JSX.Element {
   const [kept, setKept] = useState<string[]>([]); const [override, setOverride] = useState(false);
   const [exported, setExported] = useState<string[]>([]); const [replacement, setReplacement] = useState<ReplacementPreview | null>(null);
   const [commits, setCommits] = useState<CommitOption[]>([]);
-  const [incomingSelection, setIncomingSelection] = useState<IncomingSelection>({ mode: 'commit' });
+  const [branchContext, setBranchContext] = useState<BranchContext>({ branches: [] });
+  const [packageComparison, setPackageComparison] = useState<CodeComparison | null>(null);
+  const [exportReview, setExportReview] = useState<ExportReview | null>(null);
+  const [operationLabel, setOperationLabel] = useState('Загрузка настроек…');
+  const [incomingSelection, setIncomingSelection] = useState<IncomingSelection>({ mode: 'branch' });
   const [selectedIncomingPaths, setSelectedIncomingPaths] = useState<string[]>([]);
   const [status, setStatus] = useState<{ incoming?: number; outgoing?: number }>({});
   const pending = useRef<Promise<void> | null>(null); const active = useRef(false);
@@ -36,51 +40,79 @@ export function App(): React.JSX.Element {
     finally { active.current = false; setBusy(false); }
   }
   useEffect(() => { void run(async () => setSettings(await api.settings())); }, []);
-  function reset(): void { setStep(null); setAnalysis(null); setImportPreview(null); setSelectedIncomingPaths([]); setKept([]); setOverride(false); setExported([]); setError(''); setNotice(''); setStatus({}); }
+  function reset(): void { setPackageComparison(null); setExportReview(null); setStep(null); setAnalysis(null); setImportPreview(null); setSelectedIncomingPaths([]); setKept([]); setOverride(false); setExported([]); setError(''); setNotice(''); setStatus({}); }
   function home(): void { reset(); setSelected(''); }
   async function refresh(current: Profile): Promise<void> {
     if (current.role !== 'internal' || current.pending || !current.sources.internal || !current.sources.global) return;
-    const outgoing = await api.analyze(current.id, 'outgoing'); setStatus({ outgoing: outgoing.entries.length });
+    setOperationLabel('Расчёт исходящих изменений…'); const outgoing = await api.analyze(current.id, 'outgoing'); setStatus({ outgoing: outgoing.entries.length });
   }
-  function open(current: Profile): void { reset(); setSelected(current.id); if (current.role === 'internal') void run(() => refresh(current)); }
+  function open(current: Profile): void { reset(); setSelected(current.id); if (!current.sources.internal || (current.role === 'internal' && !current.sources.global)) { setDraft(current); return; } if (current.role === 'internal') void run(() => refresh(current)); }
   async function begin(next: Direction, current: Profile | undefined = profile): Promise<void> {
     if (!current) return;
     reset(); setSelected(current.id); setDirection(next);
     if (next === 'incoming') {
-      setCommits([]); setStep('source');
+      setCommits([]); setBranchContext({ branches: [] }); setStep('source'); setOperationLabel('Определение основной ветки…');
       const source = current.sources.global;
       if (!source) throw new Error('Настройте внешний Git.');
-      await api.refreshSource(source); setCommits(await api.listCommits(source)); return;
+      setIncomingSelection({ mode: 'branch', branch: source.branch });
+      const context = await api.branchContext(source); setBranchContext(context);
+      const selection: IncomingSelection = { mode: 'branch', branch: source.branch, baseBranch: context.defaultBranch };
+      setIncomingSelection(selection); await api.refreshSource(source); setCommits(await api.listCommits(source));
+      if (context.defaultBranch && context.defaultBranch !== source.branch) {
+        setOperationLabel('Сравнение ветки с основой…');
+        const result = await api.analyze(current.id, 'incoming', selection);
+        setAnalysis(result); setSelectedIncomingPaths(result.entries.map(entry => entry.path)); setStep('compare');
+      }
+      return;
     }
-    const result = await api.analyze(current.id, next); setAnalysis(result); setStep('compare');
+    setOperationLabel('Расчёт исходящих изменений…');
+    const result = await api.analyze(current.id, next); setAnalysis(result); setSelectedIncomingPaths(result.entries.map(entry => entry.path)); setStep('compare');
+  }
+  function changeSelection(selection: IncomingSelection): void {
+    setIncomingSelection(selection); setAnalysis(null); setImportPreview(null); setSelectedIncomingPaths([]); setError(''); setStep('source');
+    if (selection.branch !== incomingSelection.branch && profile?.sources.global) {
+      setCommits([]); const source = { ...profile.sources.global, branch: selection.branch ?? profile.sources.global.branch };
+      void run(async () => { setOperationLabel('Загрузка истории ветки…'); await api.refreshSource(source); setCommits(await api.listCommits(source)); });
+    }
+  }
+  function changePaths(paths: string[]): void {
+    setSelectedIncomingPaths(paths); setImportPreview(null); setExportReview(null); setKept([]); setOverride(false); setError(''); setStep('compare');
   }
   async function compareIncoming(selection: IncomingSelection): Promise<void> {
     if (!profile) return;
-    setIncomingSelection(selection); setImportPreview(null); setAnalysis(null); setSelectedIncomingPaths([]);
+    setOperationLabel('Расчёт выбранных изменений…'); setIncomingSelection(selection); setImportPreview(null); setAnalysis(null); setSelectedIncomingPaths([]);
     const result = await api.analyze(profile.id, 'incoming', selection);
     setAnalysis(result); setSelectedIncomingPaths(result.entries.map(entry => entry.path)); setStep('compare');
   }
   async function importPackage(current: Profile | undefined = profile): Promise<void> {
     if (!current?.sources.internal) throw new Error('Сначала настройте локальный репозиторий');
     const file = await api.choosePackage(); if (!file) return;
-    reset(); setSelected(current.id); const result = await api.preflight(file, current.sources.internal.location, current.id); setDirection('incoming'); setImportPreview(result); setStep('apply');
+    reset(); setSelected(current.id); setDirection('incoming'); setStep('compare'); setOperationLabel('Чтение и проверка частей пакета…');
+    const result = await api.loadPackage(file, current.id); setPackageComparison(result); setSelectedIncomingPaths(result.entries.map(entry => entry.path));
   }
-  const comparison: CodeComparison | null = importPreview ? { token: importPreview.token, from: importPreview.sourceState, to: importPreview.targetState, entries: importPreview.entries, lineChanges: importPreview.lineChanges } : analysis ? { token: analysis.token, from: analysis.sourceState, to: analysis.state, entries: analysis.entries, lineChanges: analysis.lineChanges } : null;
-  function exclude(finding: Finding): void { if (analysis) void run(async () => { const result = await api.excludeFinding(analysis.token, finding.id); setSettings(result.settings); setAnalysis(result.analysis); setKept([]); setOverride(false); }); }
+  const comparison: CodeComparison | null = packageComparison ? { ...packageComparison, token: importPreview?.token ?? packageComparison.token } : (analysis ? { token: importPreview?.token ?? analysis.token, from: analysis.sourceState, to: analysis.state, entries: analysis.entries, lineChanges: analysis.lineChanges } : null);
+  async function checkSelection(): Promise<void> {
+    if (!comparison) return;
+    setOperationLabel(direction === 'incoming' ? 'Проверка выбранных операций…' : 'Проверка данных выбранных файлов…');
+    if (direction === 'incoming') { setImportPreview(packageComparison ? await api.preparePackage(packageComparison.token, selectedIncomingPaths) : await api.prepareIncoming(comparison.token, selectedIncomingPaths)); setStep('apply'); }
+    else { setExportReview(await api.selectExport(comparison.token, selectedIncomingPaths)); setStep('security'); }
+  }
+  function exclude(finding: Finding): void { if (analysis) void run(async () => { const result = await api.excludeFinding(analysis.token, finding.id); setSettings(result.settings); setAnalysis(result.analysis); const paths = selectedIncomingPaths.filter(path => result.analysis.entries.some(entry => entry.path === path)); setSelectedIncomingPaths(paths); setExportReview(null); setStep('compare'); setKept([]); setOverride(false); }); }
   function replace(finding: Finding): void { if (analysis) void run(async () => setReplacement(await api.previewReplacement(analysis.token, finding.id))); }
   function showFinding(finding: Finding): void { if (analysis) void run(() => api.openFinding(analysis.token, finding.id)); }
   return <><GlobalStyle /><AppearanceStyle $appearance={appearance} /><AppShell appearance={appearance} disabled={locked} toggleTheme={() => { const next = appearance === 'dark' ? 'light' : 'dark'; setAppearance(next); try { localStorage.setItem('reposync-theme', next); } catch { /* optional preference */ } }} repositories={home} settings={() => setAppSettings(true)}>
-    {busy && <BusyNotice role="status">Выполняется операция…</BusyNotice>}{error && !draft && !step && <Status $error role="alert">{error}</Status>}{notice && <Status role="status">{notice}</Status>}
-    {!settings ? <Muted>Загрузка репозиториев…</Muted> : !profile ? <><Row style={{ justifyContent: 'space-between', marginBottom: 28 }}><div><h1>Репозитории</h1><Muted style={{ margin: 0 }}>Синхронизация изменений между репозиториями.</Muted></div><Button $primary disabled={locked} onClick={() => { setError(''); setDraft(initialProfile()); }}><Icon name="plus" />Добавить репозиторий</Button></Row>{settings.profiles.length ? settings.profiles.map(current => <RepositoryCard key={current.id} profile={current} busy={locked} open={() => open(current)} incoming={() => void run(() => begin('incoming', current))} outgoing={() => void run(() => begin('outgoing', current))} importPackage={() => void run(() => importPackage(current))} />) : <EmptyState title="Репозитории ещё не добавлены"><Muted>Добавьте репозиторий, чтобы получать изменения из Git или создавать пакеты .md.</Muted><Button $primary disabled={locked} onClick={() => setDraft(initialProfile())}><Icon name="plus" />Добавить репозиторий</Button></EmptyState>}</> : <>
+    {busy && <BusyNotice role="status">{operationLabel}</BusyNotice>}{error && !draft && !step && <Status $error role="alert">{error}</Status>}{notice && <Status role="status">{notice}</Status>}
+    {!settings ? <div role="status" aria-label="Загрузка репозиториев"><div className="reposync-skeleton" style={{ height: 110, marginBottom: 20 }} /><div className="reposync-skeleton" style={{ height: 260 }} /></div> : !profile ? <><Row style={{ justifyContent: 'space-between', marginBottom: 28 }}><div><h1>Репозитории</h1><Muted style={{ margin: 0 }}>Синхронизация изменений между репозиториями.</Muted></div><Button $primary disabled={locked} onClick={() => { setError(''); setDraft(initialProfile()); }}><Icon name="plus" />Добавить репозиторий</Button></Row>{settings.profiles.length ? <><RepositorySummary profiles={settings.profiles} /><RepositoryGrid>{settings.profiles.map(current => <RepositoryCard key={current.id} profile={current} busy={locked} open={() => open(current)} incoming={() => void run(() => begin('incoming', current))} outgoing={() => void run(() => begin('outgoing', current))} importPackage={() => void run(() => importPackage(current))} />)}</RepositoryGrid></> : <EmptyState title="Репозитории ещё не добавлены"><Muted>Добавьте репозиторий, чтобы получать изменения из Git или создавать пакеты .md.</Muted><Button $primary disabled={locked} onClick={() => setDraft(initialProfile())}><Icon name="plus" />Добавить репозиторий</Button></EmptyState>}</> : <>
       <Row style={{ justifyContent: 'space-between', marginBottom: 24 }}><IconButton disabled={locked} onClick={home}><Icon name="back" />Репозитории</IconButton><IconButton disabled={locked || !!step} aria-label="Настроить репозиторий" onClick={() => { setError(''); setDraft(profile); }}><Icon name="settings" /></IconButton></Row><Row><h1 style={{ margin: 0 }}>{profile.name}</h1><Badge>{profile.role === 'internal' ? 'Внутренний' : 'Внешний'}</Badge></Row><Muted style={{ margin: '10px 0 28px' }}><code>{profile.sources.internal?.location ?? 'Укажите локальный репозиторий в настройках'}</code> · {profile.sources.internal?.branch}</Muted>
       {!step ? <>
-        {profile.pending ? <Surface><h2>Пакет ожидает подтверждения</h2><Muted>Примените все части пакета на внешнем компьютере. После успешного применения нажмите «Подтвердить применение».</Muted>{profile.pending.paths.map(file => <p key={file}><code>{file}</code></p>)}<Row><Button $primary disabled={locked} onClick={() => void run(async () => { setSettings(await api.confirmTransfer(profile.id)); setNotice('Применение подтверждено. Состояние синхронизации обновлено.'); })}>Подтвердить применение</Button><Button disabled={locked} onClick={() => void run(async () => { setSettings(await api.discardPending(profile.id)); setNotice('Ожидание отменено. Файлы пакета сохранены на диске.'); })}>Отменить ожидание</Button></Row></Surface> : profile.role === 'internal' ? <Surface style={{ padding: 36 }}><h2>Синхронизация</h2><div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 48px minmax(0, 1fr)', gap: 24, margin: '32px 0' }}><div><Badge>Внешний</Badge><Muted><code>{profile.sources.global?.location ?? 'Настройте внешний Git'}</code><br />{profile.sources.global?.branch}</Muted><p>{status.incoming === undefined ? 'Выберите коммит для сравнения' : `Изменено файлов: ${status.incoming}`}</p><Button $primary disabled={locked || !profile.sources.global || !profile.sources.internal} onClick={() => void run(() => begin('incoming'))}><Icon name="import" />Получить изменения</Button></div><div style={{ alignSelf: 'center', color: 'var(--muted)' }}><Icon name="sync" /></div><div><Badge>Внутренний</Badge><Muted><code>{profile.sources.internal?.location}</code><br />{profile.sources.internal?.branch}</Muted><p>{status.outgoing === undefined ? 'Изменения ещё не проверены' : `Изменено файлов: ${status.outgoing}`}</p><Button disabled={locked || !profile.sources.internal} onClick={() => void run(() => begin('outgoing'))}><Icon name="arrow" />Подготовить пакет изменений</Button></div></div><Row style={{ justifyContent: 'space-between' }}><small>Последняя синхронизация: {syncDate(profile.syncedAt)}</small><Button disabled={locked} onClick={() => void run(() => refresh(profile))}>Проверить изменения</Button></Row>{profile.commitRequired && <Status>Перед подготовкой следующего пакета создайте коммит с применёнными изменениями.</Status>}<details style={{ marginTop: 20 }}><summary>Подробности</summary><p><code>{profile.baseline?.state ?? 'Состояние синхронизации ещё не сохранено'}</code></p><small>Файлов в общем состоянии: {profile.baseline?.files.length ?? 0}.</small></details></Surface> : <EmptyState title="Пакет изменений"><Muted>Выберите любую часть пакета .md. Все части должны лежать в одной папке с исходными именами. Перед применением вы увидите изменения.</Muted><Button $primary disabled={locked || !profile.sources.internal} onClick={() => void run(() => importPackage())}><Icon name="import" />Выбрать пакет</Button></EmptyState>}
-      </> : step === 'source' ? <IncomingSource branch={profile.sources.global?.branch ?? ''} commits={commits} busy={locked} error={error} close={reset} reload={() => void run(() => begin('incoming'))} compare={selection => void run(() => compareIncoming(selection))} /> : <>
-        <SyncWorkflow profile={profile} settings={settings} direction={direction} step={step} analysis={analysis} importPreview={importPreview} comparison={comparison} kept={kept} override={override} exported={exported} busy={busy} locked={locked} error={error} retryComparison={() => void run(() => profile.role === 'external' ? importPackage() : direction === 'incoming' ? compareIncoming(incomingSelection) : begin(direction))} pending={pending} setPreviewBusy={setPreviewBusy} setStep={setStep} setOverride={setOverride} close={reset} chooseIncoming={() => void run(() => begin('incoming'))} keep={(ids, retained) => setKept(previous => retained ? [...new Set([...previous, ...ids])] : previous.filter(id => !ids.includes(id)))} exclude={exclude} replace={replace} showFinding={showFinding} selectedIncomingPaths={selectedIncomingPaths} onSelectedIncomingPathsChange={setSelectedIncomingPaths}
-          completeReview={() => { if (direction === 'outgoing') setStep('package'); else if (analysis) void run(async () => { setImportPreview(await api.prepareIncoming(analysis.token, selectedIncomingPaths.length ? selectedIncomingPaths : undefined)); setStep('apply'); }); }}
+        {profile.pending ? <Surface><h2>Пакет ожидает подтверждения</h2><Muted>{profile.pending.partial ? 'Этот пакет частичный: подтверждение не продвинет общее состояние.' : 'Подтверждайте полный пакет после применения всех его операций. Если применили только часть, отмените ожидание, чтобы сохранить прежнее общее состояние.'}</Muted>{profile.pending.paths.map(file => <p key={file}><code>{file}</code></p>)}<Row><Button $primary disabled={locked} onClick={() => void run(async () => { setSettings(await api.confirmTransfer(profile.id)); setNotice(profile.pending?.partial ? 'Частичный пакет подтверждён. Общее состояние не продвинуто.' : 'Применение подтверждено. Состояние синхронизации обновлено.'); })}>Подтвердить применение</Button><Button disabled={locked} onClick={() => void run(async () => { setSettings(await api.discardPending(profile.id)); setNotice('Ожидание отменено. Файлы пакета сохранены на диске.'); })}>Отменить ожидание</Button></Row></Surface> : profile.role === 'internal' ? <Surface style={{ padding: 36 }}><h2>Синхронизация</h2><div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 48px minmax(0, 1fr)', gap: 24, margin: '32px 0' }}><div><Badge>Внешний</Badge><Muted><code>{profile.sources.global?.location ?? 'Настройте внешний Git'}</code><br />{profile.sources.global?.branch}</Muted><p>{status.incoming === undefined ? 'Сравните ветку с её основой' : `Изменено файлов: ${status.incoming}`}</p><Button $primary disabled={locked || !profile.sources.global || !profile.sources.internal} onClick={() => void run(() => begin('incoming'))}><Icon name="import" />Получить изменения</Button></div><div style={{ alignSelf: 'center', color: 'var(--muted)' }}><Icon name="sync" /></div><div><Badge>Внутренний</Badge><Muted><code>{profile.sources.internal?.location}</code><br />{profile.sources.internal?.branch}</Muted><p>{status.outgoing === undefined ? 'Изменения ещё не проверены' : `Изменено файлов: ${status.outgoing}`}</p><Button disabled={locked || !profile.sources.internal} onClick={() => void run(() => begin('outgoing'))}><Icon name="arrow" />Подготовить пакет изменений</Button></div></div><Row style={{ justifyContent: 'space-between' }}><small>Последняя синхронизация: {syncDate(profile.syncedAt)}</small><Button disabled={locked} onClick={() => void run(() => refresh(profile))}>Проверить изменения</Button></Row>{profile.commitRequired && <Status>Перед подготовкой следующего пакета создайте коммит с применёнными изменениями.</Status>}<details style={{ marginTop: 20 }}><summary>Подробности</summary><p><code>{profile.baseline?.state ?? 'Состояние синхронизации ещё не сохранено'}</code></p><small>Файлов в общем состоянии: {profile.baseline?.files.length ?? 0}.</small></details></Surface> : <EmptyState title="Пакет изменений"><Muted>Выберите любую часть пакета .md. Все части должны лежать в одной папке с исходными именами. Перед применением вы увидите изменения.</Muted><Button $primary disabled={locked || !profile.sources.internal} onClick={() => void run(() => importPackage())}><Icon name="import" />Выбрать пакет</Button></EmptyState>}
+      </> : <>
+        {direction === 'incoming' && profile.role === 'internal' && step !== 'done' && <IncomingSource branch={profile.sources.global?.branch ?? ''} context={branchContext} selection={incomingSelection} commits={commits} busy={locked} change={changeSelection} reload={() => void run(async () => { if (!profile.sources.global) return; setOperationLabel('Обновление веток и истории…'); const source = { ...profile.sources.global, branch: incomingSelection.branch ?? profile.sources.global.branch }; setAnalysis(null); setImportPreview(null); setSelectedIncomingPaths([]); setStep('source'); setBranchContext(await api.branchContext(source)); await api.refreshSource(source); setCommits(await api.listCommits(source)); })} compare={selection => void run(() => compareIncoming(selection))} />}
+        <SyncWorkflow profile={profile} settings={settings} direction={direction} step={step} analysis={analysis && exportReview ? { ...analysis, ...exportReview } : analysis} importPreview={importPreview} comparison={comparison} kept={kept} override={override} exported={exported} busy={busy} locked={locked} error={error} retryComparison={() => void run(() => profile.role === 'external' ? importPackage() : direction === 'incoming' ? compareIncoming(incomingSelection) : begin(direction))} pending={pending} setPreviewBusy={setPreviewBusy} setStep={setStep} setOverride={setOverride} close={reset} keep={(ids, retained) => setKept(previous => retained ? [...new Set([...previous, ...ids])] : previous.filter(id => !ids.includes(id)))} exclude={exclude} replace={replace} showFinding={showFinding} selectedIncomingPaths={selectedIncomingPaths} onSelectedIncomingPathsChange={changePaths}
+          completeReview={() => { if (direction === 'outgoing' && step === 'security') setStep('package'); else void run(checkSelection); }}
           chooseOutput={() => void run(async () => { const directory = await api.chooseDirectory(); if (directory) setSettings(await api.setOutputDirectory(directory)); })}
-          exportPackage={() => { if (analysis) void run(async () => { setExported(await api.exportPackage(analysis.token, kept, override)); setSettings(await api.settings()); setStep('done'); }); }}
-          apply={() => { if (importPreview) void run(async () => { setSettings(await api.applyImport(importPreview.token)); setStep('done'); setAnalysis(null); }); }}
+          exportPackage={() => { if (analysis) void run(async () => { setOperationLabel('Запись частей пакета…'); setExported(await api.exportPackage(analysis.token, kept, override)); setSettings(await api.settings()); setStep('done'); }); }}
+          apply={() => { if (importPreview) void run(async () => { setOperationLabel('Резервное копирование и применение…'); setSettings(await api.applyImport(importPreview.token)); setStep('done'); setAnalysis(null); }); }}
           openRepository={() => void run(() => api.openRepository(profile.id))} />
       </>}
     </>}

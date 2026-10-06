@@ -14,7 +14,7 @@ const enter = css`animation: reposync-reveal ${tokens.motion.duration} ${tokens.
 export const Button = styled('button')<{ $primary?: boolean; $danger?: boolean }>(({ $primary, $danger }) => ({ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '10px 16px', borderRadius: tokens.radius.control, border: '1px solid transparent', background: $primary ? 'var(--accent)' : 'var(--raised)', color: $primary ? 'var(--bg)' : $danger ? 'var(--danger)' : 'var(--text)', fontWeight: 600 }));
 export const IconButton = styled(Button)({ padding: 9, background: 'transparent' });
 export const Row = styled('div')({ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' });
-export const Surface = styled('section')({ background: 'var(--surface)', borderRadius: tokens.radius.surface, padding: 24 });
+export const Surface = styled('section')({ background: 'var(--surface)', borderRadius: tokens.radius.surface, padding: 24 }, enter);
 export const Badge = styled('span')({ display: 'inline-flex', gap: 6, alignItems: 'center', padding: '5px 9px', borderRadius: 6, background: 'var(--raised)', color: 'var(--muted)', fontSize: 11, fontWeight: 650, letterSpacing: '0.6px' });
 export const Status = styled('div')<{ $error?: boolean }>(({ $error }) => ({ margin: '16px 0', padding: '12px 16px', background: $error ? 'var(--removed)' : 'var(--tint)', color: $error ? 'var(--danger)' : 'var(--text)', borderRadius: 8, lineHeight: 1.5, overflowWrap: 'anywhere' }));
 export const Muted = styled('p')({ color: 'var(--muted)' });

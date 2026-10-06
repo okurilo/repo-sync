@@ -7,6 +7,8 @@ const progress = 'reposync-progress';
 export const AppearanceStyle = createGlobalStyle<{ $appearance: Appearance }>(({ $appearance }) => ({
   '@keyframes reposync-reveal': { from: { opacity: 0, transform: 'translateY(8px)' }, to: { opacity: 1, transform: 'translateY(0)' } },
   '@keyframes reposync-progress': { from: { transform: 'translateX(-100%)' }, to: { transform: 'translateX(300%)' } },
+  '@keyframes reposync-pulse': { '0%, 100%': { opacity: 0.45 }, '50%': { opacity: 0.85 } },
+  '.reposync-skeleton': { borderRadius: 10, background: 'linear-gradient(110deg, var(--raised), var(--line), var(--raised))', animation: 'reposync-pulse 1.4s ease-in-out infinite' },
   ':root': { colorScheme: $appearance, ...Object.fromEntries(Object.entries(tokens.colors[$appearance]).map(([key, value]) => [`--${key}`, value])) },
   body: { background: 'var(--bg)', color: 'var(--text)' },
   '::selection': { background: 'var(--tint)', color: 'var(--text)' },
