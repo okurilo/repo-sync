@@ -137,7 +137,9 @@ export class Engine {
             state = (await git(resolved.root, ['rev-list', '--parents', '-n', '1', resolved.commit])).toString().trim().split(' ')[1] ?? '';
             if (!state) throw new Error('У корневого коммита нет родителя. Для полного переноса выберите «От нулевого состояния».');
           }
-          await selectedAncestor(resolved.root, state, resolved.commit);
+          // Both endpoints belong to the selected external history; compare their
+          // trees directly, without a merge-base or an A-is-ancestor-of-B condition.
+          if (branch) await selectedAncestor(resolved.root, state, branch.commit);
           initial = await readTree({ ...resolved, commit: state }, profile);
         }
         baseline = { state, files: initial.files, scope }; initialBytes = initial.bytes;
@@ -361,10 +363,12 @@ export class Engine {
     this.importSession = { token, profileId, environment: 'internal', target: root, transport, files, baseline, updateCommon: !incoming || incoming.incomingMode === 'repositories' || incoming.incomingMode === 'zero' };
     const localBefore = new Map<string, Buffer>(); const localAfter = new Map<string, Buffer>();
     for (const file of files) { if (file.before) localBefore.set(file.path, file.before); if (file.after) localAfter.set(file.path, file.after); }
-    const entries = this.codeFor(token, transport, localBefore, localAfter, false, new Map(files.filter(file => file.beforeMode !== null).map(file => [file.path, file.beforeMode!])));
+    const changedPaths = new Set(files.map(file => file.path));
+    const previewTransport = { ...transport, records: transport.records.filter(record => changedPaths.has(record.path)) };
+    const entries = this.codeFor(token, previewTransport, localBefore, localAfter, false, new Map(files.filter(file => file.beforeMode !== null).map(file => [file.path, file.beforeMode!])));
     // For renames, the old name has a separate delete operation in the prepared set.
     return { incomingMode: incoming?.incomingMode, token, workingChanges: await workingStatus(root), packageId: transport.packageId, sourceState: transport.sourceState, targetState: transport.targetState,
-      packageType: transport.packageType, changes: counts(transport.records), files: transport.files.length, lineChanges: textChanges(transport, before),
+      packageType: transport.packageType, changes: counts(previewTransport.records), files: transport.files.length, lineChanges: textChanges(previewTransport, before),
       entries };
   }
   async applyImport(token: string): Promise<Settings> {
@@ -375,7 +379,7 @@ export class Engine {
     if (!configured || await realpath(configured.location) !== await realpath(session.target) || (await git(session.target, ['symbolic-ref', '--short', 'HEAD'])).toString().trim() !== configured.branch) throw new Error('Локальный репозиторий или ветка изменились. Запустите синхронизацию заново.');
     const baseline = session.baseline;
     const files = await prepare(session.target, session.transport, baseline, baseline ? await this.baselineContent(baseline) : new Map());
-    if (files.some((file, i) => !sameBuffer(file.before, session.files[i]?.before ?? null) || file.beforeMode !== session.files[i]?.beforeMode)) throw new Error('Локальные файлы изменились после просмотра. Запустите синхронизацию заново.');
+    if (files.length !== session.files.length || files.some((file, i) => file.path !== session.files[i]?.path || !sameBuffer(file.before, session.files[i]?.before ?? null) || file.beforeMode !== session.files[i]?.beforeMode)) throw new Error('Локальные файлы изменились после просмотра. Запустите синхронизацию заново.');
     const directory = path.join(this.store.directory, 'backups', randomUUID());
     await mkdir(directory, { recursive: true, mode: 0o700 });
     const journal: Journal = { target: session.target, entries: [], createdDirectories: [], temporaryFiles: [], settingsBefore: this.store.get(), committed: false };
@@ -469,7 +473,7 @@ export function parseIncomingSelection(value: unknown): IncomingSelection {
 async function selectedAncestor(root: string, from: string, to: string): Promise<void> {
   try { await git(root, ['merge-base', '--is-ancestor', from, to]); }
   catch (error) {
-    if (error instanceof Error && error.message.startsWith('Git завершился с кодом 1.')) throw new Error('Начальный коммит не является предком конечного. Выберите коммиты одной цепочки внешней ветки.');
+    if (error instanceof Error && error.message.startsWith('Git завершился с кодом 1.')) throw new Error('Выбранный коммит отсутствует в истории внешней ветки. Обновите историю и выберите коммит заново.');
     throw error;
   }
 }
@@ -596,6 +600,16 @@ async function prepare(root: string, transport: Transport, baseline: Baseline | 
     let after = canonical.get(record.path) ?? null;
     let afterMode = record.mode;
     const conflict = (): never => { throw new Error(`Синхронизация остановлена. Конфликт: ${name}. Репозиторий не изменён.`); };
+    // A patch describes a transition, not a requirement to recreate its old state.
+    if (record.operation === 'DELETE' && old === null) continue;
+    if (record.operation === 'RENAME' && old === null) {
+      const destination = await safePath(root, record.path);
+      const existing = await optionalRead(destination);
+      if (existing !== null && sha256(existing) === record.afterSha256 && (process.platform === 'win32' || Boolean((await lstat(destination)).mode & 0o111) === Boolean(record.mode & 0o111))) continue;
+      conflict();
+    }
+    if (record.operation !== 'DELETE' && record.operation !== 'RENAME' && old !== null && sha256(old) === record.afterSha256
+      && (process.platform === 'win32' || Boolean(mode! & 0o111) === Boolean(record.mode & 0o111) || (record.operation === 'MODIFY' && prior?.mode === record.mode))) continue;
     if (record.operation === 'ADD') { if (old !== null && (sha256(old) !== record.afterSha256 || (process.platform !== 'win32' && Boolean(mode! & 0o111) !== Boolean(record.mode & 0o111)))) conflict(); }
     else if (old === null) conflict();
     else if (record.operation === 'MODIFY') {
@@ -621,7 +635,7 @@ async function prepare(root: string, transport: Transport, baseline: Baseline | 
       if (await optionalRead(await safePath(root, record.path)) !== null) conflict();
       prepared.push({ path: name, before: old, after: null, beforeMode: mode, afterMode });
     }
-    prepared.push({ path: record.path, before: record.operation === 'RENAME' ? null : old, after, beforeMode: record.operation === 'RENAME' ? null : mode, afterMode });
+    if (record.operation === 'RENAME' || !sameBuffer(old, after) || mode !== afterMode) prepared.push({ path: record.path, before: record.operation === 'RENAME' ? null : old, after, beforeMode: record.operation === 'RENAME' ? null : mode, afterMode });
   }
   if (prepared.reduce((sum, file) => sum + (file.before?.length ?? 0) + (file.after?.length ?? 0), 0) > MAX_BYTES * 2) throw new Error('Подготовленные файлы превышают защитный лимит');
   return prepared;
