@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
+import { matchingComparisonFilters } from './comparison';
 import { chmod, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, rmdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { applyPatch, createTwoFilesPatch, parsePatch } from 'diff';
 import type { Analysis, Baseline, CodeComparison, CodePreview, Direction, Environment, FileEntry, ImportPreview, Operation, PackageType, Profile, RecordData, Settings, Transport } from '../shared/types';
-import { commonRevision, git, readTree, refreshSource, resolveSource, safePath, scopeHash, sha256, type ResolvedSource, type Tree } from './infra/git';
+import { git, readTree, refreshSource, resolveSource, safePath, scopeHash, sha256, type ResolvedSource, type Tree } from './infra/git';
 import { atomicJSON, SettingsStore } from './infra/settings';
 import { decode, encode, exportArtifacts, loadTransport, MAX_BYTES, newPackageId, parseTransport, splitTransport } from './transport';
 import { findingLocation, scan, type PrivateFinding } from './security';
@@ -70,9 +71,14 @@ export class Engine {
     }
     return result;
   }
-  private codeFor(token: string, transport: Transport, before: Map<string, Buffer>, after: Map<string, Buffer>, mask: boolean): void {
-    this.codeSession = { token, mask, from: transport.sourceState, to: transport.targetState,
-      entries: transport.records.map(r => ({ path: r.path, oldPath: r.oldPath, operation: r.operation, size: r.size })), before, after };
+  private codeFor(token: string, transport: Transport, before: Map<string, Buffer>, after: Map<string, Buffer>, mask: boolean, beforeModes: Map<string, number>): Analysis['entries'] {
+    const entries = transport.records.map(record => {
+      const old = before.get(record.path); const next = after.get(record.path);
+      const ignoredBy = (record.operation === 'MODIFY' || record.operation === 'REPLACE') && beforeModes.get(record.path) === record.mode && old && next ? matchingComparisonFilters(old, next) : [];
+      return { path: record.path, oldPath: record.oldPath, operation: record.operation, size: record.size, ignoredBy };
+    });
+    this.codeSession = { token, mask, from: transport.sourceState, to: transport.targetState, entries, before, after };
+    return entries;
   }
   async previewCode(token: string, name: string): Promise<CodePreview> {
     const session = this.codeSession;
@@ -115,12 +121,9 @@ export class Engine {
     let initialBytes: Map<string, Buffer> | undefined;
     if (!baseline && direction === 'incoming') {
       const local = await resolveSource(profile.sources.internal, 'internal', this.cache);
-      const common = await commonRevision(local, resolved);
-      if (common) {
-        const initial = await readTree({ ...local, commit: common }, profile);
-        baseline = { state: common, files: initial.files, scope };
-        initialBytes = initial.bytes;
-      }
+      const initial = await readTree(local, profile);
+      baseline = { state: local.commit, files: initial.files, scope };
+      initialBytes = initial.bytes;
     }
     if (baseline && baseline.scope !== scope) throw new Error('Исключения изменились после синхронизации. Верните прежний список или создайте отдельный профиль для первичной синхронизации.');
     const type: PackageType = baseline ? 'diff' : 'snapshot';
@@ -143,12 +146,12 @@ export class Engine {
     this.exportSession = { token: randomUUID(), profileId: id, environment: mode, resolved, tree, workingChanges: { staged: 0, unstaged: 0, untracked: 0 }, transport, findings, target, maxBytes };
     const workingChanges = await workingStatus(profile.sources.internal.location);
     this.exportSession.workingChanges = workingChanges;
-    this.codeFor(this.exportSession.token, transport, before, tree.bytes, direction === 'outgoing');
+    const entries = this.codeFor(this.exportSession.token, transport, before, tree.bytes, direction === 'outgoing', new Map(baseline?.files.map(file => [file.path, file.mode]) ?? []));
     return { token: this.exportSession.token, state: targetState, sourceState: transport.sourceState, packageType: type,
       files: tree.files.length, changes: counts(records), excludedGit: tree.excludedGit, excludedCustom: tree.excludedCustom,
       estimatedBytes: parts.reduce((sum, part) => sum + part.length, 0), parts: parts.length,
       findings: findings.map(f => f.public), lineChanges: textChanges(transport, before), local: source.kind === 'local', ignored: tree.ignored, workingChanges,
-      entries: records.map(r => ({ path: r.path, oldPath: r.oldPath, operation: r.operation, size: r.size })) };
+      entries };
   }
   session(token: string): ExportSession {
     const current = this.exportSession;
@@ -251,8 +254,8 @@ export class Engine {
     const saved = await this.store.save(settings);
     const tree = { ...session.tree, files: session.tree.files.filter(file => file.path !== name), bytes: new Map([...session.tree.bytes].filter(([file]) => file !== name)), excludedGit: session.tree.excludedGit + (wasIgnored ? 1 : 0), excludedCustom: session.tree.excludedCustom + (wasIgnored ? 0 : 1) };
     this.exportSession = { ...session, token: randomUUID(), tree, transport, findings, target: { ...session.target, state: targetState, files, scope } };
-    this.codeFor(this.exportSession.token, transport, before, tree.bytes, mode === 'internal'); this.replacement = null;
-    return { settings: saved, analysis: { token: this.exportSession.token, state: targetState, sourceState: transport.sourceState, packageType: transport.packageType, files: files.length, changes: counts(records), excludedGit: tree.excludedGit, excludedCustom: tree.excludedCustom, estimatedBytes: parts.reduce((sum, part) => sum + part.length, 0), parts: parts.length, findings: findings.map(item => item.public), lineChanges: textChanges(transport, before), local: session.resolved.source.kind === 'local', ignored: tree.ignored, workingChanges: session.workingChanges, entries: records.map(record => ({ path: record.path, oldPath: record.oldPath, operation: record.operation, size: record.size })) } };
+    const entries = this.codeFor(this.exportSession.token, transport, before, tree.bytes, mode === 'internal', new Map(profile.baseline?.files.map(file => [file.path, file.mode]) ?? [])); this.replacement = null;
+    return { settings: saved, analysis: { token: this.exportSession.token, state: targetState, sourceState: transport.sourceState, packageType: transport.packageType, files: files.length, changes: counts(records), excludedGit: tree.excludedGit, excludedCustom: tree.excludedCustom, estimatedBytes: parts.reduce((sum, part) => sum + part.length, 0), parts: parts.length, findings: findings.map(item => item.public), lineChanges: textChanges(transport, before), local: session.resolved.source.kind === 'local', ignored: tree.ignored, workingChanges: session.workingChanges, entries } };
   }
   async previewReplacement(token: string, findingId: string): Promise<{ token: string; path: string; line: number; preview: string; replacement: string }> {
     const { session, finding } = this.finding(token, findingId);
@@ -308,6 +311,10 @@ export class Engine {
     await refreshSource(source, 'global', this.cache);
     const latest = await resolveSource(source, 'global', this.cache);
     if (latest.commit !== session.resolved.commit) throw new Error('Внешняя ветка изменилась. Запустите синхронизацию заново.');
+    if (!profile.baseline) {
+      const local = await resolveSource(profile.sources.internal!, 'internal', this.cache);
+      if (local.commit !== session.transport.sourceState) throw new Error('Локальная ветка изменилась. Обновите сравнение перед применением.');
+    }
     return this.prepareTransport(session.transport, profile.sources.internal!.location, profile.id);
   }
   async preflight(filename: string, target: string, profileId: string): Promise<ImportPreview> {
@@ -335,11 +342,11 @@ export class Engine {
     this.importSession = { token, profileId, environment: 'internal', target: root, transport, files, baseline };
     const localBefore = new Map<string, Buffer>(); const localAfter = new Map<string, Buffer>();
     for (const file of files) { if (file.before) localBefore.set(file.path, file.before); if (file.after) localAfter.set(file.path, file.after); }
-    this.codeFor(token, transport, localBefore, localAfter, false);
+    const entries = this.codeFor(token, transport, localBefore, localAfter, false, new Map(files.filter(file => file.beforeMode !== null).map(file => [file.path, file.beforeMode!])));
     // For renames, the old name has a separate delete operation in the prepared set.
     return { token, workingChanges: await workingStatus(root), packageId: transport.packageId, sourceState: transport.sourceState, targetState: transport.targetState,
       packageType: transport.packageType, changes: counts(transport.records), files: transport.files.length, lineChanges: textChanges(transport, before),
-      entries: transport.records.map(r => ({ path: r.path, oldPath: r.oldPath, operation: r.operation, size: r.size })) };
+      entries };
   }
   async applyImport(token: string): Promise<Settings> {
     const session = this.importSession;
