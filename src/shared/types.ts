@@ -77,7 +77,7 @@ export interface API {
   openFinding(token: string, findingId: string): Promise<void>;
   previewReplacement(token: string, findingId: string): Promise<ReplacementPreview>;
   applyReplacement(token: string): Promise<void>;
-  prepareIncoming(token: string): Promise<ImportPreview>;
+  prepareIncoming(token: string, selectedPaths?: string[]): Promise<ImportPreview>;
   openRepository(id: string): Promise<void>;
   preflight(path: string, target: string, profileId: string): Promise<ImportPreview>;
   applyImport(token: string): Promise<Settings>;

@@ -19,9 +19,9 @@ Internal profile связывает локальный repository/branch и вн
 
 Compare → preflight → Preview → Apply без Security Review и маскирования. Актуальные refs проверяются перед сравнением и preflight, без фоновых повторов. Выбранный SHA закреплён: продвижение ветки не расширяет diff. Для floating HEAD в repositories/zero изменение target требует нового сравнения; repositories также проверяет локальный committed HEAD. Ошибка отображается рядом с действием, повтор сохраняет выбранный способ и SHA; можно выбрать другие изменения.
 
-Canonical transport проверяется относительно выбранного before, затем готовится применение к текущим локальным файлам. Независимые text hunks сохраняются при точном и однозначном контексте без fuzz. Пересечение, неоднозначность, несовпадение before для DELETE/RENAME/REPLACE и modes останавливают preflight до mutation. ADD допускает отсутствующий путь либо точно совпадающий файл. Git index/history не меняются.
+Canonical transport проверяется относительно выбранного before. Для входящего MODIFY целиком применяется проверенное содержимое внешнего target B; любые локальные правки того же файла заменяются. Это правило ограничено путями самого diff: остальные локальные файлы и пути не затрагиваются. Для DELETE/RENAME/REPLACE проверяются исходные bytes и modes. ADD допускает отсутствующий путь либо точно совпадающий файл. Git index/history не меняются.
 
-Commit/range сохраняют прежнюю common baseline: частичный diff не доказывает совпадение полного inventory. Repositories/zero сохраняют canonical внешний target как common state; независимые принимающие bytes остаются локальными. Непустое применение выставляет commitRequired, исходящий пакет требует коммита применённых изменений. Входящий zero является явным выбором даже при существующей baseline; ограничения импорта внешнего snapshot-пакета остаются прежними.
+Файлы можно включать в Apply отдельно; по умолчанию выбраны все records. Commit/range сохраняют прежнюю common baseline: частичный diff не доказывает совпадение полного inventory. Repositories/zero сохраняют canonical внешний target как common state только при полном выборе; частичный выбор не продвигает baseline. Независимые принимающие bytes остаются локальными. Непустое применение выставляет commitRequired, исходящий пакет требует коммита применённых изменений. Входящий zero является явным выбором даже при существующей baseline; ограничения импорта внешнего snapshot-пакета остаются прежними.
 
 ## Internal → External
 
@@ -33,7 +33,7 @@ Export не меняет baseline. Подтверждать «Подтверди
 
 ## Apply / rollback / recovery
 
-Перед mutation повторяются root/branch, applicability, bytes и modes. Изменившийся после Preview файл останавливает Apply. Backup и journal создаются до записи, touched intent — перед каждой операцией. Проверяются actual merged bytes/modes затронутых файлов; независимые local файлы не обязаны совпадать с canonical внешним inventory.
+Перед mutation повторяются root/branch, applicability, bytes и modes. Изменившийся после Preview файл останавливает Apply. Backup и journal создаются до записи, touched intent — перед каждой операцией. Проверяются фактические bytes/modes запланированных файлов; независимые local файлы не обязаны совпадать с canonical внешним inventory.
 
 После успеха атомарно сохраняются дата и, для полного переноса, common state, затем committed marker. При ошибке откатываются затронутые пути и settingsBefore. При посторонних bytes recovery останавливается. Незавершённые journals откатываются при следующем запуске. Backup остаётся локально. Git index, history и commit/push не меняются.
 

@@ -102,7 +102,12 @@ async function start(): Promise<void> {
         }
         case 'previewReplacement': value = await engine.previewReplacement(string(args[0], 36), string(args[1], 20)); break;
         case 'applyReplacement': await engine.applyReplacement(string(args[0], 36)); value = undefined; break;
-        case 'prepareIncoming': value = await engine.prepareIncoming(string(args[0], 36)); break;
+        case 'prepareIncoming': {
+          const paths = args[1];
+          if (paths !== undefined && (!Array.isArray(paths) || paths.length > 100_000)) throw new Error('Не удалось прочитать выбранные файлы. Обновите сравнение.');
+          value = await engine.prepareIncoming(string(args[0], 36), paths === undefined ? undefined : paths.map(item => string(item)));
+          break;
+        }
         case 'openRepository': { const profile = store.get().profiles.find(p => p.id === string(args[0], 36)); if (!profile?.sources.internal) throw new Error('Укажите локальный репозиторий в настройках.'); const error = await shell.openPath(await realpath(profile.sources.internal.location)); if (error) throw new Error('Не удалось открыть папку репозитория. Проверьте путь в настройках.'); value = undefined; break; }
         case 'preflight': value = await engine.preflight(string(args[0]), string(args[1]), string(args[2], 36)); break;
         case 'applyImport': value = await engine.applyImport(string(args[0], 36)); break;
