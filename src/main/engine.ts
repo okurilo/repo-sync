@@ -606,7 +606,9 @@ async function prepare(root: string, transport: Transport, baseline: Baseline | 
       const destination = await safePath(root, record.path);
       const existing = await optionalRead(destination);
       if (existing !== null && sha256(existing) === record.afterSha256 && (process.platform === 'win32' || Boolean((await lstat(destination)).mode & 0o111) === Boolean(record.mode & 0o111))) continue;
-      conflict();
+      if (existing !== null) conflict();
+      prepared.push({ path: record.path, before: null, after, beforeMode: null, afterMode });
+      continue;
     }
     if (record.operation !== 'DELETE' && record.operation !== 'RENAME' && old !== null && sha256(old) === record.afterSha256
       && (process.platform === 'win32' || Boolean(mode! & 0o111) === Boolean(record.mode & 0o111) || (record.operation === 'MODIFY' && prior?.mode === record.mode))) continue;
