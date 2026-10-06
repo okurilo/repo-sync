@@ -599,25 +599,32 @@ async function prepare(root: string, transport: Transport, baseline: Baseline | 
     const modeMatches = old !== null && (process.platform === 'win32' || Boolean(mode! & 0o111) === Boolean(prior?.mode && prior.mode & 0o111));
     let after = canonical.get(record.path) ?? null;
     let afterMode = record.mode;
-    const conflict = (): never => { throw new Error(`Синхронизация остановлена. Конфликт: ${name}. Репозиторий не изменён.`); };
+    const operationName: Record<Operation, string> = { ADD: 'добавление', MODIFY: 'изменение', DELETE: 'удаление', RENAME: 'переименование', REPLACE: 'замена файла' };
+    const conflict = (reason: string): never => { throw new Error(`Не удалось проверить применение: ${operationName[record.operation]} «${name}». ${reason} Репозиторий не изменён.`); };
     // A patch describes a transition, not a requirement to recreate its old state.
     if (record.operation === 'DELETE' && old === null) continue;
     if (record.operation === 'RENAME' && old === null) {
       const destination = await safePath(root, record.path);
       const existing = await optionalRead(destination);
       if (existing !== null && sha256(existing) === record.afterSha256 && (process.platform === 'win32' || Boolean((await lstat(destination)).mode & 0o111) === Boolean(record.mode & 0o111))) continue;
-      if (existing !== null) conflict();
+      if (existing !== null) conflict(`Исходного файла нет, а путь назначения «${record.path}» уже занят другим содержимым.`);
       prepared.push({ path: record.path, before: null, after, beforeMode: null, afterMode });
       continue;
     }
     if (record.operation !== 'DELETE' && record.operation !== 'RENAME' && old !== null && sha256(old) === record.afterSha256
       && (process.platform === 'win32' || Boolean(mode! & 0o111) === Boolean(record.mode & 0o111) || (record.operation === 'MODIFY' && prior?.mode === record.mode))) continue;
-    if (record.operation === 'ADD') { if (old !== null && (sha256(old) !== record.afterSha256 || (process.platform !== 'win32' && Boolean(mode! & 0o111) !== Boolean(record.mode & 0o111)))) conflict(); }
-    else if (old === null) conflict();
+    if (record.operation === 'ADD') { if (old !== null && (sha256(old) !== record.afterSha256 || (process.platform !== 'win32' && Boolean(mode! & 0o111) !== Boolean(record.mode & 0o111)))) conflict(`Путь «${record.path}» уже существует, и его содержимое или права отличаются от входящего файла.`); }
+    else if (old === null && (record.operation === 'MODIFY' || record.operation === 'REPLACE')) {
+      // The verified canonical tree already contains the complete final bytes.
+      // If the receiving path is absent, materialize them as a new file.
+      prepared.push({ path: record.path, before: null, after, beforeMode: null, afterMode });
+      continue;
+    }
+    else if (old === null) conflict(`Исходного файла «${name}» нет во внутреннем репозитории, поэтому применить эту операцию невозможно.`);
     else if (record.operation === 'MODIFY') {
-      if (old.includes(0) || !Buffer.from(old.toString('utf8')).equals(old)) conflict();
+      if (old.includes(0) || !Buffer.from(old.toString('utf8')).equals(old)) conflict('Локальный файл не является допустимым UTF-8 текстом, поэтому текстовый diff нельзя применить.');
       // A local edit to mode can coexist with incoming text, but conflicting mode changes cannot.
-      if (!modeMatches && prior?.mode !== record.mode) conflict();
+      if (!modeMatches && prior?.mode !== record.mode) conflict('Права на выполнение файла локально изменены и расходятся с правами в выбранном diff.');
       if (prior?.mode === record.mode) afterMode = mode!;
       const payload = decode(record).toString('utf8');
       if (!contentMatches) {
@@ -625,16 +632,18 @@ async function prepare(root: string, transport: Transport, baseline: Baseline | 
         for (const hunk of parsePatch(payload).flatMap(patch => patch.hunks)) {
           const expected = hunk.lines.filter(line => line.startsWith(' ') || line.startsWith('-')).map(line => line.slice(1));
           let matches = 0;
-          if (!expected.length) conflict();
+          if (!expected.length) conflict('В diff нет однозначного контекста для проверки локальной версии файла.');
           for (let i = 0; i + expected.length <= lines.length; i++) if (expected.every((line, offset) => lines[i + offset] === line)) matches++;
-          if (matches !== 1) conflict();
+          if (matches !== 1) conflict(matches === 0 ? 'Локальный файл изменён в тех же строках, что и входящий diff.' : 'Контекст diff встречается в локальном файле несколько раз, поэтому место изменения неоднозначно.');
         }
       }
       const next = applyPatch(old.toString('utf8'), payload, { fuzzFactor: 0, autoConvertLineEndings: false });
-      if (next === false) throw new Error(`Синхронизация остановлена. Конфликт: ${name}. Репозиторий не изменён.`); after = Buffer.from(next);
-    } else if (!contentMatches || !modeMatches) conflict();
+      if (next === false) conflict('Git diff не совпал с локальными строками файла.');
+      else after = Buffer.from(next);
+    } else if (!contentMatches) conflict('Локальное содержимое отличается от исходного файла, на котором построен diff.');
+    else if (!modeMatches) conflict('Права на выполнение файла отличаются от исходного состояния diff.');
     if (record.operation === 'RENAME') {
-      if (await optionalRead(await safePath(root, record.path)) !== null) conflict();
+      if (await optionalRead(await safePath(root, record.path)) !== null) conflict(`Путь назначения «${record.path}» уже существует.`);
       prepared.push({ path: name, before: old, after: null, beforeMode: mode, afterMode });
     }
     if (record.operation === 'RENAME' || !sameBuffer(old, after) || mode !== afterMode) prepared.push({ path: record.path, before: record.operation === 'RENAME' ? null : old, after, beforeMode: record.operation === 'RENAME' ? null : mode, afterMode });
