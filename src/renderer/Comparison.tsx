@@ -1,5 +1,5 @@
 import { Icon, reveal } from './Appearance';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { diffLines } from 'diff';
 import styled from 'styled-components';
 import type { CodeComparison, CodePreview, Profile } from '../shared/types';
@@ -42,7 +42,10 @@ function paired(rows: ReturnType<typeof lines>): { left?: ReturnType<typeof line
   }
   return result;
 }
-export function Comparison({ profile, revision, status, busy, onBusy }: { profile: Profile; revision: number; status: string; busy: boolean; onBusy: (value: boolean) => void }): React.JSX.Element {
+export function Comparison({ profile, revision, status, busy, onBusy, request }: { profile: Profile; revision: number; status: string; busy: boolean; onBusy: (value: boolean) => void; request?: React.MutableRefObject<Promise<void> | null> }): React.JSX.Element {
+  const localRequest = useRef<Promise<void> | null>(null);
+  const pending = request ?? localRequest;
+  const generation = useRef(0);
   const [sideBySide, setSideBySide] = useState(false);
   const [comparison, setComparison] = useState<CodeComparison | null>(null);
   const [preview, setPreview] = useState<CodePreview | null>(null);
@@ -50,25 +53,36 @@ export function Comparison({ profile, revision, status, busy, onBusy }: { profil
   const [loading, setLoading] = useState(false); const [query, setQuery] = useState('');
   const key = JSON.stringify({ sources: profile.sources, exclusions: profile.exclusions, includeIgnored: profile.includeIgnored });
   useEffect(() => {
+    generation.current++;
     let active = true; setComparison(null); setPreview(null); setSelected(''); setError('');
     if (busy || !Object.values(profile.sources).some(source => source?.location)) return;
     if (Object.values(profile.sources).some(source => [source?.commit, source?.base?.commit].some(commit => commit && !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(commit)))) return;
     const timer = setTimeout(() => {
-      setLoading(true); onBusy(true);
-      void window.reposync.previewComparison(profile).then(async value => {
+      const previous = pending.current;
+      const task = (async (): Promise<void> => {
+        await previous;
+        if (!active) return;
+        setLoading(true); onBusy(true);
+        await window.reposync.previewComparison(profile).then(async value => {
         if (!active) return; setComparison(value);
         const first = value.entries[0];
         if (first) { setSelected(first.path); const code = await window.reposync.previewCode(value.token, first.path); if (active) setPreview(code); }
       }).catch((cause: unknown) => { if (active) setError(cause instanceof Error ? cause.message : 'Не удалось загрузить сравнение'); })
         .finally(() => { onBusy(false); if (active) setLoading(false); });
+      })();
+      pending.current = task;
     }, 150);
     return () => { active = false; clearTimeout(timer); };
-  }, [key, revision, busy, onBusy]);
+  }, [key, revision, busy, onBusy, pending]);
   async function open(name: string): Promise<void> {
     if (!comparison || loading) return; setSelected(name); setPreview(null); setError(''); setLoading(true); onBusy(true);
-    try { setPreview(await window.reposync.previewCode(comparison.token, name)); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : 'Не удалось прочитать файл'); }
-    finally { setLoading(false); onBusy(false); }
+    const current = generation.current;
+    const task = (async (): Promise<void> => {
+      try { const result = await window.reposync.previewCode(comparison.token, name); if (generation.current === current) setPreview(result); }
+      catch (cause) { if (generation.current === current) setError(cause instanceof Error ? cause.message : 'Не удалось прочитать файл'); }
+      finally { if (generation.current === current) setLoading(false); onBusy(false); }
+    })();
+    pending.current = task; await task;
   }
   const entries = comparison?.entries.filter(entry => entry.path.toLowerCase().includes(query.toLowerCase())) ?? [];
   function tree(items: CodeComparison['entries'], prefix = ''): React.JSX.Element[] {

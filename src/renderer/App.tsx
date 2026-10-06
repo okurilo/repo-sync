@@ -1,3 +1,4 @@
+import { BranchPicker } from './BranchPicker';
 import { AppearanceStyle, BusyNotice, ExportActions, Icon, ScanFile, ScanWorkspace, reveal, type Appearance } from './Appearance';
 import { Comparison } from './Comparison';
 import { useEffect, useRef, useState } from 'react';
@@ -113,6 +114,7 @@ export function App(): React.JSX.Element {
   const [remoteVersion, setRemoteVersion] = useState(0);
   const [remoteStatus, setRemoteStatus] = useState('');
   const foregroundBusy = useRef(false);
+  const previewRequest = useRef<Promise<void> | null>(null);
   const [previewBusy, setPreviewBusy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -129,7 +131,7 @@ export function App(): React.JSX.Element {
   const pending = mode && profile?.pending[mode];
   async function run(work: () => Promise<void>): Promise<void> {
     setBusy(true); setError(''); setNotice('');
-    try { await work(); } catch (e) { setError(e instanceof Error ? e.message : 'Операция не выполнена'); }
+    try { await previewRequest.current; await work(); } catch (e) { setError(e instanceof Error ? e.message : 'Операция не выполнена'); }
     finally { setBusy(false); }
   }
   useEffect(() => { void api.settings().then(value => { setSettings(value); setSelected(value.profiles[0]?.id ?? ''); }).catch(e => setError(String(e))); }, []);
@@ -419,7 +421,7 @@ export function App(): React.JSX.Element {
 <ProfileModal role="dialog" aria-modal="true" aria-labelledby="profile-modal-title">
 <ModalHeader><h2 id="profile-modal-title">{settings?.profiles.some(p => p.id === draft.id) ? 'Настройка профиля' : 'Новый профиль'}</h2><CloseButton aria-label="Закрыть" disabled={busy || previewBusy} onClick={() => setDraft(null)}>×</CloseButton></ModalHeader>
 <ProfileBody>
-<fieldset disabled={busy || previewBusy}>
+<fieldset disabled={busy}>
 <Form>
 <label>Название<input value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })} placeholder="Core App" />
 </label>{mode === 'global' && <label>Источник Global<select value={draftSource.kind} onChange={e => updateSource({ kind: e.target.value as Source['kind'], location: '' })}>
@@ -430,9 +432,7 @@ export function App(): React.JSX.Element {
 <input value={draftSource.location} onBlur={() => { if (draftSource.location && branches.length === 0 && !busy) void run(() => loadOptions(draftSource)); }} onChange={e => updateSource({ location: e.target.value })} style={{ flex: 1 }} placeholder={draftSource.kind === 'remote' ? 'https://github.com/user/core-app.git' : '/path/to/repository'} />{draftSource.kind === 'local' && <Button onClick={() => void run(async () => { const name = await api.chooseDirectory(); if (name) { updateSource({ location: name }); await loadOptions({ ...draftSource, location: name, commit: '' }); } })}>Выбрать</Button>}</Row>
 </label>
 <Grid>
-<label>Целевая ветка (до){branches.length > 0 ? <select value={draftSource.branch} onChange={e => selectBranch(e.target.value)}>
-{!branches.includes(draftSource.branch) && <option value={draftSource.branch}>{draftSource.branch} (кэш)</option>}{branches.map(branch => <option key={branch} value={branch}>{branch}</option>)}
-</select> : <input value={draftSource.branch} onChange={e => updateSource({ branch: e.target.value })} onBlur={() => { if (draftSource.location && draftSource.branch) selectBranch(draftSource.branch); }} />}
+<label>Целевая ветка (до){branches.length > 0 ? <BranchPicker key={`${draftSource.location}:target`} label="Целевая ветка" branches={branches} value={draftSource.branch} onChange={selectBranch} /> : <input value={draftSource.branch} onChange={e => updateSource({ branch: e.target.value })} onBlur={() => { if (draftSource.location && draftSource.branch) selectBranch(draftSource.branch); }} />}
 <Button disabled={!draftSource.location} onClick={() => void run(async () => { if (draftSource.kind === 'remote') { const update = await api.refreshSource(draftSource); setBranches(update.branches); setCommits(update.commits); setBaseCommits(update.baseCommits); setRemoteVersion(value => value + 1); setRemoteStatus('Ветки обновлены'); } else await loadOptions(draftSource); })}>Обновить ветки и коммиты</Button>
 </label>
 <label>Maximum part size, MB<input type="number" min={1} max={512} value={draft.maxPartMB} onChange={e => setDraft({ ...draft, maxPartMB: Number(e.target.value) })} />
@@ -456,10 +456,10 @@ export function App(): React.JSX.Element {
   if (base && draftSource.location) void run(async () => setBaseCommits(await api.listCommits({ ...draftSource, ...base, base: undefined })));
 }} />Сравнить два выбранных коммита вместо последнего синхронизированного состояния</Check>
 {draftSource.base && <>
-<label>Исходная ветка (от){branches.length ? <select value={draftSource.base.branch} onChange={e => {
-  const base = { branch: e.target.value, commit: '' }; updateSource({ base }); setBaseCommits([]);
+<label>Исходная ветка (от){branches.length ? <BranchPicker key={`${draftSource.location}:base`} label="Исходная ветка" branches={branches} value={draftSource.base.branch} onChange={branch => {
+  const base = { branch, commit: '' }; updateSource({ base }); setBaseCommits([]);
   void run(async () => setBaseCommits(await api.listCommits({ ...draftSource, ...base, base: undefined })));
-}}>{branches.map(branch => <option key={branch} value={branch}>{branch}</option>)}</select> : <input value={draftSource.base.branch} onChange={e => { updateSource({ base: { branch: e.target.value, commit: '' } }); setBaseCommits([]); }} />}</label>
+}} /> : <input value={draftSource.base.branch} onChange={e => { updateSource({ base: { branch: e.target.value, commit: '' } }); setBaseCommits([]); }} />}</label>
 <label>Исходный коммит (от)
 <Row><select style={{ flex: 1 }} value={draftSource.base.commit ?? ''} onChange={e => updateSource({ base: { ...draftSource.base!, commit: e.target.value } })}>
 <option value="">Последний коммит исходной ветки</option>
@@ -475,7 +475,7 @@ export function App(): React.JSX.Element {
 </label>}<small>Git ignore rules применяются к untracked files. Tracked files остаются частью committed state.</small>{error && <Notice $error>{error}</Notice>}
 </Form>
 </fieldset>
-<Comparison profile={draft} revision={remoteVersion} status={remoteStatus} busy={busy} onBusy={setPreviewBusy} />
+<Comparison profile={draft} revision={remoteVersion} status={remoteStatus} busy={busy} onBusy={setPreviewBusy} request={previewRequest} />
 </ProfileBody>
 <ModalFooter disabled={busy || previewBusy}><Row>
 <Button $primary onClick={() => void run(async () => { setSettings(await api.saveProfile(draft)); setSelected(draft.id); if (draftSource.base) setPackageType('diff'); setDraft(null); reset(); })}>Сохранить</Button>

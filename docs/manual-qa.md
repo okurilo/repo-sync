@@ -99,3 +99,11 @@
 ### Дизайн — 2026-10-05
 
 Проверены временным SSR fixture обе темы, отображение причин disabled и bulk actions, автоматический fallback выбранного файла после удаления, unified/split diff с подсветкой и указанием пути, генерация CSS reduced-motion. Найден и исправлен runtime throw от интерполяции styled keyframes в object string: animation names задаются global object @keyframes. Typecheck/build проходят. Computer Use вернул client/server mismatch; нативная визуальная проверка ширины, resize и эффектов не выполнена.
+
+### Выбор веток — 2026-10-06
+
+SSR fixture на 500 ветках: поиск последней ветки, пустой результат, сохранённая cached branch, size=8 и height=224px. Проверки обеих тем/unified/split и production build прошли. Нативный wheel/trackpad пока визуально не проверен (Computer Use mismatch); прокрутка реализована встроенным listbox вместо OS popup.
+
+### Focus профиля — 2026-10-06
+
+Проверены typecheck/build и прежние SSR сценарии. Временный deferred-IPC fixture: изменение draft во время незавершённого preview не запускает второй IPC, старый результат отбрасывается, следующий запускается после завершения. Нативный ввод/фокус не проверен визуально из-за Computer Use mismatch; форма больше не получает disabled от previewBusy.
