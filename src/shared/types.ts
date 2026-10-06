@@ -8,11 +8,13 @@ export type Encoding = 'RAW' | 'BASE64' | 'BROTLI_BASE64';
 export interface GitRevision { branch: string; commit?: string }
 export interface Source { kind: 'local' | 'remote'; location: string; branch: string; commit?: string; base?: GitRevision }
 export interface CommitOption { sha: string; date: string; subject?: string }
-export interface IncomingSelection { mode: 'commit' | 'range' | 'repositories' | 'zero'; commit?: string; from?: string }
+export interface IncomingSelection { mode: 'branch' | 'commit' | 'range' | 'repositories' | 'zero'; commit?: string; from?: string; baseBranch?: string; branch?: string }
+export interface BranchContext { branches: string[]; defaultBranch?: string }
+export interface ExportReview { findings: Finding[]; parts: number; estimatedBytes: number }
 export interface RemoteUpdate { changedBranches: string[]; branches: string[]; commits: CommitOption[]; baseCommits: CommitOption[] }
 export interface FileEntry { path: string; sha256: string; size: number; mode: number }
 export interface Baseline { state: string; files: FileEntry[]; scope: string; localRepository?: string }
-export interface Pending { packageId: string; target: Baseline; paths: string[] }
+export interface Pending { packageId: string; target: Baseline; paths: string[]; partial?: boolean }
 export interface Profile {
   id: string; name: string; sources: Partial<Record<Environment, Source>>;
   role: RepositoryRole; baseline?: Baseline; pending?: Pending;
@@ -20,7 +22,7 @@ export interface Profile {
   exclusions: string[]; includeIgnored: string[]; maxPartMB: number;
 }
 export interface Settings {
-  schemaVersion: 4; profiles: Profile[];
+  schemaVersion: 5; profiles: Profile[];
   outputDirectory: string; lastRepositories: string[];
 }
 export interface RecordData {
@@ -39,6 +41,7 @@ export interface Finding {
 }
 export interface Analysis {
   incomingMode?: IncomingSelection['mode'];
+  branchComparison?: { branch: string; baseBranch: string; baseHead: string };
   token: string; state: string; sourceState: string | null; packageType: PackageType;
   files: number; changes: Record<Operation, number>; excludedGit: number;
   excludedCustom: number; estimatedBytes: number; parts: number; findings: Finding[];
@@ -65,11 +68,15 @@ export interface API {
   choosePackage(): Promise<string | null>;
   setOutputDirectory(path: string): Promise<Settings>;
   refreshSource(source: Source): Promise<RemoteUpdate>;
+  branchContext(source: Source): Promise<BranchContext>;
   listBranches(source: Source): Promise<string[]>;
   listCommits(source: Source): Promise<CommitOption[]>;
   previewComparison(profile: Profile, direction: Direction): Promise<CodeComparison>;
   previewCode(token: string, path: string): Promise<CodePreview>;
   analyze(id: string, direction: Direction, selection?: IncomingSelection): Promise<Analysis>;
+  selectExport(token: string, selectedPaths: string[]): Promise<ExportReview>;
+  loadPackage(path: string, profileId: string): Promise<CodeComparison>;
+  preparePackage(token: string, selectedPaths: string[]): Promise<ImportPreview>;
   exportPackage(token: string, keep: string[], override: boolean): Promise<string[]>;
   confirmTransfer(id: string): Promise<Settings>;
   discardPending(id: string): Promise<Settings>;

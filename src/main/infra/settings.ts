@@ -77,13 +77,13 @@ function parseBaseline(value: unknown): Baseline {
   return result;
 }
 function parseSettings(raw: Record<string, unknown>): Settings {
-      if ((raw.schemaVersion !== 1 && raw.schemaVersion !== 2 && raw.schemaVersion !== 3 && raw.schemaVersion !== 4) || !Array.isArray(raw.profiles) || raw.profiles.length > 100) throw new Error('Настройки повреждены или версия не поддерживается');
+      if ((raw.schemaVersion !== 1 && raw.schemaVersion !== 2 && raw.schemaVersion !== 3 && raw.schemaVersion !== 4 && raw.schemaVersion !== 5) || !Array.isArray(raw.profiles) || raw.profiles.length > 100) throw new Error('Настройки повреждены или версия не поддерживается');
       const profiles = raw.profiles.map((value: unknown): Profile => {
         const saved = object(value);
         // Legacy profiles are retained for explicit setup; divergent old baselines are
         // never promoted to a common state because that could erase local changes.
         let profile: Profile;
-        if (raw.schemaVersion === 4) {
+        if ((raw.schemaVersion === 4 || raw.schemaVersion === 5)) {
           if (saved.role !== 'internal' && saved.role !== 'external') throw new Error('Некорректный тип репозитория.');
           if (object(saved.sources).internal === undefined || (saved.role === 'internal' && object(saved.sources).global === undefined)) {
             profile = { id: string(saved.id, 36), name: string(saved.name, 100), role: saved.role === 'internal' ? 'internal' : 'external', transportMode: 'compact', sources: {}, exclusions: Array.isArray(saved.exclusions) ? saved.exclusions.map((v: unknown) => string(v, 512)) : [], includeIgnored: [], maxPartMB: integer(saved.maxPartMB, 1, 512) };
@@ -101,19 +101,20 @@ function parseSettings(raw: Record<string, unknown>): Settings {
           if (local) { profile.sources.internal = parseSource(local, 'internal'); delete profile.sources.internal.commit; delete profile.sources.internal.base; }
           if (remote) { profile.sources.global = parseSource(remote, 'global'); delete profile.sources.global.commit; delete profile.sources.global.base; }
         }
-        const pending = raw.schemaVersion === 4 ? saved.pending : object(saved.pending)[raw.environment === 'global' ? 'global' : 'internal'];
+        const pending = (raw.schemaVersion === 4 || raw.schemaVersion === 5) ? saved.pending : object(saved.pending)[raw.environment === 'global' ? 'global' : 'internal'];
         if (pending !== undefined) {
           const item = object(pending);
           if (!Array.isArray(item.paths) || item.paths.length > 10_000) throw new Error('Повреждён список файлов пакета, ожидающего подтверждения.');
-          profile.pending = { packageId: string(item.packageId, 36), target: parseBaseline(item.target), paths: item.paths.map((v: unknown) => string(v)) };
+          if (item.partial !== undefined && typeof item.partial !== 'boolean') throw new Error('Повреждён признак частичного пакета.');
+          profile.pending = { partial: item.partial as boolean | undefined, packageId: string(item.packageId, 36), target: parseBaseline(item.target), paths: item.paths.map((v: unknown) => string(v)) };
         }
         return profile;
       });
       if (new Set(profiles.map(p => p.id)).size !== profiles.length || !Array.isArray(raw.lastRepositories) || raw.lastRepositories.length > 10) throw new Error('Список репозиториев или история повреждены.');
-      return { schemaVersion: 4, profiles, outputDirectory: string(raw.outputDirectory), lastRepositories: raw.lastRepositories.map((p: unknown) => string(p)) };
+      return { schemaVersion: 5, profiles, outputDirectory: string(raw.outputDirectory), lastRepositories: raw.lastRepositories.map((p: unknown) => string(p)) };
 }
 export class SettingsStore {
-  private value: Settings = { schemaVersion: 4, profiles: [], outputDirectory: '', lastRepositories: [] };
+  private value: Settings = { schemaVersion: 5, profiles: [], outputDirectory: '', lastRepositories: [] };
   readonly filename: string;
   constructor(readonly directory: string) { this.filename = path.join(directory, 'settings.json'); }
   async load(): Promise<void> {
@@ -122,7 +123,7 @@ export class SettingsStore {
       const original = await readFile(this.filename, 'utf8');
       const raw = object(JSON.parse(original) as unknown);
       this.value = parseSettings(raw);
-      if (raw.schemaVersion !== 4) {
+      if (raw.schemaVersion !== 5) {
         try { await writeFile(path.join(this.directory, `settings.v${Number(raw.schemaVersion)}.backup.json`), original, { flag: 'wx', mode: 0o600 }); }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
       }

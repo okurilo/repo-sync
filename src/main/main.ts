@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { lstat, realpath } from 'node:fs/promises';
 import { Engine, parseIncomingSelection } from './engine';
 import { SettingsStore, parseProfile, parseSource } from './infra/settings';
-import { listBranches, listCommits, refreshSource, safePath, stopGit } from './infra/git';
+import { branchContext, listBranches, listCommits, refreshSource, safePath, stopGit } from './infra/git';
 import { string } from './transport';
 import type { Reply } from '../shared/types';
 
@@ -78,10 +78,10 @@ async function start(): Promise<void> {
         case 'analyze': {
           value = await engine.analyze(string(args[0], 36), direction(args[1]), args[2] === undefined ? undefined : parseIncomingSelection(args[2])); break;
         }
-        case 'listBranches': case 'listCommits': {
+        case 'branchContext': case 'listBranches': case 'listCommits': {
           const mode = argsMode(args[0]);
           const source = parseSource(args[0], mode);
-          value = command === 'listBranches' ? await listBranches(source, mode, engine.cache) : await listCommits(source, mode, engine.cache);
+          value = command === 'branchContext' ? await branchContext(source, mode, engine.cache) : command === 'listBranches' ? await listBranches(source, mode, engine.cache) : await listCommits(source, mode, engine.cache);
           break;
         }
         case 'exportPackage': {
@@ -102,10 +102,13 @@ async function start(): Promise<void> {
         }
         case 'previewReplacement': value = await engine.previewReplacement(string(args[0], 36), string(args[1], 20)); break;
         case 'applyReplacement': await engine.applyReplacement(string(args[0], 36)); value = undefined; break;
+        case 'loadPackage': value = await engine.loadPackage(string(args[0]), string(args[1], 36)); break;
+        case 'selectExport': case 'preparePackage':
         case 'prepareIncoming': {
           const paths = args[1];
           if (paths !== undefined && (!Array.isArray(paths) || paths.length > 100_000)) throw new Error('Не удалось прочитать выбранные файлы. Обновите сравнение.');
-          value = await engine.prepareIncoming(string(args[0], 36), paths === undefined ? undefined : paths.map(item => string(item)));
+          const selected = paths === undefined ? undefined : paths.map(item => string(item));
+          value = command === 'selectExport' ? await engine.selectExport(string(args[0], 36), selected) : command === 'preparePackage' ? await engine.preparePackage(string(args[0], 36), selected) : await engine.prepareIncoming(string(args[0], 36), selected);
           break;
         }
         case 'openRepository': { const profile = store.get().profiles.find(p => p.id === string(args[0], 36)); if (!profile?.sources.internal) throw new Error('Укажите локальный репозиторий в настройках.'); const error = await shell.openPath(await realpath(profile.sources.internal.location)); if (error) throw new Error('Не удалось открыть папку репозитория. Проверьте путь в настройках.'); value = undefined; break; }

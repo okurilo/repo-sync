@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { minimatch } from 'minimatch';
-import type { CommitOption, Environment, FileEntry, Profile, RemoteUpdate, Source } from '../../shared/types';
+import type { BranchContext, CommitOption, Environment, FileEntry, Profile, RemoteUpdate, Source } from '../../shared/types';
 
 export const sha256 = (bytes: Buffer | string): string => createHash('sha256').update(bytes).digest('hex');
 const runningGit = new Set<() => void>();
@@ -130,6 +130,20 @@ export async function listBranches(source: Source, environment: Environment, cac
   if (source.kind === 'local') return (await git(source.location, ['for-each-ref', '--format=%(refname:short)', 'refs/heads/'])).toString('utf8').trim().split('\n').filter(Boolean);
   try { const saved: unknown = JSON.parse(await readFile(path.join(cache, `${sha256(source.location)}.branches.json`), 'utf8')); if (Array.isArray(saved) && saved.every((name: unknown) => typeof name === 'string')) return saved as string[]; } catch { /* cache miss */ }
   return [...(await remoteHeads(source, cache)).keys()];
+}
+export async function branchContext(source: Source, environment: Environment, cache: string): Promise<BranchContext> {
+  validateSource(source, environment);
+  let defaultBranch: string | undefined;
+  if (source.kind === 'remote') {
+    await mkdir(cache, { recursive: true, mode: 0o700 });
+    const output = (await git(cache, ['-c', 'protocol.file.allow=never', '-c', 'protocol.ext.allow=never', 'ls-remote', '--symref', '--', source.location, 'HEAD'])).toString('utf8');
+    defaultBranch = /^ref: refs\/heads\/(.+)	HEAD$/m.exec(output)?.[1];
+  } else {
+    try { defaultBranch = (await git(source.location, ['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD'])).toString().trim().replace(/^refs\/remotes\/origin\//, ''); }
+    catch (error) { if (!(error instanceof Error) || !error.message.startsWith('Git завершился с кодом 1.')) throw error; }
+  }
+  const branches = source.kind === 'remote' ? [...(await remoteHeads(source, cache)).keys()] : await listBranches(source, environment, cache);
+  return { branches, defaultBranch: defaultBranch && branches.includes(defaultBranch) ? defaultBranch : undefined };
 }
 export async function listCommits(source: Source, environment: Environment, cache: string): Promise<CommitOption[]> {
   const resolved = await resolveSource({ ...source, commit: '' }, environment, cache); const key = `${resolved.root}:${resolved.commit}`;

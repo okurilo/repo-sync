@@ -19,3 +19,7 @@ Part SHA256 проверяется до сборки. UUID, protocol/schema, о�
 512 MiB — предел логического документа и canonical восстановленного inventory; Brotli decode bounded, сумма decoded records ограничена. Не более 10 000 частей / 100 000 records. Maximum part size 1–512 MiB в UI. Snapshot — только ADD, sourceState null; Diff — операции от общей sourceState. RENAME не содержит payload и требует одинаковых before/after hashes. DELETE не содержит payload.
 
 SHA256(original canonical bytes) = SHA256(restored canonical bytes). LF/CRLF/BOM/whitespace сохраняются. Transport не является шифрованием; `.md`, cache и backups конфиденциальны.
+
+## Частичный пакет
+
+Формат v3 прежний. `content:partial:<SHA256 inventory>` обозначает согласованный target выбранных операций. В diff inventory содержит неизменённые baseline files и выбранные transitions; в snapshot — только выбранные ADD. Это не SHA полного коммита. Получатель текущей версии не продвигает common baseline для такого state, даже если применил все records пакета. Используйте актуальный RepoSync на обеих сторонах; старые версии читают формат, но не знают partial policy.

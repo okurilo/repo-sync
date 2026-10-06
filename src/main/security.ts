@@ -44,15 +44,12 @@ export function scan(records: RecordData[], local: boolean): PrivateFinding[] {
         const line = text.slice(0, offset).split('\n').length;
         const context = /(?:mock|mocks|fixtures|test-data|seed|demo)(?:\/|$)/i.test(record.path) ? ' · контекст тестовых данных' : '';
         findings.push({ public: { id: `${findings.length}`, path: record.path, line,
-          preview: value.slice(0, 160).replace(/[^\r\n]/g, '•'), reason: rule.reason + context,
+          preview: value.slice(0, 160), reason: rule.reason + context,
           severity: rule.severity, replacement: rule.replacement, canReplace: local && value.length > 0 }, value, offset });
         if (findings.length >= 10_000) throw new Error('Найдено 10 000 совпадений. Исключите часть файлов и повторите проверку.');
       }
     }
     const matches = findings.slice(firstFinding);
-    const positions = new Set<number>();
-    for (const finding of matches) for (let i = finding.offset; i < finding.offset + finding.value.length; i++) positions.add(i);
-    const masked = (start: number, end: number): string => text.slice(start, end).split('').map((char, index) => positions.has(start + index) && char !== '\r' && char !== '\n' ? '•' : char).join('');
     for (const item of matches) {
       const payloadLine = item.public.line;
       const location = findingLocation(record, payloadLine, text);
@@ -60,7 +57,7 @@ export function scan(records: RecordData[], local: boolean): PrivateFinding[] {
       const start = Math.max(0, text.lastIndexOf('\n', item.offset - 1) + 1, item.offset - 160);
       const endOfLine = text.indexOf('\n', item.offset + item.value.length);
       const end = Math.min(endOfLine < 0 ? text.length : endOfLine, item.offset + item.value.length + 160);
-      item.public.context = { before: masked(start, item.offset), match: masked(item.offset, item.offset + Math.min(item.value.length, 160)) + (item.value.length > 160 ? '…' : ''), after: masked(item.offset + item.value.length, end), location: `${record.operation === 'MODIFY' ? 'Изменения · ' : ''}${location.before ? 'строка до изменений:' : 'строка после изменений:'} ${location.line}` };
+      item.public.context = { before: text.slice(start, item.offset), match: text.slice(item.offset, item.offset + Math.min(item.value.length, 160)) + (item.value.length > 160 ? '…' : ''), after: text.slice(item.offset + item.value.length, end), location: `${record.operation === 'MODIFY' ? 'Изменения · ' : ''}${location.before ? 'строка до изменений:' : 'строка после изменений:'} ${location.line}` };
     }
   }
   return findings;
