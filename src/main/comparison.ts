@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
 import { isUtf8 } from 'node:buffer';
 
-// Display-only combinations: 1 = CRLF/LF, 2 = edge indentation, 4 = blank lines.
+// Display-only combinations: 1 = CRLF/LF, 2 = edge indentation, 4 = blank lines, 8 = collapse whitespace (compare-projects).
 export function matchingComparisonFilters(before: Buffer, after: Buffer): number[] {
   if (before.includes(0) || after.includes(0) || !isUtf8(before) || !isUtf8(after)) return [];
-  if (normalized(before, 7) !== normalized(after, 7)) return [];
-  const matches: number[] = [7];
+  const matches: number[] = collapsed(before) === collapsed(after) ? [8] : [];
+  if (normalized(before, 7) !== normalized(after, 7)) return matches;
+  matches.push(7);
   for (let options = 1; options < 7; options++) if (normalized(before, options) === normalized(after, options)) matches.push(options);
   return matches;
 }
@@ -32,5 +33,23 @@ function normalized(bytes: Buffer, options: number): string {
     }
     start = end + 1;
   }
+  return hash.digest('hex');
+}
+
+function collapsed(bytes: Buffer): string {
+  const hash = createHash('sha256');
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  let started = false; let pendingSpace = false;
+  const consume = (text: string): void => {
+    for (const match of text.matchAll(/\s+|\S+/gu)) {
+      if (/^\s/u.test(match[0])) pendingSpace = true;
+      else {
+        if (started && pendingSpace) hash.update(' ');
+        hash.update(match[0]); started = true; pendingSpace = false;
+      }
+    }
+  };
+  for (let offset = 0; offset < bytes.length; offset += 64 * 1024) consume(decoder.decode(bytes.subarray(offset, offset + 64 * 1024), { stream: true }));
+  consume(decoder.decode());
   return hash.digest('hex');
 }

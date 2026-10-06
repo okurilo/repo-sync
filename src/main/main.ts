@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { lstat, realpath } from 'node:fs/promises';
-import { Engine } from './engine';
+import { Engine, parseIncomingSelection } from './engine';
 import { SettingsStore, parseProfile, parseSource } from './infra/settings';
 import { listBranches, listCommits, refreshSource, safePath, stopGit } from './infra/git';
 import { string } from './transport';
@@ -76,7 +76,7 @@ async function start(): Promise<void> {
         }
         case 'previewCode': value = await engine.previewCode(string(args[0], 36), string(args[1])); break;
         case 'analyze': {
-          value = await engine.analyze(string(args[0], 36), direction(args[1])); break;
+          value = await engine.analyze(string(args[0], 36), direction(args[1]), args[2] === undefined ? undefined : parseIncomingSelection(args[2])); break;
         }
         case 'listBranches': case 'listCommits': {
           const mode = argsMode(args[0]);
