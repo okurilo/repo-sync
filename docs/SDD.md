@@ -8,7 +8,7 @@
 
 ## Границы процессов
 
-Renderer: React, strict TypeScript, styled-components. Foundation в `renderer/theme` и `renderer/ui`; repositories/settings/security вынесены в `renderer/features`. Верхняя панель, список repositories, focused workflow и Comparison. Renderer получает только masked findings и ограниченный code preview; произвольных Node/Git/IPC нет. Сериализация foreground и code preview сохранена.
+Renderer: React, strict TypeScript, styled-components. Foundation в `renderer/theme` и `renderer/ui`; repositories/settings/security вынесены в `renderer/features`. Верхняя панель, список repositories, focused workflow и Comparison. Renderer получает masked findings и ограниченный code preview исходящего пакета; входящий код показывается без маскирования, findings для него не строятся; произвольных Node/Git/IPC нет. Сериализация foreground и code preview сохранена.
 
 Preload: typed allowlist `window.reposync`, discriminated reply. Main: проверка sender/main frame, foreground busy guard, dialogs и orchestration. Sandbox, context isolation, CSP, запреты navigation/window/permissions и внешней сети renderer сохранены.
 
@@ -16,7 +16,7 @@ Engine: выбор направления, immutable common bytes, diff/scan, to
 
 ## Синхронизация
 
-Входящее направление сравнивает common state → external branch HEAD. Исходящее — common state → local branch committed HEAD. Common bytes нужны независимо от доступности чужого commit в локальном Git; поэтому сохраняются по SHA256 в существующей папке cache, отдельно от mutable working tree.
+Входящее направление сравнивает common state → external branch HEAD. При отсутствии common state автоматически используется единственный Git merge-base; исходный tree читается из локальной истории без сохранения baseline до Apply. Локальные Git objects импортируются только в приватный bare cache с --no-write-fetch-head, затем merge-base --all отклоняет неоднозначную историю; отсутствие общего коммита оставляет полный snapshot. Исходящее — common state → local branch committed HEAD. Common bytes нужны независимо от доступности чужого commit в локальном Git; поэтому сохраняются по SHA256 в существующей папке cache, отдельно от mutable working tree.
 
 При входящем Apply canonical пакет сначала восстанавливается из common bytes и проверяется по всем target hashes/modes. Затем операции готовятся против текущих local bytes. Independent hunks допускаются при точном и однозначном контексте, конфликт останавливает preflight. Незатронутые файлы не сверяются с внешним inventory и не заменяются. Common state после Apply соответствует canonical отправленной стороне, а не сумме её данных и независимых принимающих изменений.
 

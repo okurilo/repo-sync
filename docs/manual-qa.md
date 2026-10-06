@@ -141,3 +141,12 @@ Renderer визуально проверен в локальном in-app browse
 В in-app browser на реальном renderer и synthetic API при 900×700 проверены: недоступный выбор без папки/URL с объяснением, загрузка при открытии, список 43 веток с поиском и прокруткой, выбор мышью и сохранение выбранной ветки, стрелки/Enter/Escape, отсутствие совпадений без сброса выбора, отсутствующая выбранная ветка, пустой ответ, ошибка и повторная попытка, сброс при смене источника. Ошибка callback App не превращается в успешный пустой ответ. Console warnings/errors отсутствуют. Native listbox используется вместо macOS popup; реальные OS dialogs/remote credentials в этой проверке не запускались.
 
 `CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:mac` успешна: typecheck, renderer/Main и macOS arm64 .app/DMG/ZIP. Все 10 файлов dist в app.asar совпали с актуальным dist; статусы BranchPicker присутствуют в упакованном renderer. `git diff --check` проходит. Временный QA HTML удалён.
+
+## 2026-10-06 — входящий поток без КБ и массовый Review
+
+- Новый fixture: первый Incoming на уже разошедшихся ветках показал 2 реально изменённых файла вместо 52, sourceState равен общему commit. КБ findings пусты, incoming preview содержит исходный текст. Apply сохранил независимый internal hunk и internal-only файл; следующий outgoing содержит только внутренние изменения. Нет общей истории → null/snapshot fallback.
+- Прежние 13 групп QA повторены с ожиданием первого common diff вместо snapshot, плюс 6 групп fault/recovery/migration/legacy/replacement; успешны. Нулевой первый diff устанавливает baseline без файловой mutation.
+- Реальный renderer на временном synthetic API, 900×700: Incoming → preflight → Apply → Done без Review; outgoing 159 findings/53 files — поиск, file/all checkboxes, индивидуальное снятие, mixed state, explicit secret override и передача всех 159 IDs при export. Горизонтального переполнения нет; UI использует прокручиваемые панели. После исправления импорта временного QA HTML новых runtime errors нет. QA файлы удалены, Vite остановлен.
+
+- Дополнительно scanner заменён на выбрасывающий ошибку stub: Incoming analyze/preview/preflight/Apply прошли без его вызова. Criss-cross history с двумя merge-base отклоняется; нулевой Apply не устанавливает commitRequired.
+- Финальная macOS arm64 .app/DMG/ZIP пересобрана. Первая упаковка остановилась на сетевом доступе, повтор с разрешённой сетью успешен. Все 10 packaged dist-файлов совпадают с текущей сборкой; новые bulk/initial-sync подписи и commonRevision проверены внутри app.asar.
