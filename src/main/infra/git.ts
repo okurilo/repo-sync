@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { minimatch } from 'minimatch';
-import type { BranchContext, CommitOption, Environment, FileEntry, Profile, RemoteUpdate, Source } from '../../shared/types';
+import type { LocalGitState, BranchContext, CommitOption, Environment, FileEntry, Profile, RemoteUpdate, Source } from '../../shared/types';
 
 export const sha256 = (bytes: Buffer | string): string => createHash('sha256').update(bytes).digest('hex');
 const runningGit = new Set<() => void>();
@@ -33,7 +33,7 @@ export async function safePath(root: string, name: string): Promise<string> {
   }
   return current;
 }
-export async function git(cwd: string, args: string[], input?: Buffer): Promise<Buffer> {
+export async function git(cwd: string, args: string[], input?: Buffer, allowedFailureCode?: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const child = spawn('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'http.followRedirects=false', ...args], {
       cwd, shell: false, env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' },
@@ -64,7 +64,7 @@ export async function git(cwd: string, args: string[], input?: Buffer): Promise<
     child.on('close', code => {
       clearTimeout(timer);
       runningGit.delete(stop);
-      if (!failed) code === 0 ? resolve(Buffer.concat(chunks)) : reject(new Error(`Git завершился с кодом ${code}. Проверьте адрес репозитория, ветку и авторизацию в системных Git-инструментах.`));
+      if (!failed) code === 0 || code === allowedFailureCode ? resolve(Buffer.concat(chunks)) : reject(new Error(`Git завершился с кодом ${code}. Проверьте адрес репозитория, ветку и авторизацию в системных Git-инструментах.`));
     });
     child.stdin.on('error', () => { /* процесс может закрыть stdin раньше */ });
     child.stdin.end(input);
@@ -268,4 +268,40 @@ export async function baselineBytes(root: string, state: string, files: FileEntr
     result.set(file.path, bytes);
   }
   return result;
+}
+
+export async function localState(source: Source): Promise<LocalGitState> {
+  validateSource({ ...source, branch: source.branch || 'HEAD' }, 'internal');
+  if (source.kind !== 'local') throw new Error('Выберите папку локального репозитория.');
+  let root: string;
+  try { root = await realpath(source.location); } catch { throw new Error('Папка локального репозитория недоступна. Выберите папку снова.'); }
+  let top: string;
+  try { top = (await git(root, ['rev-parse', '--show-toplevel'])).toString().trim(); } catch { throw new Error('Не удалось прочитать локальный Git. Проверьте папку и установку Git.'); }
+  if (await realpath(top) !== root) throw new Error('Выберите корневую папку Git-репозитория.');
+  const branchText = (await git(root, ['symbolic-ref', '--quiet', '--short', 'HEAD'], undefined, 1)).toString().trim();
+  const headText = (await git(root, ['rev-parse', '--verify', '--quiet', 'HEAD'], undefined, 1)).toString().trim();
+  const branches = (await git(root, ['for-each-ref', '--format=%(refname:short)', 'refs/heads/'])).toString().trim().split('\n').filter(Boolean);
+  const workingChanges = { staged: 0, unstaged: 0, untracked: 0 }; let conflicts = 0;
+  const entries = (await git(root, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=none'])).toString().split('\0');
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i]; if (!entry) continue;
+    const code = entry.slice(0, 2);
+    if (['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU'].includes(code)) conflicts++;
+    if (code === '??') workingChanges.untracked++;
+    else { if (code[0] !== ' ') workingChanges.staged++; if (code[1] !== ' ') workingChanges.unstaged++; }
+    if (/[RC]/.test(code)) i++;
+  }
+  const operations: string[] = [];
+  for (const [marker, label] of [['MERGE_HEAD', 'merge'], ['rebase-merge', 'rebase'], ['rebase-apply', 'rebase / am'], ['CHERRY_PICK_HEAD', 'cherry-pick'], ['REVERT_HEAD', 'revert'], ['sequencer', 'sequencer']]) {
+    const name = (await git(root, ['rev-parse', '--git-path', marker!])).toString().trim();
+    try { await lstat(path.resolve(root, name)); operations.push(label!); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  }
+  const dirty = workingChanges.staged + workingChanges.unstaged + workingChanges.untracked > 0;
+  const issue = !headText ? 'В репозитории нет коммитов. Создайте первый коммит.' : conflicts ? `Неразрешённых конфликтов: ${conflicts}. Устраните их в Git.` : operations.length ? `Незавершённая операция Git: ${operations.join(', ')}. Завершите или отмените её в Git.` : dirty ? `Рабочая копия не чистая: staged — ${workingChanges.staged}, unstaged — ${workingChanges.unstaged}, untracked — ${workingChanges.untracked}. Сохраните изменения коммитом или устраните их вручную.` : !branches.includes(source.branch) ? `Выбранная ветка «${source.branch}» отсутствует. Выберите существующую ветку в настройках.` : branchText !== source.branch ? `Выбрана ветка «${source.branch}», текущая — ${branchText ? `«${branchText}»` : 'detached HEAD'}. Переключите ветку перед применением.` : null;
+  return { branch: branchText || null, head: headText || null, branches, workingChanges, conflicts, operations, issue, canSwitch: Boolean(headText) && !dirty && !conflicts && !operations.length && branches.includes(source.branch) };
+}
+export async function requireLocalReady(source: Source): Promise<LocalGitState> {
+  const state = await localState(source);
+  if (state.issue) throw new Error(`Применение остановлено: ${state.issue}`);
+  return state;
 }

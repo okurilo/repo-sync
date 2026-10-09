@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { lstat, realpath } from 'node:fs/promises';
 import { Engine, parseIncomingSelection } from './engine';
 import { SettingsStore, parseProfile, parseSource } from './infra/settings';
-import { branchContext, listBranches, listCommits, refreshSource, safePath, stopGit } from './infra/git';
+import { localState, branchContext, listBranches, listCommits, refreshSource, safePath, stopGit } from './infra/git';
 import { string } from './transport';
 import type { Reply } from '../shared/types';
 
@@ -37,6 +37,8 @@ async function start(): Promise<void> {
     try {
       let value: unknown;
       switch (command) {
+        case 'localState': value = await localState(parseSource(args[0], 'internal')); break;
+        case 'switchLocalBranch': value = await engine.switchLocalBranch(string(args[0], 36)); break;
         case 'settings': value = store.get(); break;
         case 'saveProfile': {
           const settings = store.get();

@@ -1,5 +1,16 @@
 # Ручная проверка v1
 
+## Impeccable polish — 2026-10-09
+
+- Проверен actual production Renderer после `npm run build` на localhost с существующим `/private/tmp/reposync-ui-qa.cjs` и синтетическим IPC. Реальные Git-репозитории, профили и пакеты не изменялись. Проверка не использует переимплементацию интерфейса.
+- До правок просмотрены карточки и применение пакета. После правок выполнены две ограниченные серии: dark 1220×840, light 900×640 и итоговый light 1220×840; горизонтальное переполнение документа при 900×640 отсутствовало (`scrollWidth=892`, `innerWidth=900`). Дифф доступен через прокрутку, закреплённое действие остаётся видимым.
+- Проверены branch mismatch/disabled Apply, затем synthetic switch и автоматическая prepare. Сам Apply не вызывался. Фильтры изначально свернуты; включение CRLF/LF показывает активное правило. Поиск с нулём совпадений сохраняет selected=1 и показывает selected outside list=1; финальная сборка показывает пояснение пустого поиска. В split diff подтверждены доступные названия маркеров и их отображение в одну строку.
+- Новый профиль имеет заголовок «Добавить репозиторий» и не содержит удаления; существующий сохраняет «Удалить профиль». Focus находится в названии, Escape закрывает форму без сохранения. Footer формы остаётся видимым при минимальном размере окна. Ошибок console в проверенных состояниях не обнаружено.
+- Основные существующие пары цветов в dark/light проверены вычислением контраста: body/bg, muted/surface/raised/input, accent/tint, primary foreground/accent, danger/removed, success/added — не ниже 4.5:1. Это не полный аудит всех состояний и placeholder/disabled цветов.
+- Strict build прошёл до визуального прохода и после исправления двух локальных дефектов (перенос маркеров и пояснение пустого поиска). Detector запущен один раз после основного пакета правок: `[]`, exit 0; после этих двух коррекций не повторялся. `git diff --check` прошёл.
+- Временный server session остановлен, браузерная вкладка закрыта, viewport сброшен. Итоговый снимок с синтетическим содержимым: `/private/tmp/reposync-polish.jpg`.
+- Не проверены: Windows, полноценный VoiceOver/NVDA workflow, большие/длинные наборы в новой визуальной серии и весь security/done workflow. Backend/transport не изменялись, функциональная отмена Git остаётся незакрытым замечанием. Упакованный release не пересобирался; изменения доступны через `npm run dev`.
+
 Дата: 2026-10-05. Автотесты и тестовая инфраструктура не добавлялись. Одноразовые ручные команды выполнялись с временными repository в `/private/tmp`; это не файлы проекта.
 
 ## Подтверждено
@@ -224,3 +235,23 @@ Renderer визуально проверен в локальном in-app browse
 - Missing/corrupt/symlink attachment, missing/corrupt multipart, v5 encoded descriptor и произвольный attachment path отклоняются. Чтение фактических прежних v3/v4 через сохранённый старый генератор проверено с Brotli/Base64; v1 envelope и v2 RAW/native sidecar также читаются.
 - Engine Apply на временном Git с независимой историей: selected text/binary/executable, repeat no-op, target-only unchanged, baseline не продвигается. Binary RENAME/DELETE применяются; локальная смена DELETE после Preview останавливает Apply без записи. Полный outgoing compare → selected Scan → export → reload package → pending → confirm на независимых Git-историях проходит, все пути .md/вложений сохраняются; remote resolver в fixture отображён на временный локальный Git (live сеть не проверена).
 - Упаковка macOS arm64 .app/ZIP/DMG прошла. Все 11 dist-файлов побайтно совпадают с app.asar; ZIP app.asar совпадает с .app. Нативные UI/диалоги, Windows и проверка корпоративной DLP в этой правке не выполнялись. UI изменения ограничены текстом описания/счётчика/инструкции переноса всех вложений. Тестовая инфраструктура и автотесты в проект не добавлены.
+
+
+## 2026-10-09 — контуры и локальное Git-состояние
+
+- `npm run build` и `git diff --check` прошли. Постоянная тестовая инфраструктура не добавлена.
+- Временные Git fixtures: 23 проверки, включая пустую историю, чистую копию, отсутствующую ветку, detached HEAD, staged/unstaged/untracked, настоящий merge conflict, MERGE_HEAD/rebase-merge/rebase-apply/CHERRY_PICK_HEAD/REVERT_HEAD/sequencer и linked worktree.
+- Engine: переключение существующей ветки, отказ при грязной копии без смены ветки; Apply отказывает при изменении локального HEAD/ветки/появлении untracked после prepare; успешная запись сохраняет CRLF и устанавливает commitRequired. Внутренний analyze → prepareIncoming → Apply проверен на реальных локальных Git-деревьях с mock refresh внешних refs; dirty prepare отказал до внешнего refresh.
+- Actual production Renderer с mock IPC проверен в in-app browser: карточки двух контуров, отдельные выбранная/текущая ветки, блокировка Apply при несовпадении, переключение → повторное чтение пакета → подготовка, сохранение selected paths; внешние настройки содержат только локальную папку, внутренние — также внешний Git. Desktop screenshots проверены; механический detector impeccable вернул пустой список.
+- Не проверялись live remote network/auth, Windows и упакованные .app/DMG/ZIP. Release-приложение не пересобиралось. Git-состояние не блокируется от других программ эксклюзивно: прежнее требование не изменять репозиторий во время Apply сохраняется; файловые guards и touched-only recovery прежние.
+
+- Последующая пересборка по запросу пользователя: arm64 .app/ZIP/DMG обновлены через electron-builder с локальным electronDist, без Developer ID подписи. Побайтово проверены все 11 dist-файлов внутри .app и app.asar в ZIP; `hdiutil verify` — VALID. Ограничение «release не пересобирался» выше относится к завершению исходной реализации; теперь артефакты обновлены. Live network/auth и Windows по-прежнему не проверены.
+
+
+## 2026-10-10 — вариант A «Минеральный атлас»
+
+- `npm run build`: strict typecheck, renderer и Electron compilation успешны. `git diff --check` прошёл. Однократный механический detector Impeccable по 10 изменённым Renderer targets вернул `[]`. Runtime diff этой задачи +60/−50, предыдущие пользовательские изменения сохранены.
+- Actual production App в in-app browser с временным mock IPC: incoming automatic prepare, reprepare после снятия DELETE, selected5/6 сохраняется при поиске AppShell (4 выбранных вне списка); empty selection блокирует Apply. Исходящий набор по умолчанию исключает DELETE; размер/папка/создание и переход в security сохранены. Отмеченные найденные значения не отменяют обязательный secret override; после override пакет создаётся, done показывает все пути.
+- prepare error показывается с повторным сравнением и disabled Apply, без автоматического цикла retries. Dirty local и несовпадение выбранной/текущей веток блокируют Apply. Переключение existing branch восстанавливает сравнение и preparation. Ошибки security/done сохранены в runtime rendering. Внешний пакет проходит загрузку, подготовку и Apply до done; пустое входящее сравнение показывает «Подтвердить результат» без записи. Настройки профиля открываются, controls/Footer доступны при scroll.
+- Две ограниченные визуальные серии: 1440×900 light/dark incoming, список профилей; 900×700 stacked inspector, outgoing/security/dirty/settings. Горизонтального overflow нет (scrollWidth1440 и892 при viewport1440 и900). JPEG evidence в `.impeccable/review/`. Независимый reviewer просмотрел все8 final screenshots и runtime delta: ship, material findings нет.
+- Mock IPC не выполнял записи пользовательских файлов, real Git/network/native dialogs. Windows, полная keyboard/screen-reader проверка, реальный отказ диска и новые backend fixtures в этой UI задаче не проверялись. Прежняя отмена длительного Git остаётся отдельным ограничением. Shipping bitmap assets не добавлены. Release artifacts не обновлены; актуальный UI запускать `npm run dev`.
