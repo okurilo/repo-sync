@@ -4,18 +4,18 @@ import { tokens } from '../theme/tokens';
 export const GlobalStyle = createGlobalStyle({
   '*': { boxSizing: 'border-box' }, body: { margin: 0, fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif', fontSize: tokens.typography.body, background: 'var(--bg)', color: 'var(--text)' },
   'button, input, textarea, select': { font: 'inherit' }, button: { cursor: 'pointer' }, 'button:disabled': { cursor: 'not-allowed', opacity: 0.45 },
-  'input, textarea, select': { width: '100%', minWidth: 0, color: 'var(--text)', background: 'var(--input)', border: '1px solid var(--line)', borderRadius: 8, padding: '10px 12px' },
-  'input[type=checkbox]': { width: 'auto' }, label: { display: 'grid', gap: 8 }, fieldset: { border: 0, minWidth: 0, margin: 0, padding: 0 },
-  h1: { fontSize: 30, letterSpacing: '-0.8px', margin: '0 0 10px' }, h2: { fontSize: 20, margin: '0 0 16px' }, h3: { margin: '0 0 12px' }, p: { lineHeight: 1.6 }, small: { color: 'var(--muted)' },
+  'input, textarea, select': { width: '100%', minWidth: 0, color: 'var(--text)', background: 'var(--input)', border: '1px solid var(--line)', borderRadius: 5, padding: '8px 10px' },
+  'input[type=checkbox]': { width: 'auto', flexShrink: 0 }, 'input::placeholder, textarea::placeholder': { color: 'var(--muted)' }, 'input, textarea': { caretColor: 'var(--accent)' }, label: { display: 'grid', gap: 8 }, fieldset: { border: 0, minWidth: 0, margin: 0, padding: 0 },
+  h1: { fontSize: 27, letterSpacing: '-0.8px', margin: '0 0 10px' }, h2: { fontSize: 18, margin: '0 0 16px' }, h3: { margin: '0 0 12px' }, p: { lineHeight: 1.6 }, small: { color: 'var(--muted)' },
   'pre, code': { fontFamily: tokens.typography.mono, fontSize: 12, overflowWrap: 'anywhere' }, 'a, summary': { cursor: 'pointer', color: 'var(--accent)' },
   table: { width: '100%', borderCollapse: 'collapse' }, th: { textAlign: 'left', padding: 8, color: 'var(--muted)' },
 });
 const enter = css`animation: reposync-reveal ${tokens.motion.duration} ${tokens.motion.easing};`;
-export const Button = styled('button')<{ $primary?: boolean; $danger?: boolean }>(({ $primary, $danger }) => ({ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '10px 16px', borderRadius: tokens.radius.control, border: '1px solid transparent', background: $primary ? 'var(--accent)' : 'var(--raised)', color: $primary ? 'var(--bg)' : $danger ? 'var(--danger)' : 'var(--text)', fontWeight: 600 }));
+export const Button = styled('button')<{ $primary?: boolean; $danger?: boolean }>(({ $primary, $danger }) => ({ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '8px 12px', borderRadius: tokens.radius.control, border: '1px solid transparent', background: $primary ? 'var(--accent)' : 'var(--raised)', color: $primary ? 'var(--bg)' : $danger ? 'var(--danger)' : 'var(--text)', fontWeight: 600, lineHeight: 1.35, minHeight: 34 }));
 export const IconButton = styled(Button)({ padding: 9, background: 'transparent' });
 export const Row = styled('div')({ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' });
-export const Surface = styled('section')({ background: 'var(--surface)', borderRadius: tokens.radius.surface, padding: 24 }, enter);
-export const Badge = styled('span')({ display: 'inline-flex', gap: 6, alignItems: 'center', padding: '5px 9px', borderRadius: 6, background: 'var(--raised)', color: 'var(--muted)', fontSize: 11, fontWeight: 650, letterSpacing: '0.6px' });
+export const Surface = styled('section')({ background: 'var(--surface)', borderRadius: 0, padding: 24 });
+export const Badge = styled('span')({ display: 'inline-flex', gap: 6, alignItems: 'center', padding: '2px 0', borderRadius: 0, background: 'transparent', color: 'var(--muted)', fontSize: 11, fontWeight: 650, letterSpacing: '0.2px', lineHeight: 1.4, maxWidth: '100%', overflowWrap: 'anywhere' });
 export const Status = styled('div')<{ $error?: boolean }>(({ $error }) => ({ margin: '16px 0', padding: '12px 16px', background: $error ? 'var(--removed)' : 'var(--tint)', color: $error ? 'var(--danger)' : 'var(--text)', borderRadius: 8, lineHeight: 1.5, overflowWrap: 'anywhere' }));
 export const Muted = styled('p')({ color: 'var(--muted)' });
 export const Overlay = styled('div')({ position: 'fixed', inset: 0, background: '#00000070', zIndex: 20, display: 'grid', placeItems: 'center', padding: 24 });
@@ -48,5 +48,5 @@ export function EmptyState({ title, children }: { title: string; children: React
   return <Surface style={{ textAlign: 'center', padding: '72px 24px' }}><h2>{title}</h2>{children}</Surface>;
 }
 export function StepIndicator({ steps, current }: { steps: string[]; current: number }): React.JSX.Element {
-  return <Row aria-label="Этапы синхронизации" style={{ margin: '24px 0', gap: 24 }}>{steps.map((step, index) => <span key={step} aria-current={index === current ? 'step' : undefined} style={{ color: index === current ? 'var(--accent)' : 'var(--muted)', fontWeight: index === current ? 650 : 400 }}><span style={{ marginRight: 8 }}>{index < current ? '✓' : index + 1}</span>{step}</span>)}</Row>;
+  return <Row aria-label="Этапы синхронизации" style={{ margin: '8px 0', gap: 16, fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>{steps.map((step, index) => <span key={step} aria-current={index === current ? 'step' : undefined} style={{ color: index === current ? 'var(--accent)' : 'var(--muted)', fontWeight: index === current ? 650 : 400 }}><span style={{ marginRight: 8 }}>{index < current ? '✓' : index + 1}</span>{step}</span>)}</Row>;
 }
