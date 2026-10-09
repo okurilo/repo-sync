@@ -4,7 +4,7 @@ import { chmod, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, rmd
 import path from 'node:path';
 import { applyPatch, createTwoFilesPatch, diffLines, parsePatch } from 'diff';
 import type { Analysis, Baseline, CodeComparison, CodePreview, Direction, Environment, ExportReview, FileEntry, ImportPreview, IncomingSelection, Operation, PackageType, Profile, RecordData, Settings, Transport } from '../shared/types';
-import { git, readTree, refreshSource, resolveSource, safePath, scopeHash, sha256, validateSource, type ResolvedSource, type Tree } from './infra/git';
+import { localState, requireLocalReady, git, readTree, refreshSource, resolveSource, safePath, scopeHash, sha256, validateSource, type ResolvedSource, type Tree } from './infra/git';
 import { atomicJSON, SettingsStore } from './infra/settings';
 import { decode, encode, exportArtifacts, loadTransport, MAX_BYTES, newPackageId, parseTransport, splitTransport } from './transport';
 import { findingLocation, scan, type PrivateFinding } from './security';
@@ -24,7 +24,7 @@ interface ExportSession {
   tree: Tree; workingChanges: Analysis['workingChanges']; transport: Transport; findings: PrivateFinding[]; target: Baseline; maxBytes: number;
 }
 interface PreparedFile { path: string; before: Buffer | null; after: Buffer | null; beforeMode: number | null; afterMode: number }
-interface ImportSession { incoming?: ExportSession; token: string; environment: Environment; profileId: string; target: string; transport: Transport; records: RecordData[]; files: PreparedFile[]; baseline?: Baseline; updateCommon: boolean }
+interface ImportSession { localHead: string; incoming?: ExportSession; token: string; environment: Environment; profileId: string; target: string; transport: Transport; records: RecordData[]; files: PreparedFile[]; baseline?: Baseline; updateCommon: boolean }
 interface BackupEntry { path: string; file: string | null; mode: number | null; beforeSha256: string | null; afterSha256: string | null; touched: boolean }
 interface Journal { target: string; entries: BackupEntry[]; createdDirectories: string[]; temporaryFiles: string[]; settingsBefore: Settings; committed: boolean }
 interface CodeSession { sourceToken?: string; token: string; from: string | null; to: string; entries: Analysis['entries']; before: Map<string, Buffer>; after: Map<string, Buffer> }
@@ -44,6 +44,19 @@ export class Engine {
     const profile = settings.profiles.find(p => p.id === id);
     if (!profile) throw new Error('Профиль не найден');
     return { settings, profile, mode };
+  }
+  async switchLocalBranch(id: string): Promise<import('../shared/types').LocalGitState> {
+    const { profile } = this.context(id); const source = profile.sources.internal;
+    if (!source) throw new Error('Укажите локальный репозиторий в настройках.');
+    if (profile.pending) throw new Error('Сначала подтвердите передачу пакета или отмените ожидание.');
+    const root = await realpath(source.location);
+    const state = await localState(source);
+    if (await realpath(source.location) !== root) throw new Error('Папка репозитория изменилась. Выберите её снова.');
+    if (!state.canSwitch) throw new Error(state.issue ?? 'Переключение ветки недоступно.');
+    this.invalidate();
+    try { await git(root, ['switch', '--no-guess', '--', source.branch]); }
+    catch { throw new Error('Не удалось переключить локальную ветку. Проверьте изменения, блокировки Git и использование ветки в другом worktree, затем проверьте состояние снова.'); }
+    return localState(source);
   }
   invalidateRemote(location: string, branches: string[]): void {
     const source = this.exportSession?.resolved.source;
@@ -102,7 +115,7 @@ export class Engine {
     this.invalidate();
     const mode: Environment = direction === 'incoming' ? 'global' : 'internal';
     const { profile } = this.context(id, mode);
-    if (profile.role !== 'internal') throw new Error('Эта операция доступна только для внутреннего репозитория.');
+    if (profile.role !== 'internal') throw new Error('Эта операция доступна только во внутреннем контуре.');
     if (!profile.sources.internal) throw new Error('Укажите локальный репозиторий в настройках.');
     if (profile.commitRequired && direction === 'outgoing' && (await git(profile.sources.internal.location, ['status', '--porcelain=v1'])).length) throw new Error('Перед подготовкой пакета создайте коммит с применёнными изменениями.');
     if (profile.pending) throw new Error('Предыдущий пакет ожидает подтверждения. Подтвердите его применение или отмените ожидание перед новой синхронизацией.');
@@ -386,7 +399,7 @@ export class Engine {
   async loadPackage(filename: string, profileId: string): Promise<CodeComparison> {
     this.invalidate();
     const { profile } = this.context(profileId);
-    if (profile.role !== 'external' || !profile.sources.internal) throw new Error('Для пакета выберите внешний репозиторий.');
+    if (profile.role !== 'external' || !profile.sources.internal) throw new Error('Для применения пакета выберите внешний контур.');
     const transport = await loadTransport(filename);
     const root = await realpath(profile.sources.internal.location);
     const baseline = await this.importBaseline(root, transport, profile);
@@ -405,13 +418,14 @@ export class Engine {
     const session = this.session(token);
     if (session.environment !== 'global') throw new Error('Для применения нужно сравнение входящих изменений.');
     const { profile } = this.context(session.profileId);
+    await requireLocalReady(profile.sources.internal!);
     await this.checkIncoming(session);
     const records = selectRecords(session.transport.records, selectedPaths);
     return this.prepareTransport(session.transport, profile.sources.internal!.location, profile.id, session, records);
   }
   async preflight(filename: string, target: string, profileId: string): Promise<ImportPreview> {
     const { profile } = this.context(profileId);
-    if (profile.role !== 'external') throw new Error('Для применения пакета выберите внешний репозиторий.');
+    if (profile.role !== 'external') throw new Error('Для применения пакета выберите внешний контур.');
     this.invalidate();
     const preview = await this.prepareTransport(await loadTransport(filename), target, profileId);
     const session = this.importSession!;
@@ -429,8 +443,7 @@ export class Engine {
     if (!configured || root !== await realpath(configured.location)) throw new Error('Выбранная папка не совпадает с локальным репозиторием в настройках. Проверьте путь.');
     const top = (await git(root, ['rev-parse', '--show-toplevel'])).toString().trim();
     if (await realpath(top) !== root) throw new Error('Выберите корневую папку Git-репозитория.');
-    const branch = (await git(root, ['symbolic-ref', '--short', 'HEAD'])).toString().trim();
-    if (branch !== configured.branch) throw new Error('Переключите локальный репозиторий на ветку, указанную в настройках.');
+    const local = await requireLocalReady(configured);
     const baseline = incoming ? incoming.sourceBaseline : await this.importBaseline(root, transport, profile);
     const before = incoming?.sourceBytes ?? (baseline ? await this.baselineContent(baseline) : new Map<string, Buffer>());
     if (baseline) await this.saveBaseline(before);
@@ -439,7 +452,7 @@ export class Engine {
     await this.saveBaseline(canonical);
     const token = randomUUID();
     const completeSelection = selectedRecords.length === transport.records.length;
-    this.importSession = { incoming, token, profileId, environment: 'internal', target: root, transport, records: selectedRecords, files, baseline, updateCommon: transport.protocolVersion < 4 && completeSelection && !transport.targetState.startsWith('content:partial:') && (!incoming || incoming.incomingMode === 'repositories' || incoming.incomingMode === 'zero') };
+    this.importSession = { localHead: local.head!, incoming, token, profileId, environment: 'internal', target: root, transport, records: selectedRecords, files, baseline, updateCommon: transport.protocolVersion < 4 && completeSelection && !transport.targetState.startsWith('content:partial:') && (!incoming || incoming.incomingMode === 'repositories' || incoming.incomingMode === 'zero') };
     const changedPaths = new Set(files.map(file => file.path));
     const previewTransport = { ...transport, records: selectedRecords.filter(record => changedPaths.has(record.path)) };
     const entries = previewTransport.records.map(record => ({ path: record.path, oldPath: record.oldPath, operation: record.operation, size: record.size }));
@@ -463,11 +476,15 @@ export class Engine {
     if (!session || session.token !== token) throw new Error('Просмотр пакета устарел. Выберите пакет заново.');
     const { settings, profile } = this.context(session.profileId, session.environment);
     const configured = profile.sources.internal;
-    if (!configured || await realpath(configured.location) !== await realpath(session.target) || (await git(session.target, ['symbolic-ref', '--short', 'HEAD'])).toString().trim() !== configured.branch) throw new Error('Локальный репозиторий или ветка изменились. Запустите синхронизацию заново.');
+    if (!configured || await realpath(configured.location) !== await realpath(session.target)) throw new Error('Локальный репозиторий или ветка изменились. Запустите синхронизацию заново.');
+    const local = await requireLocalReady(configured);
+    if (local.head !== session.localHead) throw new Error('Локальный HEAD изменился после просмотра. Проверьте применение заново.');
     if (session.incoming) await this.checkIncoming(session.incoming);
     const baseline = session.baseline;
     const files = await prepare(session.target, session.transport, baseline, baseline ? await this.baselineContent(baseline) : new Map(), session.records, Boolean(session.incoming));
     if (files.length !== session.files.length || files.some((file, i) => file.path !== session.files[i]?.path || !sameBuffer(file.before, session.files[i]?.before ?? null) || file.beforeMode !== session.files[i]?.beforeMode)) throw new Error('Локальные файлы изменились после просмотра. Запустите синхронизацию заново.');
+    const latest = await requireLocalReady(configured);
+    if (latest.head !== session.localHead) throw new Error('Локальный HEAD изменился во время проверки. Проверьте применение заново.');
     const directory = path.join(this.store.directory, 'backups', randomUUID());
     await mkdir(directory, { recursive: true, mode: 0o700 });
     const journal: Journal = { target: session.target, entries: [], createdDirectories: [], temporaryFiles: [], settingsBefore: this.store.get(), committed: false };
@@ -480,6 +497,8 @@ export class Engine {
     const journalPath = path.join(directory, 'journal.json');
     await atomicJSON(journalPath, journal);
     try {
+      const beforeWrite = await requireLocalReady(configured);
+      if (beforeWrite.head !== session.localHead) throw new Error('Локальный HEAD изменился перед записью. Проверьте применение заново.');
       for (const [index, file] of files.entries()) {
         const filename = await safePath(session.target, file.path);
         const observed = await optionalRead(filename);

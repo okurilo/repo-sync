@@ -7,6 +7,8 @@ async function call<T>(command: Command, args: unknown[] = []): Promise<T> {
   return result.value;
 }
 const api: API = {
+  localState: source => call('localState', [source]),
+  switchLocalBranch: id => call('switchLocalBranch', [id]),
   settings: () => call('settings'),
   saveProfile: profile => call('saveProfile', [profile]),
   deleteProfile: id => call('deleteProfile', [id]),

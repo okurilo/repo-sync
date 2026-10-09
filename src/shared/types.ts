@@ -9,6 +9,11 @@ export interface GitRevision { branch: string; commit?: string }
 export interface Source { kind: 'local' | 'remote'; location: string; branch: string; commit?: string; base?: GitRevision }
 export interface CommitOption { sha: string; date: string; subject?: string }
 export interface IncomingSelection { mode: 'branch' | 'commit' | 'range' | 'repositories' | 'zero'; commit?: string; from?: string; baseBranch?: string; branch?: string }
+export interface LocalGitState {
+  branch: string | null; head: string | null; branches: string[];
+  workingChanges: { staged: number; unstaged: number; untracked: number };
+  conflicts: number; operations: string[]; issue: string | null; canSwitch: boolean;
+}
 export interface BranchContext { branches: string[]; defaultBranch?: string }
 export interface ExportReview { findings: Finding[]; parts: number; estimatedBytes: number }
 export interface RemoteUpdate { changedBranches: string[]; branches: string[]; commits: CommitOption[]; baseCommits: CommitOption[] }
@@ -61,6 +66,8 @@ export interface ReplacementPreview { token: string; path: string; line: number;
 export interface CodeComparison { token: string; from: string | null; to: string; entries: Analysis['entries']; lineChanges?: { added: number; removed: number } }
 export interface CodePreview { before: string; after: string; message?: string }
 export interface API {
+  localState(source: Source): Promise<LocalGitState>;
+  switchLocalBranch(profileId: string): Promise<LocalGitState>;
   settings(): Promise<Settings>;
   saveProfile(profile: Profile): Promise<Settings>;
   deleteProfile(id: string): Promise<Settings>;

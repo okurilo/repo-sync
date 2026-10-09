@@ -1,5 +1,17 @@
 # Инженерный контекст RepoSync
 
+## 2026-10-09 — пересборка и публикация контуров
+
+- По запросу пользователя обновлены arm64 .app/ZIP/DMG с установленным локальным Electron. DMG собран после одобренного расширения sandbox для hdiutil; подписи Developer ID нет, как в прежних сборках. Все 11 dist-файлов совпадают с .app, ZIP app.asar идентичен .app, hdiutil verify подтвердил VALID checksum. Strict build и 23 временных Git-проверки прошли повторно.
+- Для commit/push создана отдельная ветка codex/local-git-state. В scope входят только runtime/docs этой задачи; существующая неотслеживаемая .agents/ и игнорируемые release/dist не добавляются в Git.
+
+## 2026-10-09 — контуры и локальная готовность к применению
+
+- Минимальный механизм: localState/requireLocalReady поверх существующего Git runner, IPC чтения и переключения, transient Renderer state. Persisted settings v5 и transport не изменены. Роль означает контур, sources.internal остаётся локальной папкой в обоих контурах; sources.global нужен только внутреннему.
+- Чистота требуется для обоих Apply, не для committed просмотра. Проверка до prepare, до backup и после journal перед первой записью; ImportSession хранит localHead. Переключение existing branch через switch --no-guess без force/stash/reset, инвалидирует сессии; Renderer перечитывает пакет/сравнение и сохраняет выбранный subset. Маркеры Git получены через --git-path для linked worktree. Ожидаемый exit 1 разрешён только quiet HEAD probes; timeout/отмена/прочие ошибки не становятся detached/empty.
+- Локальные refs/status читаются по запросу, без polling карточек и новых persisted состояний. После выбора новой папки ветка считывается из Git; прежний профиль сохраняет явный выбор. Ответ предыдущей папки игнорируется. Scope: 9 runtime-файлов, менее 300 добавленных строк. Постоянные тесты/зависимости не добавлялись.
+- Фактический runtime diff: 9 файлов, 153 добавленные / 41 удалённая строка; оценка ≤10/≤300 соблюдена. Strict production build, 23 временные Git-проверки и actual Renderer с mock IPC прошли; подробности/платформенные ограничения в manual-qa. Финальный комплексный проход: IPC validation → refs/status и очередь UI → timeout/cancellation/no retries → внешний refresh → selected paths/HEAD → backup/journal/проверка до записи → existing rollback/recovery → settings/pending/compatibility → причины отказа/контуры. Новых фоновых side effects, метрик, зависимостей, persisted схем нет. Коммит/push и release packaging не выполнялись.
+
 ## 2026-10-09 — компактный экспорт без перекодирования
 
 - По прямому требованию пользователя экспорт больше не добавляет Base64/Brotli. Компактность — только JSON.stringify метаданных и отсутствие декоративных заголовков. Исходные текстовые байты (LF/CRLF, BOM, отступы, табы, пробелы, пустой файл и отсутствие завершающего newline) не минифицируются, не сжимаются и восстанавливаются без преобразований. Base64, уже содержащийся в исходном файле, сохраняется.
