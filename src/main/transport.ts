@@ -196,14 +196,14 @@ function textDocument(transport: Transport, mode: TransportMode): Buffer {
     return { ...record, ...encoded, payload: '', payloadBytes: payload.length };
   });
   const metadata = { ...transport, protocolVersion: 3, schemaVersion: 3, readable: mode === 'readable', records };
-  return Buffer.concat([Buffer.from(JSON.stringify(metadata, null, mode === 'readable' ? 2 : undefined) + OPEN_BODY), ...bodies]);
+  return Buffer.concat([Buffer.from(JSON.stringify(metadata) + OPEN_BODY), ...bodies]);
 }
 export function exportArtifacts(transport: Transport, maxBytes: number, mode: TransportMode = 'compact'): Artifact[] {
   integer(maxBytes, 4096, MAX_BYTES);
   const document = textDocument(transport, mode);
   if (document.length > MAX_BYTES) throw new Error('Пакет превышает 512 МБ');
   const template = { protocolVersion: 3, schemaVersion: 3, packageId: transport.packageId, partNumber: MAX_PARTS, totalParts: MAX_PARTS, totalBytes: document.length, packageSha256: sha256(document), partSha256: sha256(document) };
-  const prefix = (metadata: typeof template): Buffer => Buffer.from(TEXT_HEADER + JSON.stringify(metadata, null, mode === 'readable' ? 2 : undefined) + OPEN_BODY);
+  const prefix = (metadata: typeof template): Buffer => Buffer.from(TEXT_HEADER + JSON.stringify(metadata) + OPEN_BODY);
   const capacity = maxBytes - prefix(template).length;
   if (capacity < 4) throw new Error('Размер части слишком мал для описания пакета. Увеличьте его в настройках.');
   const fragments: Buffer[] = []; let offset = 0;
