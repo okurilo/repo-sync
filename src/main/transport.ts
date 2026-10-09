@@ -82,7 +82,7 @@ export function parseFile(value: unknown): FileEntry {
 }
 export function parseTransport(value: unknown): Transport {
   const raw = object(value);
-  if (!((raw.protocolVersion === 1 && raw.schemaVersion === 1) || (raw.protocolVersion === 2 && raw.schemaVersion === 2) || (raw.protocolVersion === 3 && raw.schemaVersion === 3))) throw new Error('Версия пакета не поддерживается. Проверьте версию RepoSync.');
+  if (!((raw.protocolVersion === 1 && raw.schemaVersion === 1) || (raw.protocolVersion === 2 && raw.schemaVersion === 2) || (raw.protocolVersion === 3 && raw.schemaVersion === 3) || (raw.protocolVersion === 4 && raw.schemaVersion === 4))) throw new Error('Версия пакета не поддерживается. Проверьте версию RepoSync.');
   if (raw.packageType !== 'snapshot' && raw.packageType !== 'diff') throw new Error('Тип пакета не поддерживается.');
   if (!Array.isArray(raw.files) || !Array.isArray(raw.records) || raw.files.length > 100_000 || raw.records.length > 100_000) throw new Error('Некорректный список файлов или изменений в пакете.');
   const files = raw.files.map(parseFile);
@@ -97,11 +97,13 @@ export function parseTransport(value: unknown): Transport {
     const record: RecordData = { path: name, operation, size: integer(item.size, 0, MAX_BYTES), mode: integer(item.mode, 0o644, 0o755), encoding,
       payload: string(item.payload, MAX_BYTES * 2) };
     if (item.oldPath !== undefined) { record.oldPath = string(item.oldPath); validatePath(record.oldPath); }
+    if (item.beforeMode !== undefined) record.beforeMode = parseFile({ path: name, sha256: item.beforeSha256, size: 0, mode: item.beforeMode }).mode;
+    if (raw.protocolVersion === 4 && (operation === 'MODIFY' || (operation !== 'ADD' && record.beforeMode === undefined))) throw new Error('Некорректная полная операция v4.');
     if (item.beforeSha256 !== undefined) record.beforeSha256 = digest(item.beforeSha256);
     if (item.afterSha256 !== undefined) record.afterSha256 = digest(item.afterSha256);
     if ((operation !== 'ADD' && !record.beforeSha256) || (operation !== 'DELETE' && !record.afterSha256)
       || (operation !== 'RENAME' && record.oldPath !== undefined)
-      || (operation === 'RENAME' && (!record.oldPath || record.oldPath === name || record.beforeSha256 !== record.afterSha256 || record.payload !== ''))
+      || (operation === 'RENAME' && (!record.oldPath || record.oldPath === name || record.beforeSha256 !== record.afterSha256 || (raw.protocolVersion !== 4 && record.payload !== '')))
       || (operation === 'DELETE' && record.payload !== '') || (operation === 'ADD' && record.beforeSha256)) throw new Error('Описание изменения противоречит данным пакета.');
     if (record.mode !== 0o644 && record.mode !== 0o755) throw new Error('Некорректные права доступа к файлу в пакете.');
     return record;
@@ -130,12 +132,14 @@ export function parseTransport(value: unknown): Transport {
     const file = inventory.get(record.path);
     if (record.operation === 'DELETE' ? !!file : !file || file.sha256 !== record.afterSha256 || file.size !== record.size || file.mode !== record.mode) throw new Error('Изменение не соответствует описанному результату пакета.');
   }
+  if (raw.protocolVersion === 4 && (raw.packageType !== 'diff' || files.length !== records.filter(record => record.operation !== 'DELETE').length)) throw new Error('Пакет v4 должен описывать только изменённые файлы.');
   return { protocolVersion: raw.protocolVersion, schemaVersion: raw.schemaVersion, packageId: string(raw.packageId, 36), packageType: raw.packageType,
     sourceState: raw.sourceState === null ? null : state(raw.sourceState), targetState: state(raw.targetState),
     scope: digest(raw.scope), files, records };
 }
 export async function loadTransport(filename: string): Promise<Transport> {
   const firstBytes = await limitedRead(filename);
+  if (firstBytes.subarray(0, FILE_HEADER.length).equals(Buffer.from(FILE_HEADER))) return loadOpenTransport(filename, firstBytes);
   if (firstBytes.subarray(0, TEXT_HEADER.length).equals(Buffer.from(TEXT_HEADER))) return loadOpenTransport(filename, firstBytes);
   if (firstBytes.subarray(0, OPEN_HEADER.length).equals(Buffer.from(OPEN_HEADER))) return loadOpenTransport(filename, firstBytes);
   const first = parsePart(firstBytes);
@@ -179,6 +183,7 @@ const OPEN_HEADER = '# RepoSync transport v2\n\n';
 const OPEN_BODY = '\n\n---\n';
 interface Artifact { name: string; bytes: Buffer }
 const binaryName = (id: string, index: number, name: string): string => `${id}.binary${String(index + 1).padStart(3, '0')}${path.posix.extname(name)}`;
+const FILE_HEADER = '# RepoSync transport v4\n\n';
 const TEXT_HEADER = '# RepoSync transport v3\n\n';
 function textDocument(transport: Transport, mode: TransportMode): Buffer {
   const bodies: Buffer[] = [];
@@ -195,15 +200,15 @@ function textDocument(transport: Transport, mode: TransportMode): Buffer {
     if (mode === 'readable') bodies.push(Buffer.from('\n'));
     return { ...record, ...encoded, payload: '', payloadBytes: payload.length };
   });
-  const metadata = { ...transport, protocolVersion: 3, schemaVersion: 3, readable: mode === 'readable', records };
+  const metadata = { ...transport, protocolVersion: transport.protocolVersion === 4 ? 4 : 3, schemaVersion: transport.protocolVersion === 4 ? 4 : 3, readable: mode === 'readable', records };
   return Buffer.concat([Buffer.from(JSON.stringify(metadata) + OPEN_BODY), ...bodies]);
 }
 export function exportArtifacts(transport: Transport, maxBytes: number, mode: TransportMode = 'compact'): Artifact[] {
   integer(maxBytes, 4096, MAX_BYTES);
   const document = textDocument(transport, mode);
   if (document.length > MAX_BYTES) throw new Error('Пакет превышает 512 МБ');
-  const template = { protocolVersion: 3, schemaVersion: 3, packageId: transport.packageId, partNumber: MAX_PARTS, totalParts: MAX_PARTS, totalBytes: document.length, packageSha256: sha256(document), partSha256: sha256(document) };
-  const prefix = (metadata: typeof template): Buffer => Buffer.from(TEXT_HEADER + JSON.stringify(metadata) + OPEN_BODY);
+  const template = { protocolVersion: transport.protocolVersion === 4 ? 4 : 3, schemaVersion: transport.protocolVersion === 4 ? 4 : 3, packageId: transport.packageId, partNumber: MAX_PARTS, totalParts: MAX_PARTS, totalBytes: document.length, packageSha256: sha256(document), partSha256: sha256(document) };
+  const prefix = (metadata: typeof template): Buffer => Buffer.from((transport.protocolVersion === 4 ? FILE_HEADER : TEXT_HEADER) + JSON.stringify(metadata) + OPEN_BODY);
   const capacity = maxBytes - prefix(template).length;
   if (capacity < 4) throw new Error('Размер части слишком мал для описания пакета. Увеличьте его в настройках.');
   const fragments: Buffer[] = []; let offset = 0;
@@ -217,12 +222,12 @@ export function exportArtifacts(transport: Transport, maxBytes: number, mode: Tr
 }
 export function splitTransport(transport: Transport, maxBytes: number, mode: TransportMode = 'compact'): Buffer[] { return exportArtifacts(transport, maxBytes, mode).map(file => file.bytes); }
 function openPart(bytes: Buffer): { metadata: Record<string, unknown>; body: Buffer } {
-  const header = bytes.subarray(0, TEXT_HEADER.length).equals(Buffer.from(TEXT_HEADER)) ? TEXT_HEADER : OPEN_HEADER;
+  const header = bytes.subarray(0, FILE_HEADER.length).equals(Buffer.from(FILE_HEADER)) ? FILE_HEADER : bytes.subarray(0, TEXT_HEADER.length).equals(Buffer.from(TEXT_HEADER)) ? TEXT_HEADER : OPEN_HEADER;
   if (!bytes.subarray(0, header.length).equals(Buffer.from(header))) throw new Error('Файл не похож на пакет RepoSync. Выберите исходную часть .md.');
   const boundary = bytes.indexOf(OPEN_BODY, header.length);
   if (boundary < 0) throw new Error('В пакете отсутствует описание содержимого.');
   const metadata = object(JSON.parse(bytes.subarray(header.length, boundary).toString('utf8')) as unknown);
-  if (metadata.protocolVersion !== (header === TEXT_HEADER ? 3 : 2) || metadata.schemaVersion !== metadata.protocolVersion) throw new Error('Версия пакета не поддерживается. Проверьте версию RepoSync.');
+  if (metadata.protocolVersion !== (header === FILE_HEADER ? 4 : header === TEXT_HEADER ? 3 : 2) || metadata.schemaVersion !== metadata.protocolVersion) throw new Error('Версия пакета не поддерживается. Проверьте версию RepoSync.');
   const body = bytes.subarray(boundary + Buffer.byteLength(OPEN_BODY));
   integer(metadata.partNumber, 1, MAX_PARTS); integer(metadata.totalParts, 1, MAX_PARTS); integer(metadata.totalBytes, 1, MAX_BYTES);
   if (Number(metadata.partNumber) > Number(metadata.totalParts) || sha256(body) !== digest(metadata.partSha256)) throw new Error('Часть пакета повреждена. Получите исходный файл заново.');
@@ -246,7 +251,7 @@ async function loadOpenTransport(filename: string, bytes: Buffer): Promise<Trans
   const boundary = document.indexOf(OPEN_BODY); if (boundary < 0) throw new Error('В пакете отсутствует описание содержимого.');
   const raw = object(JSON.parse(document.subarray(0, boundary).toString('utf8')) as unknown);
   if (raw.protocolVersion !== first.metadata.protocolVersion || raw.schemaVersion !== first.metadata.schemaVersion || raw.packageId !== id || !Array.isArray(raw.records) || raw.records.length > 100_000) throw new Error('Описание пакета повреждено или не соответствует его частям.');
-  if (raw.protocolVersion === 3) {
+  if (raw.protocolVersion === 3 || raw.protocolVersion === 4) {
     if (typeof raw.readable !== 'boolean') throw new Error('Некорректное представление пакета');
     let offset = boundary + Buffer.byteLength(OPEN_BODY);
     const records: RecordData[] = [];

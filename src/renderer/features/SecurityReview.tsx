@@ -20,7 +20,7 @@ export function SecurityReview({ analysis, kept, keep, exclude, replace, open, b
   if (!findings.length) return <EmptyState title="Совпадений не найдено"><Muted>Автоматическая проверка может пропустить чувствительные данные. Просмотрите изменения перед созданием пакета.</Muted></EmptyState>;
   return <Surface style={{ marginTop: 24 }}>
     <Row style={{ justifyContent: 'space-between' }}><h2 style={{ margin: 0 }}>Проверка данных</h2><Badge>Совпадений: {findings.length} · Файлов: {paths.length} · Оставлено: {kept.length}</Badge></Row>
-    <Muted>Значения скрыты только в просмотре. Отмеченные значения сохранятся в пакете без изменений. Исключение файла сохраняется в настройках.</Muted>
+    <Muted>Отмеченные значения сохранятся в пакете без изменений. Исключение файла сохраняется в настройках.</Muted>
     <label style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20 }}><input type="checkbox" disabled={busy} checked={allKept} ref={element => { if (element) element.indeterminate = kept.length > 0 && !allKept; }} onChange={event => keep(findings.map(finding => finding.id), event.target.checked)} />Оставить все найденные значения в пакете</label>
     <div style={{ display: 'grid', gridTemplateColumns: '210px minmax(0, 1fr)', gap: 24 }}>
       <nav aria-label="Файлы с найденными данными" style={{ minWidth: 0 }}>

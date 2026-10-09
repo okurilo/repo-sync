@@ -2,51 +2,45 @@
 
 ## Два направления
 
-Internal profile связывает локальный repository/branch и внешний Git URL/branch. External profile хранит только локальный repository/branch для применения пакетов.
-
-Общая sync state содержит canonical inventory, state ID и fingerprint exclusions для исходящих пакетов. Без baseline первый исходящий пакет — snapshot, с baseline — diff от immutable common bytes. Добавление exclusions сужает baseline inventory/scope; расширение scope требует прежних правил или нового профиля. Принимающая сторона использует те же exclusions.
+Internal profile связывает локальный root/branch и внешний Git URL/branch. External profile хранит root/branch для применения `.md`. Роль принадлежит профилю. Главный экран содержит репозитории и действия, без KPI-плиток и фонового сканирования.
 
 ## External → Internal
 
-«Получить изменения» сначала загружает историю выбранной внешней ветки. По умолчанию выбран режим ветки. Источник и просмотр находятся на одном экране. Пользователь выбирает один из пяти способов:
+По умолчанию branch diff: единственный merge-base основы и внешней ветки → её HEAD. Основа выводится только из remote HEAD / local origin/HEAD и показана вместе с веткой; иначе нужна явная настройка. Самооснование, unrelated history и несколько merge-base отклоняются без fallback. Обе вершины проверяются перед подготовкой и Apply.
 
-- `branch`: diff единственного merge-base основы и выбранной внешней ветки → вершина выбранной ветки. Основа определяется по remote HEAD или local origin/HEAD, иначе выбирается явно. Та же ветка в качестве основы, отсутствие общего предка и несколько merge-base отклоняются. Обе вершины сохраняются в RAM и проверяются перед preflight и Apply.
-- `commit`: diff первого родителя → выбранный коммит. Для merge используется первый родитель. Корневой коммит требует явного режима zero.
-- `range`: прямой diff A → B без требования родства или порядка; отменённые внутри диапазона изменения не входят в итоговый diff.
-- `repositories`: diff локального committed HEAD → внешнего committed HEAD, включая удаления local-only файлов.
-- `zero`: snapshot внешнего HEAD, ADD всех выбранных файлов; прочие внутренние файлы сохраняются, отличающиеся одноимённые файлы вызывают конфликт.
+В «Другой способ» сохранены commit (первый родитель), range (прямое A → B; обе границы в выбранной внешней истории, без требования A предок B), repositories (локальный HEAD → внешний HEAD, включая удаления local-only) и zero (ADD внешних файлов, без overwrite существующих отличающихся). Селекторы живут в IPC/RAM. Pinned SHA не расширяется при продвижении ветки; floating HEAD и, для repositories, local HEAD проверяются повторно.
 
-Выбранный target должен принадлежать истории выбранной внешней ветки. SHA/from/mode живут только в запросе IPC и сессии; persisted settings/transport схемы не изменяются. Входящий diff не выбирается автоматически от существующей baseline. Для commit/range before берётся из внешнего Git, поэтому его SHA не обязан существовать внутри.
+После расчёта и изменения выбора Renderer автоматически вызывает PrepareIncoming через прежнюю foreground/preview очередь. Кнопка Apply доступна только для актуального подготовленного набора; token/profile/direction/paths guard не публикует устаревший результат. Ошибка не вызывает бесконечные автоматические retries; можно исключить конфликтующий путь или явно обновить сравнение.
 
-Compare → preflight → Preview → Apply без Security Review и маскирования. Актуальные refs проверяются перед сравнением и preflight, без фоновых повторов. Выбранный SHA закреплён: продвижение ветки не расширяет diff. Для floating HEAD в repositories/zero изменение target требует нового сравнения; repositories также проверяет локальный committed HEAD. Ошибка отображается рядом с действием, повтор сохраняет выбранный способ и SHA; можно выбрать другие изменения.
+После подготовки «До» — actual receiving bytes, «После» — canonical target. Выбранные MODIFY/REPLACE целиком заменяют соответствующий файл, включая dirty bytes; отсутствующие создаются. DELETE/RENAME проверяют before hash и executable mode. ADD конфликтует с другим содержимым/mode. Уже достигнутый результат и отсутствующий DELETE пропускаются. Rename без обоих receiving путей становится ADD destination. Другие пути не меняются; Incoming/Import не вызывают Scanner.
 
-Canonical transport проверяется относительно выбранного before. Для входящего MODIFY целиком применяется проверенное содержимое внешнего target B; любые локальные правки того же файла заменяются. Это правило ограничено путями самого diff: остальные локальные файлы и пути не затрагиваются. Для DELETE/RENAME проверяются исходные bytes и modes. MODIFY/REPLACE используют canonical target и создают отсутствующий принимающий файл. ADD допускает отсутствующий путь либо точно совпадающий файл. Git index/history не меняются.
-
-Файлы можно включать в Apply отдельно; по умолчанию выбраны все records. Branch/commit/range сохраняют прежнюю common baseline: частичный diff не доказывает совпадение полного inventory. Repositories/zero сохраняют canonical внешний target как common state только при полном выборе; частичный выбор не продвигает baseline. Независимые принимающие bytes остаются локальными. Непустое применение выставляет commitRequired, исходящий пакет требует коммита применённых изменений. Входящий zero является явным выбором даже при существующей baseline; ограничения импорта внешнего snapshot-пакета остаются прежними.
+Branch/commit/range не продвигают common baseline; repositories/zero сохраняют её только при полном выборе, по прежним правилам. Непустое применение устанавливает commitRequired: исходящий путь требует сначала закоммитить результат.
 
 ## Internal → External
 
-Committed local HEAD → diff от common state → выбор операций → Security Review выбранных records → `.md` parts → pending. Незакоммиченные staged/unstaged/untracked показываются как предупреждение. После входящего Apply непустой Git status блокирует вынос: сначала закоммитьте применённый результат обычными Git-инструментами.
+Актуальный внешний committed HEAD → внутренний committed HEAD. Общая история и common baseline не нужны; baseline для этого сравнения читается из внешнего Git. Работа без сети не выдаёт старый cache за актуальное состояние. До экспорта повторно проверяются оба HEAD и локальный committed inventory.
 
-Получатель выбирает External profile и любую `.md` часть. LoadPackage проверяет целостность полного набора и canonical payload без проверки применимости всех файлов. Затем пользователь выбирает операции; PreparePackage проверяет применимость только этого набора. Исходное дерево сохраняется, no-op отмечены; просмотр после проверки использует actual local before/after. Изменение выбора сбрасывает готовность, Apply повторяет тот же набор records. Если у нового получателя ещё нет common state, diff baseline может быть прочитан из исходного коммита в его Git при том же scope; иначе нужен первичный перенос. Имеющаяся baseline должна точно соответствовать sourceState; произвольные source selectors не используются.
+V4 records содержат полные bytes изменённых выбранных файлов, а files — только конечные файлы выбранных операций. Snapshot/full initialization для исходящего пути отсутствует. Удаления по умолчанию не отмечены в UI. Переименование — одна операция по destination с полным payload и исходными hash/mode. Текстовые патчи при исходящем расчёте не создаются; diff остаётся в viewer.
 
-Export не меняет baseline. Подтверждать «Подтвердить применение» можно только после успешного применения. Подтверждение полного пакета сохраняет pending target как common state; частичный пакет сохраняет предыдущую baseline; отмена сохраняет предыдущую baseline и файлы пакета. Pending блокирует остальные переносы. Точность ручного подтверждения — ответственность пользователя; межконтурного acknowledgment по сети нет.
+SelectExport автоматически пересчитывает размер и Scanner только выбранного набора. Findings пусты → создание прямо из Comparison; findings есть → решения в Security Review и создание там же. Bulk keep не включает secret override. Изменение выбора сбрасывает review/решения. Папка экспорта сохраняется в прежних settings и показывается рядом с кнопкой.
 
-Выбор файлов/папок действует в обоих направлениях и для пакетов; Renderer разворачивает папку в allowlisted record paths. RENAME выбирается одной операцией по destination. Main отклоняет неизвестные/повторные пути и пустой выбор для непустого diff. Выбор не изменяет постоянные exclusions. Security findings пересчитываются для выбранных records; private/public IDs одной выбранной проверки совпадают.
+LoadPackage сначала проверяет весь набор частей, минимальный manifest и полные payload checksums. PreparePackage автоматически проверяет только выбранные операции и читает actual local before. V4 не требует source commit, common baseline или равного exclusions fingerprint. SourceState — информация о сравнении отправителя; before hash/mode DELETE/RENAME защищают реальные receiving файлы. Чужие и повторные пути и пустой набор для непустого пакета отклоняются.
 
-При частичном экспорте inventory строится из прежнего baseline с применением только выбранных records (snapshot — выбранные ADD). Payload, hashes, modes и materialized inventory согласованы. `targetState=content:partial:<inventory hash>` использует прежний формат content state и запрещает продвижение общего baseline на получателе. Pending.partial запрещает продвижение у отправителя. Полный исходный SHA не приписывается частичному inventory. Если получатель вручную исключил часть полного пакета, отправитель должен отменить pending, не подтверждать полный перенос; сетевого acknowledgment нет.
+V4 Apply не продвигает common baseline. Pending сохраняет выбранный inventory/bytes с partial=true через существующую схему v5: этот признак означает запрет объявления полного общего состояния, в том числе при выборе всех v4 records. Подтверждение завершает ожидание и сохраняет дату; baseline остаётся прежней. Отмена сохраняет baseline и пакеты на диске. Pending блокирует другие переносы; сетевого acknowledgment нет. Следующий расчёт снова сравнивает текущие HEAD, поэтому не обновлённый снаружи Git вновь покажет переданные отличия.
+
+Поиск/фильтры не меняют выбор; папки разворачиваются в allowlisted paths всех вложенных records. Выбор не меняет постоянные exclusions. Исключение в Security Review сохраняет glob и сбрасывает выбранный review.
 
 ## Apply / rollback / recovery
 
-Перед mutation повторяются root/branch, applicability, bytes и modes. Изменившийся после Preview файл останавливает Apply. Backup и journal создаются до записи, touched intent — перед каждой операцией. Проверяются фактические bytes/modes запланированных файлов; независимые local файлы не обязаны совпадать с canonical внешним inventory.
+Перед записью повторяются root/branch, selected applicability, bytes/modes и состав prepared набора, включая no-op. Изменение после просмотра останавливает Apply. Backup и journal предшествуют mutation; touched intent пишется перед операцией. После записи проверяются exact bytes/modes, затем атомарно сохраняются settings и committed marker.
 
-После успеха атомарно сохраняются дата и, для полного переноса, common state, затем committed marker. При ошибке откатываются затронутые пути и settingsBefore. При посторонних bytes recovery останавливается. Незавершённые journals откатываются при следующем запуске. Backup остаётся локально. Git index, history и commit/push не меняются.
+Ошибка откатывает touched paths и settingsBefore. Посторонние bytes останавливают rollback. Startup recovery откатывает незавершённые journals. Это не гарантия при отказе диска/питания. Backups остаются локально; Git index/history/commit/push не изменяются.
 
-## Миграция
+## Совместимость
 
-Settings v5 добавляет optional Pending.partial. V4 сохраняет profiles/baseline/pending; отсутствие partial означает прежний полный пакет. При загрузке v4 сохраняется settings.v4.backup.json. Формат transport v3 не меняется. Частичные пакеты рассчитаны на актуальный RepoSync: прежний клиент может прочитать content state, но не знает запрета продвижения partial baseline, поэтому затем потребует новое исходное состояние вместо продолжения общего diff.
+Новый экспорт v4 требует обновления обоих клиентов. V1–v3 читаются по прежним правилам: snapshot только без baseline; diff требует точную common state или исходный Git commit; canonical materialization проверяет полный inventory. Полный legacy import/подтверждение продвигает common state; content:partial и Pending.partial запрещают её продвижение.
 
-Settings v4 убирает environment и независимые baselines по средам. Старые sources переводятся в role/local/external; SHA/base selectors сбрасываются. Исходный settings JSON сохраняется как `settings.vN.backup.json`. Старые baselines не объявляются общей точкой автоматически: это могло бы смешать направления. Первая новая синхронизация первичная. Старый pending сохраняется для явной отмены/разбора, но подтверждение требует доступных immutable bytes; при их отсутствии отмените ожидание и создайте пакет заново. Recovery snapshots прежних versions проходят ту же миграцию при сохранении.
+Settings остаются v5: новых полей нет. Миграция v1–v4 и recovery settingsBefore сохраняются; исходный JSON резервируется. Старые pending не становятся новыми v4 и сохраняют своё поведение.
 
 ## Фильтры сравнения
 

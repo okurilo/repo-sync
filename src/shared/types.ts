@@ -27,10 +27,10 @@ export interface Settings {
 }
 export interface RecordData {
   path: string; oldPath?: string; operation: Operation; size: number; mode: number;
-  beforeSha256?: string; afterSha256?: string; encoding: Encoding; payload: string;
+  beforeMode?: number; beforeSha256?: string; afterSha256?: string; encoding: Encoding; payload: string;
 }
 export interface Transport {
-  protocolVersion: 1 | 2 | 3; schemaVersion: 1 | 2 | 3; packageId: string; packageType: PackageType;
+  protocolVersion: 1 | 2 | 3 | 4; schemaVersion: 1 | 2 | 3 | 4; packageId: string; packageType: PackageType;
   sourceState: string | null; targetState: string; scope: string;
   files: FileEntry[]; records: RecordData[];
 }

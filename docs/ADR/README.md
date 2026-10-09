@@ -6,4 +6,6 @@
 - [0004 — Два направленных workflow](0004-directional-workflows.md)
 - [0005 — Роль принадлежит Repository Profile](0005-repository-environment-role.md)
 
-Текущая продуктовая модель определяется ADR 0004/0005 и актуальными specs. Прежние source/base selectors, глобальные среды и binary sidecars не относятся к новым exports/workflow.
+- [0006 — Полные изменённые файлы](0006-full-file-transfer.md)
+
+Текущая продуктовая модель определяется ADR 0005/0006 и актуальными specs. Глобальные среды и binary sidecars не относятся к новым exports; входящие source selectors раскрываются только по запросу.

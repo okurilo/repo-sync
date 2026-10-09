@@ -1,25 +1,34 @@
-# Transport v3
+# Transport v4
 
-Новые exports содержат только UTF-8 `.md` части. Binary sidecars не создаются. protocolVersion/schemaVersion = 3; v1/v2 остаются read-only совместимостью. Для v2 импорт всё ещё требует его оригинальные sidecars.
+Новые exports — UTF-8 `.md`, protocolVersion/schemaVersion=4. Binary sidecars не создаются. V1–v3 импортируются; v2 требует оригинальные sidecars. Старые клиенты отклоняют v4.
 
-## Представление
+## Контракт полного файла
 
-Часть начинается с `# RepoSync transport v3`, далее JSON part manifest и delimiter `\n\n---\n`, затем literal UTF-8 fragment. Manifest содержит UUID, partNumber/totalParts, totalBytes, packageSha256 и partSha256. В компактном представлении JSON minified; в читаемом — отступы.
+PackageType=diff сохраняется как обозначение набора изменений, но payload не содержит текстовых патчей. SourceState — SHA внешнего committed HEAD при сравнении; targetState=content:files:<SHA256 выбранного inventory> не является полным состоянием репозитория.
 
-Логический документ: JSON transport metadata с file inventory, operations и record descriptors, тот же delimiter и последовательность payload blocks. В descriptor payload пуст, encoding и payloadBytes задают точную длину UTF-8 representation. В читаемом варианте `readable: true`, перед каждым payload расположен заголовок `\n## OP path\n\n`, после — newline. Компактный вариант не добавляет заголовки или разделы между payload blocks. Length delimiting исключает влияние Markdown fences/разделителей внутри исходника.
+Files содержит только конечные пути выбранных records, кроме DELETE. Каждый файл описан path/sha256/size/mode. Records:
 
-RAW хранит валидный UTF-8 без NUL. BASE64 хранит binary bytes. В compact Brotli quality 4 + Base64 выбирается, если короче RAW/BASE64. Readable использует RAW для текста и BASE64 для binary. Минификация касается только metadata; исходники не форматируются и не минифицируются.
+- ADD: полные bytes, afterSha256 и mode; beforeSha256 отсутствует.
+- REPLACE: полные bytes изменённого текстового или бинарного файла, beforeSha256/beforeMode и afterSha256/mode. Существующий selected receiving файл заменяется целиком; отсутствующий создаётся.
+- RENAME: oldPath → path, полные bytes, одинаковые before/after hashes, beforeMode и конечный mode. Чужой source или занятый destination конфликтует; отсутствующий source/destination допускает создание destination.
+- DELETE: пустой payload, beforeSha256/beforeMode; отсутствующий receiving путь — no-op.
 
-Документ фрагментируется по UTF-8 границам на `${uuid}.partNNN.md`; encoded binary может пересекать любые части. Размер каждого артефакта с manifest не превышает заданный лимит. Все части переносить вместе с исходными именами; можно выбрать любую из них.
+MODIFY (patch) в v4 запрещён. BeforeMode обязателен для всех операций кроме ADD, допустимы 0644/0755. Ни source commit, ни baseline bytes для материализации v4 не требуются. Полный payload каждого конечного файла проверяется по size/hash; inventory не может содержать лишние неизменённые файлы. Частичный набор имеет тот же контракт и не продвигает common baseline.
 
-## Проверки
+## Представление и лимиты
 
-Part SHA256 проверяется до сборки. UUID, protocol/schema, общий manifest и длина должны совпадать; дубли, пропуски и повреждения отклоняются. После сборки проверяются package SHA256 и record lengths. Paths проходят traversal, symlink, case collision и file/directory guards. Canonical результат проверяется относительно baseline и полного target inventory с hashes/sizes/modes. При направленном Apply независимые локальные изменения отдельно проверяются и сохраняются; результат canonical payload и local merged result различаются явно.
+Часть начинается `# RepoSync transport v4`, затем JSON manifest и delimiter `\n\n---\n`, затем UTF-8 fragment. Manifest: UUID, protocol/schema, partNumber/totalParts, totalBytes, packageSha256/partSha256. JSON minified в обоих режимах.
 
-512 MiB — предел логического документа и canonical восстановленного inventory; Brotli decode bounded, сумма decoded records ограничена. Не более 10 000 частей / 100 000 records. Maximum part size 1–512 MiB в UI. Snapshot — только ADD, sourceState null; Diff — операции от общей sourceState. RENAME не содержит payload и требует одинаковых before/after hashes. DELETE не содержит payload.
+Логический документ содержит metadata, delimiter и length-delimited payload blocks. Payload в descriptor пуст, encoding/payloadBytes определяют representation. Readable=true добавляет перед блоком `\n## OP path\n\n` и после newline; compact не добавляет эти заголовки.
 
-SHA256(original canonical bytes) = SHA256(restored canonical bytes). LF/CRLF/BOM/whitespace сохраняются. Transport не является шифрованием; `.md`, cache и backups конфиденциальны.
+RAW — UTF-8 без NUL; BASE64 — binary; compact использует Brotli quality 4 + Base64 только при меньшем размере. Readable сохраняет RAW/BASE64. Фрагментация документа на `${uuid}.partNNN.md` соблюдает UTF-8 границы и максимальный размер каждой части с manifest. Binary также пересекает части.
 
-## Частичный пакет
+Проверяются единые UUID/version/manifest, последовательность, отсутствие дубликатов/пропусков, размеры, part/package hashes, точные длины payload и конечные hash/mode. Пути проходят traversal, symlink, case collision и file/directory guards. 512 MiB — предел документа и восстановленных файлов; Brotli bounded, не более 10 000 частей/100 000 records. UI задаёт 1–512 MiB на часть.
 
-Формат v3 прежний. `content:partial:<SHA256 inventory>` обозначает согласованный target выбранных операций. В diff inventory содержит неизменённые baseline files и выбранные transitions; в snapshot — только выбранные ADD. Это не SHA полного коммита. Получатель текущей версии не продвигает common baseline для такого state, даже если применил все records пакета. Используйте актуальный RepoSync на обеих сторонах; старые версии читают формат, но не знают partial policy.
+LF/CRLF/BOM/whitespace/bytes/executable mode сохраняются. Минифицируется только metadata; исходники не форматируются. Transport не зашифрован; cache/backups конфиденциальны.
+
+## Legacy v1–v3
+
+V1 использует JSON/Base64 envelope; v2 — literal текст и binary sidecars; v3 — такой же length-delimited multipart `.md`, как v4. Legacy snapshot содержит только ADD/sourceState=null; diff содержит MODIFY patches/REPLACE/DELETE/RENAME и полный target inventory. Legacy RENAME имеет пустой payload. Материализация требует точного исходного состояния, которого нет в новом v4.
+
+Legacy content:partial:<inventory hash> и Pending.partial сохраняют прежний запрет продвижения baseline. Новые v4 pending также используют partial=true для того же запрета; settings schema не меняется.
