@@ -30,7 +30,7 @@ export interface RecordData {
   beforeMode?: number; beforeSha256?: string; afterSha256?: string; encoding: Encoding; payload: string;
 }
 export interface Transport {
-  protocolVersion: 1 | 2 | 3 | 4; schemaVersion: 1 | 2 | 3 | 4; packageId: string; packageType: PackageType;
+  protocolVersion: 1 | 2 | 3 | 4 | 5; schemaVersion: 1 | 2 | 3 | 4 | 5; packageId: string; packageType: PackageType;
   sourceState: string | null; targetState: string; scope: string;
   files: FileEntry[]; records: RecordData[];
 }

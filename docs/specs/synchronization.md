@@ -26,7 +26,7 @@ SelectExport автоматически пересчитывает размер 
 
 LoadPackage сначала проверяет весь набор частей, минимальный manifest и полные payload checksums. PreparePackage автоматически проверяет только выбранные операции и читает actual local before. V4 не требует source commit, common baseline или равного exclusions fingerprint. SourceState — информация о сравнении отправителя; before hash/mode DELETE/RENAME защищают реальные receiving файлы. Чужие и повторные пути и пустой набор для непустого пакета отклоняются.
 
-V4 Apply не продвигает common baseline. Pending сохраняет выбранный inventory/bytes с partial=true через существующую схему v5: этот признак означает запрет объявления полного общего состояния, в том числе при выборе всех v4 records. Подтверждение завершает ожидание и сохраняет дату; baseline остаётся прежней. Отмена сохраняет baseline и пакеты на диске. Pending блокирует другие переносы; сетевого acknowledgment нет. Следующий расчёт снова сравнивает текущие HEAD, поэтому не обновлённый снаружи Git вновь покажет переданные отличия.
+V4/V5 Apply не продвигает common baseline. Pending сохраняет выбранный inventory/bytes с partial=true через существующую схему v5: этот признак означает запрет объявления полного общего состояния, в том числе при выборе всех v4/v5 records. Подтверждение завершает ожидание и сохраняет дату; baseline остаётся прежней. Отмена сохраняет baseline и пакеты на диске. Pending блокирует другие переносы; сетевого acknowledgment нет. Следующий расчёт снова сравнивает текущие HEAD, поэтому не обновлённый снаружи Git вновь покажет переданные отличия.
 
 Поиск/фильтры не меняют выбор; папки разворачиваются в allowlisted paths всех вложенных records. Выбор не меняет постоянные exclusions. Исключение в Security Review сохраняет glob и сбрасывает выбранный review.
 
@@ -38,9 +38,9 @@ V4 Apply не продвигает common baseline. Pending сохраняет �
 
 ## Совместимость
 
-Новый экспорт v4 требует обновления обоих клиентов. V1–v3 читаются по прежним правилам: snapshot только без baseline; diff требует точную common state или исходный Git commit; canonical materialization проверяет полный inventory. Полный legacy import/подтверждение продвигает common state; content:partial и Pending.partial запрещают её продвижение.
+Новый экспорт v5 требует обновления обоих клиентов. V1–v3 читаются по прежним правилам: snapshot только без baseline; diff требует точную common state или исходный Git commit; canonical materialization проверяет полный inventory. Полный legacy import/подтверждение продвигает common state; content:partial и Pending.partial запрещают её продвижение.
 
-Settings остаются v5: новых полей нет. Миграция v1–v4 и recovery settingsBefore сохраняются; исходный JSON резервируется. Старые pending не становятся новыми v4 и сохраняют своё поведение.
+Settings остаются v5: новых полей нет. Миграция v1–v4 и recovery settingsBefore сохраняются; исходный JSON резервируется. V4 читается с полными payload по прежнему контракту. Старые pending не становятся новыми v5 и сохраняют своё поведение.
 
 ## Фильтры сравнения
 
