@@ -2,6 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { lstat, realpath } from 'node:fs/promises';
+import { AppUpdater } from './infra/appUpdate';
 import { Engine, parseIncomingSelection } from './engine';
 import { SettingsStore, parseProfile, parseSource, parseRules, parseFilters } from './infra/settings';
 import { localState, branchContext, listBranches, listCommits, refreshSource, safePath, stopGit, projectGitSummary } from './infra/git';
@@ -20,9 +21,15 @@ async function start(): Promise<void> {
   await store.load();
   const engine = new Engine(store);
   await engine.recover();
+  const target = app.isPackaged ? process.platform === 'win32' ? path.dirname(app.getPath('exe')) : path.resolve(app.getPath('exe'), '../../..') : process.platform === 'win32' ? path.join(app.getAppPath(), 'release', process.arch === 'x64' ? 'win-unpacked' : `win-${process.arch}-unpacked`) : path.join(app.getAppPath(), 'release', process.arch === 'arm64' ? 'mac-arm64' : 'mac', 'RepoSync.app');
+  const updater = new AppUpdater(app.getPath('userData'), app.isPackaged ? target : app.getAppPath(), target, () => app.quit());
+  app.on('before-quit', () => updater.cancel());
   ipcMain.handle('reposync', async (event, command: unknown, incoming: unknown): Promise<Reply<unknown>> => {
     if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) return { ok: false, error: 'Запрос поступил из недопустимого источника.' };
     if (!Array.isArray(incoming) || incoming.length > 3) return { ok: false, error: 'Некорректный запрос к приложению.' };
+    if (command === 'appUpdateStatus') return { ok: true, value: updater.status() };
+    if (command === 'cancelAppUpdate') { updater.cancel(); return { ok: true, value: undefined }; }
+    if (updater.status().phase === 'building' || updater.status().phase === 'restarting' || updater.status().phase === 'checking') return { ok: false, error: 'Дождитесь завершения обновления приложения.' };
     if (command === 'projectGit') {
       if (busy) return { ok: false, error: 'Дождитесь завершения текущей операции' };
       try { const profile = store.get().profiles.find(item => item.id === string(incoming[0], 36)); if (!profile) throw new Error('Профиль не найден'); return { ok: true, value: await projectGitSummary(profile, engine.cache) }; }
@@ -42,6 +49,8 @@ async function start(): Promise<void> {
     try {
       let value: unknown;
       switch (command) {
+        case 'appUpdateInspect': value = await updater.inspect(args[0] === undefined ? undefined : string(args[0])); break;
+        case 'appUpdate': await updater.update(string(args[0], 255)); value = undefined; break;
         case 'saveFilters': {
           const settings = store.get();
           if (args[0] !== null) { settings.globalExclusions = parseRules(args[0]); for (const profile of settings.profiles) profile.lastAction = { type: 'Общие фильтры', at: new Date().toISOString() }; }
@@ -168,7 +177,7 @@ async function start(): Promise<void> {
     });
     if (isDev) void window.loadURL('http://127.0.0.1:5173');
     else void window.loadFile(rendererFile);
-    window.on('closed', () => { window = null; stopGit(); });
+    window.on('closed', () => { window = null; updater.cancel(); stopGit(); });
   };
   createWindow();
   app.on('activate', () => { if (!window) createWindow(); });

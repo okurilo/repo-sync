@@ -70,7 +70,12 @@ export interface ImportPreview {
 export interface ReplacementPreview { token: string; path: string; line: number; preview: string; replacement: string }
 export interface CodeComparison { unavailablePaths?: string[]; token: string; from: string | null; to: string; entries: Analysis['entries']; lineChanges?: { added: number; removed: number } }
 export interface CodePreview { before: string; after: string; message?: string }
+export interface AppUpdateState { root: string; branch: string; branches: string[]; phase: 'idle' | 'checking' | 'building' | 'restarting' | 'error'; message: string; command: string; error?: string }
 export interface API {
+  appUpdateStatus(): Promise<AppUpdateState>;
+  appUpdateInspect(root?: string): Promise<AppUpdateState>;
+  appUpdate(branch: string): Promise<void>;
+  cancelAppUpdate(): Promise<void>;
   localState(source: Source): Promise<LocalGitState>;
   switchLocalBranch(profileId: string): Promise<LocalGitState>;
   settings(): Promise<Settings>;

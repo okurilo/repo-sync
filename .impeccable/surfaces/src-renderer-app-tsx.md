@@ -22,3 +22,7 @@ FIRST VIEWPORT: Навигация 88px слева; компактный кон�
 FORM: Седьмое направление, научный минеральный атлас; seed 3e448b50. Пользователь выбрал A в чате. Code-led: .impeccable/mocks/decision/assigned.html — одобренная композиция; direction-a.jpg — визуальная ссылка.
 
 FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
+
+## Обновление приложения
+
+Secondary-действие в заголовке обзора открывает существующие настройки. Первая секция показывает исходники, выбор ветки и primary «Обновить и перезапустить»; этап, отмена и ошибка находятся рядом. Палитра и tokens не меняются. Это обновление по запросу, без фоновой установки.

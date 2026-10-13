@@ -285,3 +285,11 @@ Renderer визуально проверен в локальном in-app browse
 - Временный настоящий Git: 7 assertions проверили copy mismatch/detached, прежний apply guard, dirty priority/canSwitch и clean main. Пользовательские репозитории не изменялись.
 - Ручной follow-up в приложении: раскрыть подробности; проверить «Обновить» для внешнего Git; dirty/conflicts должны сохранять ошибку и запрещать switch. Проверка реального native/remote взаимодействия в этом проходе не выполнялась.
 - macOS arm64 `.app`, ZIP и DMG пересобраны с локальным Electron: 12 файлов dist совпали с app.asar, DMG checksum VALID. Developer ID подпись отсутствует.
+
+### Обновление приложения (2026-10-13)
+
+- npm run build и git diff --check; node scripts/check-app-update.cjs: Windows path/case, OS script/identity, transient installer locks, backup/relaunch path, rollback.
+- 28 временных fixture checks: actual Git branch listing/current/new branch/pull, tracked dirty, diverged history, source persistence, npm build error, cancel/no quit, successful handoff; platform command selection и installer Windows VM. Node/npm и installer launch имитируются, пользовательское приложение не заменялось.
+- Production UI с mocked IPC: .impeccable/review/update/ready-1440.png, ready-900.png, building-900.png, error-900.png, dark-900.png. Branch selection, stage/disabled/cancel/error и retry via «Получить ветки» доступны. Console errors пусто. Settings dialog scroll сохраняется.
+- Native macOS/Windows follow-up: запуск из release и отдельной install folder, Node PATH из GUI, clean source updater на опубликованной ветке, реальный helper swap/relaunch, backup после install failure, Windows transient locks/permissions/uninstaller. Не выдавать VM/static checks за native Windows сертификацию.
+- macOS arm64 release пересобран: 13 dist-файлов совпали с app.asar, ZIP app.asar совпадает с .app, DMG checksum VALID. Developer ID signing отсутствует.
