@@ -1,5 +1,14 @@
 # Инженерный контекст RepoSync
 
+## 2026-10-13 — Node.js в Applications и .bash_profile
+
+- Фото с другого Mac уточнило реальную конфигурацию: PATH содержит /Applications/Node.js/ARM/node-v22.16.0-darwin-arm64/bin в .bash_profile; NODE_EXTRA_CA_CERTS задан там же. Данные фото — основание для поддержки сценария, не доказательство исполнения на другом Mac.
+- В прежнем минимальном fallback дополнены уникальные shell-кандидаты SHELL/zsh/bash. Фиксированный node -p возвращает process.execPath и только PATH/Node CA/TLS; command -v npm находит CLI. JSON/paths проверяются, шум профиля пропускается. Не hardcode версии или пользовательский каталог; настройки и файлы профиля не переписываются.
+- Из найденного профиля восстанавливаются PATH и абсолютный NODE_EXTRA_CA_CERTS; TLS=1 сохраняется, TLS=0 из shell не переносится. Содержимое сертификатов не читается/не выводится, новые credentials/полный shell env не собираются. Системное доверие не меняется.
+- Каждый shell имеет timeout5s/SIGKILL/maxBuffer8KB; существующий AbortSignal updater передан в execFile. Отмена не запускает следующий fallback и existing check защищает Git/build mutation. Прежние npm30min/group kill, Git guards, prepare/copy/backup/rollback/relaunch/persistence и Windows поиск сохранены. Новый I/O только локальная shell; новых schemas/config/service/deps/metrics нет.
+- Один runtime-файл, +25/-11 относительно предыдущего исправления; scope ниже10/<300. Полный проход по entry/env/timeout/cancel/network/build/install/rollback/persistence/config/security/compatibility выполнен; после исправлений финальный проход без новых material findings для этого сценария.
+- Постоянный fixture точно воспроизводит Applications путь, echo из bash_profile, zsh→bash fallback, передачу CA, strict TLS и игнорирование TLS0; abort запрещает второй shell. Updater/version checks, build/diffcheck прошли; remote Mac/native Windows не проверены. Patch1.0.3 синхронизирован, dependencies/overrides прежние. Финальная упаковка после коммита.
+
 ## 2026-10-13 — поиск Node.js/npm из macOS приложения
 
 - Пользователь сообщил ошибку в старой macOS сборке (на два коммита ниже). После проверки пользователь уточнил, что ошибка на другом Mac. Прямая проверка текущего Electron с Finder PATH=/usr/bin:/bin на машине разработки нашла nvm Node22.14.0/npm10.9.2; это не проверка пользовательского компьютера, исходный отказ там не воспроизведён. Поэтому не объявляем отсутствие установленного Node или доказанную причину старой ошибки.

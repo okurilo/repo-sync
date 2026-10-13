@@ -1,6 +1,6 @@
 {
   "name": "reposync",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "private": true,
   "description": "Локальный перенос Git-репозиториев через Markdown-пакеты",
   "author": "RepoSync",

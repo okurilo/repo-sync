@@ -21,10 +21,11 @@ async function checkToolDiscovery() {
       require: name => {
         if (name === 'node:path') return selectedPath;
         if (name === 'node:os') return { homedir: () => home };
-        if (name === 'node:child_process') return { execFile: (shell, args, options, callback) => { calls.push({ shell, args, options }); callback(shellError, shellResult); } };
+        if (name === 'node:child_process') return { execFile: (shell, args, options, callback) => { calls.push({ shell, args, options }); callback(shellError, typeof shellResult === 'function' ? shellResult(shell, options) : shellResult); } };
         if (name === 'node:fs') return { constants: { X_OK: 1, R_OK: 4 }, access: (file, mode, callback) => { calls.push({ file, mode }); callback(valid.has(selectedPath.normalize(file)) && (selectedPath.basename(file).startsWith('node') ? mode === 1 : mode === 4) ? null : new Error('unavailable')); } };
         if (name === 'node:fs/promises') return { readdir: async () => nvm, realpath: async file => selectedPath.normalize(file) };
-        if (name === './git' || name === '../transport') return {};
+        if (name === './git') return {};
+        if (name === '../transport') return { object: value => { if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid object'); return value; } };
         return require(name);
       },
     };
@@ -36,12 +37,25 @@ async function checkToolDiscovery() {
   assert(!direct.calls.some(call => call.shell)); // npm is readable, not necessarily executable
   const nvm = load('darwin', { PATH: '/usr/bin', NVM_DIR: '/custom/nvm' }, '', null, ['v22.14.0'], ['/custom/nvm/versions/node/v22.14.0/bin/node', '/custom/nvm/versions/node/v22.14.0/bin/npm']);
   assert.equal((await nvm.discover()).node, '/custom/nvm/versions/node/v22.14.0/bin/node');
-  const shell = load('darwin', { PATH: '/usr/bin', SHELL: '/bin/zsh' }, 'startup notice\n/login/node\n/login/npm\n', null, [], ['/login/node', '/login/npm']);
+  const shell = load('darwin', { PATH: '/usr/bin', SHELL: '/bin/zsh' }, 'startup notice\n' + JSON.stringify({node:'/login/node', PATH:'/login:/usr/bin'}) + '\n/login/npm\n', null, [], ['/login/node', '/login/npm']);
   const tools = await shell.discover();
   assert.equal(tools.node, '/login/node'); assert(tools.env.PATH.startsWith('/login'));
   const call = shell.calls.find(item => item.shell);
   assert.equal(call.options.timeout, 5000); assert.equal(call.options.killSignal, 'SIGKILL');
-  assert.equal(call.args[1], 'command -v node; command -v npm');
+  assert(call.args[1].includes('process.execPath')); assert(call.args[1].endsWith('command -v npm'));
+  const dir = '/Applications/Node.js/ARM/node-v22.16.0-darwin-arm64/bin';
+  const profile = load('darwin', { PATH: '/usr/bin', SHELL: '/bin/zsh' }, shell => shell === '/bin/bash' ? 'Загружен .bash_profile\n' + JSON.stringify({ node: dir + '/node', PATH: dir + ':/usr/bin', NODE_EXTRA_CA_CERTS: '/fixture/cacerts.pem', NODE_TLS_REJECT_UNAUTHORIZED: '1' }) + '\n' + dir + '/npm\n' : '', null, [], [dir + '/node', dir + '/npm']);
+  const profileTools = await profile.discover();
+  assert.equal(profileTools.node, dir + '/node'); assert(profileTools.env.PATH.includes(dir));
+  assert.equal(profileTools.env.NODE_EXTRA_CA_CERTS, '/fixture/cacerts.pem');
+  assert.equal(profileTools.env.NODE_TLS_REJECT_UNAUTHORIZED, '1');
+  assert.equal(profile.calls.filter(item => item.shell).map(item => item.shell).join(','), '/bin/zsh,/bin/bash');
+  const unsafe = load('darwin', { PATH: '/usr/bin' }, JSON.stringify({ node: '/login/node', PATH: '/login', NODE_TLS_REJECT_UNAUTHORIZED: '0' }) + '\n/login/npm\n', null, [], ['/login/node', '/login/npm']);
+  assert.equal((await unsafe.discover()).env.NODE_TLS_REJECT_UNAUTHORIZED, undefined);
+  const controller = new AbortController();
+  const aborted = load('darwin', {PATH:'/usr/bin'}, () => { controller.abort(); return ''; });
+  await assert.rejects(aborted.discover(controller.signal), /отменено/);
+  assert.equal(aborted.calls.filter(item => item.shell).length, 1);
   const failure = load('darwin', { PATH: '/usr/bin' }, '', new Error('timeout'));
   await assert.rejects(failure.discover(), /не удалось найти Node.js или npm/);
   const windows = load('win32', { PATH: 'C:\\Node', ProgramFiles: 'C:\\Program Files' }, '', null, [], ['C:\\Node\\node.exe', 'C:\\Node\\node_modules\\npm\\bin\\npm-cli.js']);

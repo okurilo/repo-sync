@@ -11,17 +11,18 @@ import { object, string } from '../transport';
 export const sameUpdatePath = (left: string, right: string, platform: NodeJS.Platform = process.platform): boolean => platform === 'win32' ? path.win32.resolve(left).toLowerCase() === path.win32.resolve(right).toLowerCase() : path.resolve(left) === path.resolve(right);
 async function executable(filename: string): Promise<boolean> { return new Promise(resolve => access(filename, constants.X_OK, error => resolve(!error))); }
 async function readable(filename: string): Promise<boolean> { return new Promise(resolve => access(filename, constants.R_OK, error => resolve(!error))); }
-export async function updateTools(): Promise<{ node: string; npm: string; env: NodeJS.ProcessEnv }> {
+export async function updateTools(signal?: AbortSignal): Promise<{ node: string; npm: string; env: NodeJS.ProcessEnv }> {
+  if (signal?.aborted) throw new Error('Обновление отменено. Текущая версия продолжает работать.');
   const dirs = [...(process.env.PATH ?? '').split(path.delimiter), '/opt/homebrew/bin', '/usr/local/bin', path.join(homedir(), '.volta/bin'), path.join(process.env.ProgramFiles ?? 'C:\\Program Files', 'nodejs'), process.env.NVM_SYMLINK ?? ''];
   const versions = path.join(process.env.NVM_DIR || path.join(homedir(), '.nvm'), 'versions/node');
   try { for (const version of (await readdir(versions)).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))) dirs.push(path.join(versions, version, 'bin')); } catch { /* nvm is optional */ }
-  const pair = async (node: string, npm: string): Promise<{ node: string; npm: string; env: NodeJS.ProcessEnv } | undefined> => {
+  const pair = async (node: string, npm: string, shellEnv: NodeJS.ProcessEnv = {}): Promise<{ node: string; npm: string; env: NodeJS.ProcessEnv } | undefined> => {
     if (!path.isAbsolute(node) || !path.isAbsolute(npm) || !await executable(node) || !await readable(npm)) return undefined;
     try {
       const resolvedNode = await realpath(node); const resolvedNpm = await realpath(npm);
-      const env: NodeJS.ProcessEnv = { ...process.env, npm_config_arch: process.arch, npm_config_platform: process.platform };
+      const env: NodeJS.ProcessEnv = { ...process.env, ...shellEnv, npm_config_arch: process.arch, npm_config_platform: process.platform };
       for (const key of Object.keys(env)) if (key.toLowerCase() === 'path') delete env[key];
-      env.PATH = [...new Set([path.dirname(node), path.dirname(resolvedNode), ...dirs.filter(Boolean)])].join(path.delimiter);
+      env.PATH = [...new Set([path.dirname(node), path.dirname(resolvedNode), ...(shellEnv.PATH ?? '').split(path.delimiter).filter(Boolean), ...dirs.filter(Boolean)])].join(path.delimiter);
       return { node: resolvedNode, npm: resolvedNpm, env };
     } catch { return undefined; }
   };
@@ -30,12 +31,25 @@ export async function updateTools(): Promise<{ node: string; npm: string; env: N
     const tools = await pair(node, npm); if (tools) return tools;
   }
   if (process.platform === 'darwin') {
-    const shell = process.env.SHELL && path.isAbsolute(process.env.SHELL) ? process.env.SHELL : '/bin/zsh';
-    const output = await new Promise<string>(resolve => execFile(shell, ['-ilc', 'command -v node; command -v npm'], { timeout: 5000, killSignal: 'SIGKILL', maxBuffer: 8192 }, (error, stdout) => resolve(error ? '' : stdout)));
-    const paths = output.split(/\r?\n/).map(value => value.trim());
-    const node = paths.find(value => path.isAbsolute(value) && path.basename(value) === 'node');
-    const npm = paths.find(value => path.isAbsolute(value) && path.basename(value) === 'npm');
-    if (node && npm) { const tools = await pair(node, npm); if (tools) return tools; }
+    const shells = [...new Set([process.env.SHELL, '/bin/zsh', '/bin/bash'].filter((value): value is string => !!value && path.isAbsolute(value)))];
+    const command = `node -p 'JSON.stringify({node:process.execPath,PATH:process.env.PATH,NODE_EXTRA_CA_CERTS:process.env.NODE_EXTRA_CA_CERTS,NODE_TLS_REJECT_UNAUTHORIZED:process.env.NODE_TLS_REJECT_UNAUTHORIZED})'; command -v npm`;
+    for (const shell of shells) {
+      if (signal?.aborted) throw new Error('Обновление отменено. Текущая версия продолжает работать.');
+      const output = await new Promise<string>(resolve => execFile(shell, ['-ilc', command], { timeout: 5000, killSignal: 'SIGKILL', maxBuffer: 8192, signal }, (error, stdout) => resolve(error ? '' : stdout)));
+      if (signal?.aborted) throw new Error('Обновление отменено. Текущая версия продолжает работать.');
+      const lines = output.split(/\r?\n/).map(value => value.trim());
+      const npm = lines.find(value => path.isAbsolute(value) && path.basename(value) === 'npm');
+      for (const line of lines.filter(value => value.startsWith('{'))) {
+        try {
+          const data = object(JSON.parse(line)); if (typeof data.node !== 'string' || typeof data.PATH !== 'string' || !npm) continue;
+          const shellEnv: NodeJS.ProcessEnv = { PATH: data.PATH };
+          if (typeof data.NODE_EXTRA_CA_CERTS === 'string' && path.isAbsolute(data.NODE_EXTRA_CA_CERTS)) shellEnv.NODE_EXTRA_CA_CERTS = data.NODE_EXTRA_CA_CERTS;
+          if (data.NODE_TLS_REJECT_UNAUTHORIZED === '1') shellEnv.NODE_TLS_REJECT_UNAUTHORIZED = '1';
+          const tools = await pair(data.node, npm, shellEnv); if (tools) return tools;
+        } catch { /* Шум или неподходящие пути shell не дают рабочую пару. */ }
+      }
+    }
+    if (signal?.aborted) throw new Error('Обновление отменено. Текущая версия продолжает работать.');
   }
   throw new Error('RepoSync не удалось найти Node.js или npm для сборки. Если они установлены, закройте приложение и запустите его из терминала, где работают node и npm.');
 }
@@ -157,7 +171,7 @@ export class AppUpdater {
       if ((await this.repo(['status', '--porcelain', '--untracked-files=no'])).length) throw new Error('В исходниках RepoSync есть незакоммиченные изменения. Сохраните их перед обновлением.');
       const gitDir = (await this.repo(['rev-parse', '--absolute-git-dir'])).toString().trim();
       for (const marker of ['MERGE_HEAD', 'rebase-merge', 'rebase-apply', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'sequencer']) { try { await lstat(path.join(gitDir, marker)); throw new Error('Завершите текущую операцию Git перед обновлением.'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; } }
-      const tools = await updateTools(); this.check();
+      const tools = await updateTools(this.abort.signal); this.check();
       this.state.message = 'Переключение ветки и pull…';
       const existing = (await this.repo(['branch', '--list', '--format=%(refname:short)', branch])).length;
       await this.repo(existing ? ['switch', '--', branch] : ['switch', '--track', '-c', branch, `origin/${branch}`]); this.check();
