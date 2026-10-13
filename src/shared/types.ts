@@ -70,7 +70,7 @@ export interface ImportPreview {
 export interface ReplacementPreview { token: string; path: string; line: number; preview: string; replacement: string }
 export interface CodeComparison { unavailablePaths?: string[]; token: string; from: string | null; to: string; entries: Analysis['entries']; lineChanges?: { added: number; removed: number } }
 export interface CodePreview { before: string; after: string; message?: string }
-export interface AppUpdateState { installedCommit?: string; installedBranch?: string; heads?: Record<string, string>; checkedAt?: string; root: string; branch: string; branches: string[]; phase: 'idle' | 'checking' | 'building' | 'restarting' | 'error'; message: string; command: string; error?: string }
+export interface AppUpdateState { installedVersion?: string; installedCommit?: string; installedBranch?: string; heads?: Record<string, string>; checkedAt?: string; root: string; branch: string; branches: string[]; phase: 'idle' | 'checking' | 'building' | 'restarting' | 'error'; message: string; command: string; error?: string }
 export interface API {
   appUpdateStatus(): Promise<AppUpdateState>;
   appUpdateInspect(): Promise<AppUpdateState>;
@@ -111,3 +111,5 @@ export interface API {
 }
 export type Command = keyof API;
 export type Reply<T> = { ok: true; value: T } | { ok: false; error: string };
+
+export function appVersionLabel(state: AppUpdateState | null): string { return state?.installedVersion ? `v${state.installedVersion}${state.installedBranch && state.installedBranch !== 'main' ? ` · ${state.installedBranch}` : ''}` : 'Версия не определена'; }

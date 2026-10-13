@@ -1,5 +1,14 @@
 # Инженерный контекст RepoSync
 
+## 2026-10-13 — простое версионирование
+
+- package.json — единственный источник числовой версии; patch повышается перед новым коммитом один раз, package-lock синхронизируется, amend повторно не повышает. Начальная 1.0.1, minor/major — по явному решению. Сборка и dev не переписывают manifest.
+- Единственный writeAppRevision используется build/dev; app-revision.json schemaVersion2 добавляет version, поля branch/commit прежние. Updater читает установленную identity один раз при создании, до сетевой проверки. SchemaVersion1 читается, номер берётся из соседнего установленного package.json (в packaged app — внутри app.asar), без обращения к source checkout. Неизвестный формат не даёт installed SHA; fallback номера не разрешает установку.
+- AppUpdateState.installedVersion плюс одна функция подписи: main без ветки, другие — с исходным именем; данные выбранной update ветки не подменяют installed identity. Numeric package/app/artifact version остаётся одинаковой на macOS/Windows. Availability и installer mechanics прежние; новых I/O сети, retries, persistence настроек, metrics и сервисов нет.
+- Прямые зависимости и scoped overrides точно соответствуют списку пользователя; Electron 44.4.5. npm ci прошёл после разрешения сетевого доступа; без подмены недоступных пакетов.
+- Оценка до6 runtime/<150 строк; фактически8 build/runtime (общий writer и dev вызов добавлены для свежих dev метаданных), 42 добавленные/16 удалённых строк. Scope меньше10/<300. Полный проход metadata→IPC→Renderer→SHA availability→build/install/rollback→persistence/config/compatibility; fail-safe неизвестного формата, immutable identity, timeout/cancel updater прежние.
+- Проверки: main/branch/detached/archive, manifest не меняется от сборки, exact lock/overrides, v1/v2/malformed/unknown metadata, offline сохранение версии, updater и branch comparison, strict build/diffcheck passed. Impeccable: detector[] один раз, bounded capture/fix/confirm в обеих темах 900/1440, selected update branch не меняет installed label; console errors[]. DESIGN/sidecar сохранены. Финальная упаковка выполняется после коммита для точного SHA; native Windows execution не проверялся.
+
 ## 2026-10-13 — упрощение проверки обновлений
 
 - Минимальный механизм: startup inspect и прежний updater state; automatic source candidate selection вместо UI picker; app-revision.json schemaVersion1 в dist (SHA/branch сборки). Installed SHA считывается один раз и не заменяется HEAD исходников. Heads выбранной ветки сравниваются с installed SHA; equal/unknown/error скрывают установку и main CTA. Settings/transport schemas прежние. Выбор ветки сохраняется в текущем Renderer, новая сборка естественно наследует установленную ветку.

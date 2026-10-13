@@ -6,6 +6,7 @@ const vm = require('node:vm');
 const { execFileSync } = require('node:child_process');
 const gitModule = require('../dist/main/main/infra/git.js');
 const { EventEmitter } = require('node:events');
+const { appVersionLabel } = require('../dist/main/shared/types.js');
 const { AppUpdater, sameUpdatePath, updateManifest, appInstallScript } = require('../dist/main/main/infra/appUpdate.js');
 
 async function checkInstaller(failInstall) {
@@ -60,7 +61,7 @@ async function checkRevisionDetection(directory) {
   const installed = runGit(['rev-parse', 'HEAD']);
   await fs.mkdir(path.join(source, 'dist'));
   const revision = path.join(source, 'dist/app-revision.json');
-  await fs.writeFile(revision, JSON.stringify({ schemaVersion: 1, commit: installed, branch: 'main' }));
+  await fs.writeFile(revision, JSON.stringify({ schemaVersion: 2, version: '1.0.1', commit: installed, branch: 'main' }));
   runGit(['update-ref', 'refs/remotes/origin/main', installed]);
   const actualGit = gitModule.git;
   let offline = false; let failClone = false;
@@ -75,6 +76,7 @@ async function checkRevisionDetection(directory) {
   };
   try {
     const updater = new AppUpdater(data, source, 'unused-target', () => assert.fail('Unexpected quit'));
+    assert.equal(updater.status().installedVersion, '1.0.1');
     let state = await updater.inspect();
     assert.equal(state.installedCommit, installed);
     assert.equal(state.heads.main, installed);
@@ -91,6 +93,7 @@ async function checkRevisionDetection(directory) {
     offline = true; await assert.rejects(updater.inspect(), /offline/);
     assert.equal(updater.status().phase, 'error');
     assert.equal(updater.status().installedCommit, installed);
+    assert.equal(updater.status().installedVersion, '1.0.1');
     offline = false;
     const managedData = path.join(directory, 'managed-data');
     const standalone = new AppUpdater(managedData, path.join(directory, 'installed-app'), 'unused-target', () => assert.fail('Unexpected quit'), revision);
@@ -135,10 +138,29 @@ async function checkScopedCancellation(directory) {
   assert(!sameUpdatePath('/tmp/RepoSync', '/tmp/reposync', 'darwin'));
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'reposync-update-check-'));
   try {
-    const manifest = { name: 'reposync', build: { appId: 'local.reposync.desktop', productName: 'RepoSync' }, scripts: { 'dist:mac': 'electron-builder --mac', 'dist:win': 'electron-builder --win' } };
+    const manifest = { version: '1.0.1', name: 'reposync', build: { appId: 'local.reposync.desktop', productName: 'RepoSync' }, scripts: { 'dist:mac': 'electron-builder --mac', 'dist:win': 'electron-builder --win' } };
     await fs.writeFile(path.join(root, 'package.json'), JSON.stringify(manifest));
     assert.equal((await updateManifest(root, 'darwin')).script, 'dist:mac');
     assert.equal((await updateManifest(root, 'win32')).script, 'dist:win');
+    await fs.mkdir(path.join(root, 'dist'));
+    const revision = path.join(root, 'dist/app-revision.json');
+    const installed = 'a'.repeat(40);
+    for (const schemaVersion of [1, 2]) {
+      await fs.writeFile(revision, JSON.stringify({ schemaVersion, version: '1.2.3', branch: 'feature/windows', commit: installed }));
+      const updater = new AppUpdater(root, root, 'unused-target', () => assert.fail('Unexpected quit'), revision);
+      assert.equal(updater.status().installedCommit, installed);
+      assert.equal(updater.status().installedVersion, schemaVersion === 1 ? '1.0.1' : '1.2.3');
+      assert.equal(appVersionLabel(updater.status()), `v${schemaVersion === 1 ? '1.0.1' : '1.2.3'} · feature/windows`);
+      await fs.writeFile(revision, '{}');
+      assert.equal(updater.status().installedCommit, installed);
+    }
+    for (const data of ['{', JSON.stringify({ schemaVersion: 3, commit: installed, version: '99.0.0' })]) {
+      await fs.writeFile(revision, data);
+      const state = new AppUpdater(root, root, 'unused-target', () => {}, revision).status();
+      assert.equal(state.installedVersion, '1.0.1'); assert.equal(state.installedCommit, undefined);
+    }
+    assert.equal(appVersionLabel({ installedVersion: '1.0.1', installedBranch: 'main' }), 'v1.0.1');
+    assert.equal(appVersionLabel(null), 'Версия не определена');
     await checkRevisionDetection(root);
     await checkScopedCancellation(root);
     await fs.writeFile(path.join(root, 'package.json'), JSON.stringify({ ...manifest, name: 'other' }));

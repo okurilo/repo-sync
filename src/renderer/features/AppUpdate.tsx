@@ -1,3 +1,4 @@
+import { appVersionLabel } from '../../shared/types';
 import { useState } from 'react';
 import type { AppUpdateState } from '../../shared/types';
 import { Button, Row, Status } from '../ui/components';
@@ -15,6 +16,7 @@ export function AppUpdate({ state, branch, change, checked, busy, run }: { state
   });
   return <section aria-labelledby="app-update-title" style={{ borderTop: '1px solid var(--line)', paddingTop: 20, display: 'grid', gap: 12 }}>
     <h3 id="app-update-title" style={{ margin: 0 }}>Обновление приложения</h3>
+    <span style={{ color: 'var(--muted)', overflowWrap: 'anywhere' }}>Установлено: {appVersionLabel(state)}</span>
     {!!state?.branches.length && <label>Ветка<select disabled={busy || running} value={branch} onChange={event => { setError(''); change(event.target.value); }}>{state.branches.map(name => <option key={name} value={name}>{name}</option>)}</select></label>}
     {!running && !error && !state?.error && state?.checkedAt && <span role="status">{!state.installedCommit ? 'Коммит этой сборки неизвестен. Установите сборку с данными версии.' : !head ? 'Выберите ветку для проверки.' : available ? 'Доступна новая версия.' : 'Приложение обновлено до версии этой ветки.'}</span>}
     <Row><Button disabled={busy || running} onClick={() => perform(async () => checked(await window.reposync.appUpdateInspect()))}>Проверить обновление</Button>{available && <Button $primary disabled={busy || running} onClick={() => perform(() => window.reposync.appUpdate(branch))}>Обновить и перезапустить</Button>}</Row>

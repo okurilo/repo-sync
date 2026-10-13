@@ -1,6 +1,6 @@
 {
   "name": "reposync",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "Локальный перенос Git-репозиториев через Markdown-пакеты",
   "author": "RepoSync",
@@ -16,20 +16,20 @@
     "start": "electron ."
   },
   "dependencies": {
-    "diff": "^8.0.2",
-    "minimatch": "^10.0.3",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "styled-components": "^6.1.19"
+    "diff": "8.0.2",
+    "minimatch": "10.0.3",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "styled-components": "6.1.19"
   },
   "devDependencies": {
-    "@types/node": "^22.18.0",
-    "@types/react": "^18.3.24",
-    "@types/react-dom": "^18.3.7",
-    "electron": "^44.5.1",
-    "electron-builder": "^26.15.3",
-    "typescript": "^5.9.2",
-    "vite": "^8.3.2"
+    "@types/node": "22.18.0",
+    "@types/react": "18.3.24",
+    "@types/react-dom": "18.3.7",
+    "electron": "44.4.5",
+    "electron-builder": "26.15.3",
+    "typescript": "5.9.2",
+    "vite": "8.3.2"
   },
   "build": {
     "appId": "local.reposync.desktop",
@@ -54,6 +54,19 @@
         "nsis",
         "zip"
       ]
+    }
+  },
+  "overrides": {
+    "postcss": {
+      ".": "8.5.28",
+      "nanoid": "3.3.19"
+    },
+    "node-abi": "4.35.0",
+    "minimatch": {
+      "brace-expansion": "5.0.9"
+    },
+    "electron": {
+      "@types/node": "24.19.0"
     }
   }
 }

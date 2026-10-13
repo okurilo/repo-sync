@@ -307,3 +307,10 @@ Renderer визуально проверен в локальном in-app browse
 - 32 full updater fixture checks passed; startup IPC QA (Electron shell mocked) подтвердил один check и доступный settings IPC во время pending inspection. Branch-comparison и 8 Git-summary regression checks passed после изменения Git signal.
 - .impeccable/review/update-simple: home-current-1440, current-1440/current-900, available-900 (dark), light-available-900. Actual production Renderer/mocked IPC: no main CTA when equal; данные веток есть без user action; «Получить ветки» и «Выбрать исходники» отсутствуют; ручная проверка показывает install CTA; switching to equal main hides it. Console errors отсутствуют. Fresh review P2/P2 resolved/ship.
 - Installed SHA берётся из dist/app-revision.json schema1, не из checkout; release metadata проверяется против commit. Native Windows/live network/actual replacement не проверены.
+
+## Версия сборки 1.0.1
+
+- Рядом с RepoSync и в настройках видны номер и installed ветка; main без суффикса. Смена ветки обновления не меняет installed подпись. Проверены production Renderer с mock IPC: обе темы, окна 900/1440, console errors отсутствуют.
+- `node scripts/check-app-version.mjs`: main, рабочая ветка, detached, archive, сохранность package.json и точные зависимости/overrides lock-файла.
+- `node scripts/check-app-update.cjs`: schemaVersion1/2, fallback из installed manifest, неизвестный/повреждённый формат, offline и неизменная installed identity; прежние отмена, Windows пути, backup/rollback.
+- После коммита проверить app-revision.json против HEAD и package.json внутри .app/дистрибутива; Windows native запуск проверяется на Windows.

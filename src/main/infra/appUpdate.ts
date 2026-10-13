@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { access, constants } from 'node:fs';
+import { access, constants, readFileSync } from 'node:fs';
 import { copyFile, cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -49,7 +49,19 @@ export class AppUpdater {
   private abort = new AbortController();
   private stopProcess: (() => void) | undefined;
   private state: AppUpdateState = { root: '', branch: '', branches: [], phase: 'idle', message: '', command: '' };
-  constructor(private readonly data: string, private readonly appPath: string, private readonly target: string, private readonly quit: () => void, private readonly revisionFile = path.join(appPath, 'dist/app-revision.json')) {}
+  constructor(private readonly data: string, private readonly appPath: string, private readonly target: string, private readonly quit: () => void, revisionFile = path.join(appPath, 'dist/app-revision.json')) {
+    try {
+      const revision = object(JSON.parse(readFileSync(revisionFile, 'utf8')));
+      if (revision.schemaVersion === 1 || revision.schemaVersion === 2) {
+        if (typeof revision.commit === 'string' && /^[a-f0-9]{40,64}$/.test(revision.commit)) this.state.installedCommit = revision.commit;
+        if (typeof revision.branch === 'string') this.state.installedBranch = revision.branch;
+        if (revision.schemaVersion === 2 && typeof revision.version === 'string' && /^\d+\.\d+\.\d+$/.test(revision.version)) this.state.installedVersion = revision.version;
+      }
+    } catch { /* Старые сборки могут не содержать метаданных. */ }
+    if (!this.state.installedVersion) {
+      try { const manifest = object(JSON.parse(readFileSync(path.join(path.dirname(revisionFile), '../package.json'), 'utf8'))); if (typeof manifest.version === 'string' && /^\d+\.\d+\.\d+$/.test(manifest.version)) this.state.installedVersion = manifest.version; } catch { /* Не подменять неизвестную версию данными исходников. */ }
+    }
+  }
   status(): AppUpdateState { return { ...this.state, heads: this.state.heads ? { ...this.state.heads } : undefined, branches: [...this.state.branches] }; }
   cancel(): void { if (this.state.phase !== 'checking' && this.state.phase !== 'building') return; this.stopping = true; this.stopProcess?.(); this.abort.abort(); }
   private check(): void { if (this.stopping) throw new Error('Обновление отменено. Текущая версия продолжает работать.'); }
@@ -82,7 +94,6 @@ export class AppUpdater {
     this.stopping = false; this.abort = new AbortController(); this.state.phase = 'checking'; this.state.message = 'Проверка обновления…'; this.state.error = undefined;
     try {
       if (process.platform !== 'darwin' && process.platform !== 'win32') throw new Error('Сборка и автоматический перезапуск доступны на macOS и Windows.');
-      if (!this.state.installedCommit) { try { const revision = object(JSON.parse(await readFile(this.revisionFile, 'utf8'))); if (revision.schemaVersion === 1 && typeof revision.commit === 'string' && /^[a-f0-9]{40,64}$/.test(revision.commit)) { this.state.installedCommit = revision.commit; this.state.installedBranch = typeof revision.branch === 'string' ? revision.branch : undefined; } } catch { /* an old build may have no embedded revision */ } }
       if (!this.root) { try { this.root = await readFile(path.join(this.data, 'app-update-source.txt'), 'utf8'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; } }
       if (this.root) this.root = await this.candidate(this.root) ?? '';
       if (!this.root) {
@@ -109,7 +120,7 @@ export class AppUpdater {
       if (!/^(?:https:\/\/github\.com\/|git@github\.com:)okurilo\/repo-sync(?:\.git)?$/.test(origin)) throw new Error('Origin должен указывать на github.com/okurilo/repo-sync.');
       await this.repo(['fetch', '--prune', 'origin'], undefined, 15_000); this.check();
       const heads: Record<string, string> = Object.fromEntries((await this.repo(['for-each-ref', '--format=%(refname:strip=3)%09%(objectname)', 'refs/remotes/origin/'])).toString().trim().split('\n').map(line => line.split('\t')).filter(([branch, head]) => branch && branch !== 'HEAD' && head)); const refs = Object.keys(heads);
-      this.state = { installedCommit: this.state.installedCommit, installedBranch: this.state.installedBranch, heads, checkedAt: new Date().toISOString(), root: this.root, branch: (await this.repo(['symbolic-ref', '--short', '-q', 'HEAD'], 1)).toString().trim(), branches: refs, phase: 'idle', message: '', command: `npm run ${(await updateManifest(this.root)).script}` };
+      this.state = { installedVersion: this.state.installedVersion, installedCommit: this.state.installedCommit, installedBranch: this.state.installedBranch, heads, checkedAt: new Date().toISOString(), root: this.root, branch: (await this.repo(['symbolic-ref', '--short', '-q', 'HEAD'], 1)).toString().trim(), branches: refs, phase: 'idle', message: '', command: `npm run ${(await updateManifest(this.root)).script}` };
       await mkdir(this.data, { recursive: true }); await writeFile(path.join(this.data, 'app-update-source.txt'), this.root, { mode: 0o600 });
       return this.status();
     } catch (error) { this.state.phase = 'error'; this.state.error = error instanceof Error ? error.message : 'Не удалось проверить обновление.'; this.state.root = this.root; throw error; }
