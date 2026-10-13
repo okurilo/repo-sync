@@ -8,7 +8,7 @@ export type Encoding = 'RAW' | 'BASE64' | 'BROTLI_BASE64';
 export interface GitRevision { branch: string; commit?: string }
 export interface Source { kind: 'local' | 'remote'; location: string; branch: string; commit?: string; base?: GitRevision }
 export interface CommitOption { sha: string; date: string; subject?: string }
-export interface IncomingSelection { mode: 'branch' | 'commit' | 'range' | 'repositories' | 'zero'; commit?: string; from?: string; baseBranch?: string; branch?: string }
+export interface IncomingSelection { mode: 'branch' | 'branches' | 'commit' | 'range' | 'repositories' | 'zero'; commit?: string; from?: string; baseBranch?: string; branch?: string }
 export interface ProjectFilters { extra: string[]; disabled: string[] }
 export interface LastAction { type: string; at: string }
 export interface ProjectGitSummary { sourcesKey?: string; local?: LocalGitState; localDate?: string; localError?: string; remote?: { branch: string; head: string | null; date?: string; availableHead?: string | null; checkedAt?: string; error?: string }; checkedAt: string }

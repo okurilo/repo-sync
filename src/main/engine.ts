@@ -144,7 +144,15 @@ export class Engine {
       baseline = undefined;
       if (incoming.mode !== 'zero') {
         let initial: Tree; let state: string;
-        if (incoming.mode === 'branch') {
+        if (incoming.mode === 'branches') {
+          const baseBranch = incoming.baseBranch!;
+          if (baseBranch === source.branch) throw new Error('Выберите две разные ветки для сравнения.');
+          const baseSource = { ...source, branch: baseBranch, commit: undefined, base: undefined };
+          if (baseSource.kind === 'remote') await refreshSource(baseSource, 'global', this.cache);
+          const base = await resolveSource(baseSource, mode, this.cache);
+          state = base.commit; initial = await readTree(base, filteredProfile);
+          branchComparison = { branch: source.branch, baseBranch, baseHead: base.commit };
+        } else if (incoming.mode === 'branch') {
           const baseBranch = incoming.baseBranch!;
           if (baseBranch === source.branch) throw new Error('Выбрана основная ветка. Смените ветку или способ сравнения.');
           const baseSource = { ...source, branch: baseBranch, commit: undefined, base: undefined };
@@ -431,7 +439,7 @@ export class Engine {
       const baseSource = { ...source, branch: session.branchComparison.baseBranch, commit: undefined };
       await refreshSource(baseSource, 'global', this.cache);
       const base = await resolveSource(baseSource, 'global', this.cache);
-      if (base.commit !== session.branchComparison.baseHead) throw new Error('Основная ветка изменилась. Обновите сравнение.');
+      if (base.commit !== session.branchComparison.baseHead) throw new Error(session.incomingMode === 'branches' ? 'Исходная ветка A изменилась. Обновите сравнение.' : 'Основная ветка изменилась. Обновите сравнение.');
     }
     if (session.incomingMode === 'repositories') {
       const { profile } = this.context(session.profileId);
@@ -616,15 +624,15 @@ export class Engine {
 }
 export function parseIncomingSelection(value: unknown): IncomingSelection {
   if (value === undefined) throw new Error('Выберите основную ветку для сравнения.');
-  if (!value || typeof value !== 'object' || !('mode' in value) || typeof value.mode !== 'string' || !['branch', 'commit', 'range', 'repositories', 'zero'].includes(value.mode)) throw new Error('Выберите режим входящего сравнения.');
+  if (!value || typeof value !== 'object' || !('mode' in value) || typeof value.mode !== 'string' || !['branch', 'branches', 'commit', 'range', 'repositories', 'zero'].includes(value.mode)) throw new Error('Выберите режим входящего сравнения.');
   const input = value as Record<string, unknown>;
   for (const key of ['commit', 'from']) if (input[key] !== undefined && (typeof input[key] !== 'string' || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(input[key]))) throw new Error('Выберите полный SHA коммита из истории внешней ветки.');
   if (input.mode === 'range' && (!input.from || !input.commit)) throw new Error('Выберите начало и конец диапазона.');
   if (input.mode !== 'range' && input.from !== undefined) throw new Error('Начальный коммит доступен только для диапазона.');
-  if ((input.mode === 'branch' || input.mode === 'zero' || input.mode === 'repositories') && input.commit !== undefined) throw new Error('Для этого режима используется вершина внешней ветки.');
+  if ((input.mode === 'branch' || input.mode === 'branches' || input.mode === 'zero' || input.mode === 'repositories') && input.commit !== undefined) throw new Error('Для этого режима используется вершина внешней ветки.');
   for (const key of ['branch', 'baseBranch']) if (input[key] !== undefined) { const name = input[key]; if (typeof name !== 'string') throw new Error('Некорректная ветка.'); validateSource({ kind: 'local', location: '.', branch: name }, 'internal'); }
-  if (input.mode === 'branch' && !input.baseBranch) throw new Error('Выберите основную ветку.');
-  return { branch: input.branch as string | undefined, baseBranch: input.mode === 'branch' ? input.baseBranch as string | undefined : undefined, mode: input.mode as IncomingSelection['mode'], commit: input.commit as string | undefined, from: input.from as string | undefined };
+  if ((input.mode === 'branch' || input.mode === 'branches') && !input.baseBranch) throw new Error('Выберите основную ветку.');
+  return { branch: input.branch as string | undefined, baseBranch: input.mode === 'branch' || input.mode === 'branches' ? input.baseBranch as string | undefined : undefined, mode: input.mode as IncomingSelection['mode'], commit: input.commit as string | undefined, from: input.from as string | undefined };
 }
 function selectRecords(records: RecordData[], paths?: string[]): RecordData[] {
   if (paths === undefined) return records;

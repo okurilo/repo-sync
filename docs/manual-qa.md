@@ -293,3 +293,10 @@ Renderer визуально проверен в локальном in-app browse
 - Production UI с mocked IPC: .impeccable/review/update/ready-1440.png, ready-900.png, building-900.png, error-900.png, dark-900.png. Branch selection, stage/disabled/cancel/error и retry via «Получить ветки» доступны. Console errors пусто. Settings dialog scroll сохраняется.
 - Native macOS/Windows follow-up: запуск из release и отдельной install folder, Node PATH из GUI, clean source updater на опубликованной ветке, реальный helper swap/relaunch, backup после install failure, Windows transient locks/permissions/uninstaller. Не выдавать VM/static checks за native Windows сертификацию.
 - macOS arm64 release пересобран: 13 dist-файлов совпали с app.asar, ZIP app.asar совпадает с .app, DMG checksum VALID. Developer ID signing отсутствует.
+
+### Сравнение веток внешнего Git (2026-10-13)
+
+- npm run build; node scripts/check-branch-comparison.cjs. Проверки: direct A/B heads divergent и unrelated; legacy branch merge-base не меняется; same/empty/commit/from parser guards; только selected файл применяется, CRLF сохраняется, receiver-only и невыбранные пути сохранены, baseline не продвигается. Изменение A или B останавливает prepare.
+- Actual production Renderer с временным Engine: source-1440/source-900 и compare-900/light-compare-900 в .impeccable/review/branches. Same-branch button disabled, A/B выбор, реальный diff src/base.ts 1→2, автоматическая preflight и обе темы; console errors пусто. Полные capture от scrollY0. Remote fetch/API/native dialogs mocked.
+- Wide source переснят после завершения resize: clientWidth/scrollWidth1440, inspector x1132 width280 right1412; fresh full review ship после recapture.
+- macOS arm64 .app/ZIP/DMG пересобраны; 13 dist-файлов совпали с .app, DMG checksum VALID. Без Developer ID signing.

@@ -1,5 +1,11 @@
 # Инженерный контекст RepoSync
 
+## 2026-10-13 — прямое сравнение веток внешнего Git
+
+- Пользователь уточнил: обе ветки принадлежат выбранному внешнему Git. IncomingSelection.mode=branches только в IPC/RAM; прежний baseBranch задаёт A, branch задаёт B. Minimal path: resolve/readTree A и B → existing buildDiff/selection/canonical Apply. Existing branchComparison хранит baseHead A и source resolved B для stale checks в prepare/Apply.
+- «Изменения ветки» сохраняет merge-base семантику. Новый режим не требует ancestry; нет checkout/нового API/deps/persistence схем или advance common baseline. Совпадающие ветки/пустая A/неуместный commit/from rejected. Filters, source/path/HEAD/dirty checks, backup/journal/recovery прежние. Fetch/timeout/cancel/retries и нет metrics новых.
+- Оценка 3 runtime/<80 новых строк; фактически 3, +21/−11. Regression script использует настоящие временные Git-ветки и Engine, remote I/O mocked: divergence/unrelated, direct heads vs legacy merge-base, parser, selected Apply/CRLF/сохранение остальных путей, baseline и A/B advance guards. Production build/diffcheck и UI passed; native network/Windows не сертифицированы. Impeccable detector [] один раз; fresh full review recapture→ship (wide resize capture artifact, live scrollWidth=clientWidth=1440). Documenter сохранил DESIGN/sidecar, PRODUCT/brief дополнены адресно.
+
 ## 2026-10-13 — обновление приложения по ветке
 
 - Минимальный механизм: существующий исходный checkout RepoSync (определяется по месту .app/win-unpacked, иначе пользователь выбирает папку), existing git/stopGit, общий busy IPC и текущий Dialog. Исходники отдельного installed app запоминаются в локальном app-update-source.txt, без изменений snapshot/settings схемы. Начальная оценка 350–450 для отдельного клона отозвана после упрощения: 6 runtime/<300; фактически 6 runtime, +195/−3 строки. Без новых зависимостей, update-сервера или фоновой установки.
