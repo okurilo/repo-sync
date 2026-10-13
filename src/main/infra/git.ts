@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { minimatch } from 'minimatch';
-import type { LocalGitState, BranchContext, CommitOption, Environment, FileEntry, Profile, RemoteUpdate, Source } from '../../shared/types';
+import type { LocalGitState, ProjectGitSummary, BranchContext, CommitOption, Environment, FileEntry, Profile, RemoteUpdate, Source } from '../../shared/types';
 
 export const sha256 = (bytes: Buffer | string): string => createHash('sha256').update(bytes).digest('hex');
 const runningGit = new Set<() => void>();
@@ -33,7 +33,7 @@ export async function safePath(root: string, name: string): Promise<string> {
   }
   return current;
 }
-export async function git(cwd: string, args: string[], input?: Buffer, allowedFailureCode?: number): Promise<Buffer> {
+export async function git(cwd: string, args: string[], input?: Buffer, allowedFailureCode?: number, timeoutMs = 120_000): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const child = spawn('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'http.followRedirects=false', ...args], {
       cwd, shell: false, env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' },
@@ -52,7 +52,7 @@ export async function git(cwd: string, args: string[], input?: Buffer, allowedFa
     const fail = (message: string): void => { if (!failed) { failed = true; killTree(); reject(new Error(message)); } };
     const stop = (): void => fail('Операция Git отменена при закрытии приложения.');
     runningGit.add(stop);
-    const timer = setTimeout(() => fail('Git не ответил за 120 секунд. Проверьте источник и подключение, затем повторите операцию.'), 120_000);
+    const timer = setTimeout(() => fail('Git не ответил вовремя. Проверьте источник и подключение, затем повторите операцию.'), timeoutMs);
     child.stdout.on('data', (chunk: Buffer) => {
       bytes += chunk.length;
       if (bytes > 512 * 1024 * 1024) fail('Объём данных от Git превышает 512 МБ.');
@@ -116,9 +116,9 @@ export async function resolveSource(source: Source, environment: Environment, ca
   if (source.kind === 'remote' && source.commit) await git(root, ['update-ref', `refs/reposync/pins/${commit}`, commit]);
   return { root, commit, source };
 }
-async function remoteHeads(source: Source, cache: string): Promise<Map<string, string>> {
+async function remoteHeads(source: Source, cache: string, timeoutMs = 120_000): Promise<Map<string, string>> {
   await mkdir(cache, { recursive: true, mode: 0o700 });
-  const output = (await git(cache, ['-c', 'protocol.file.allow=never', '-c', 'protocol.ext.allow=never', 'ls-remote', '--heads', '--', source.location])).toString('utf8');
+  const output = (await git(cache, ['-c', 'protocol.file.allow=never', '-c', 'protocol.ext.allow=never', 'ls-remote', '--heads', '--', source.location], undefined, undefined, timeoutMs)).toString('utf8');
   const heads = new Map<string, string>();
   for (const row of output.split('\n').filter(Boolean)) { const [oid, ref] = row.split('\t'); if (!oid || !/^[a-f0-9]{40,64}$/.test(oid) || !ref?.startsWith('refs/heads/')) throw new Error('Не удалось прочитать список веток удалённого репозитория.'); heads.set(ref.slice(11), oid); }
   const file = path.join(cache, `${sha256(source.location)}.branches.json`); const temporary = `${file}.${process.hrtime.bigint()}.tmp`;
@@ -190,7 +190,7 @@ export async function readBlobs(root: string, oids: string[]): Promise<Map<strin
   if (offset !== raw.length) throw new Error('Git вернул лишние данные файлов.');
   return result;
 }
-export interface Tree { files: FileEntry[]; bytes: Map<string, Buffer>; excludedGit: number; excludedCustom: number; ignored: string[] }
+export interface Tree { files: FileEntry[]; bytes: Map<string, Buffer>; excludedGit: number; excludedCustom: number; ignored: string[]; excluded?: { path: string; oid: string; size: number }[]; gitEntries?: { path: string; oid: string }[] }
 export const scopeHash = (profile: Profile): string => sha256(JSON.stringify({ exclusions: profile.exclusions, includeIgnored: [...profile.includeIgnored].sort() }));
 export async function readTree(resolved: ResolvedSource, profile: Profile): Promise<Tree> {
   const { root, commit, source } = resolved;
@@ -205,6 +205,7 @@ export async function readTree(resolved: ResolvedSource, profile: Profile): Prom
   let ignored: string[] = [];
   const tracked = new Set<string>();
   let totalBytes = 0;
+  const excluded = entries.filter(entry => profile.exclusions.some(rule => minimatch(entry.slice(entry.indexOf('\t') + 1), rule, { dot: true }))).map(entry => { const tab = entry.indexOf('\t'); const fields = entry.slice(0, tab).split(/\s+/); return { path: entry.slice(tab + 1), oid: fields[2]!, size: Number(fields[3]) || 0 }; });
   const included = entries.filter(entry => { const name = entry.slice(entry.indexOf('\t') + 1); return !profile.exclusions.some(rule => minimatch(name, rule, { dot: true })); });
   let includedSize = 0;
   for (const entry of included) { const tab = entry.indexOf('\t'); validatePath(entry.slice(tab + 1)); const [mode, type, , size] = entry.slice(0, tab).split(/\s+/); if (type !== 'blob' || (mode !== '100644' && mode !== '100755')) throw new Error('Символические ссылки и подмодули Git не поддерживаются. Исключите их из синхронизации.'); includedSize += Number(size); if (!Number.isSafeInteger(includedSize) || includedSize > 512 * 1024 * 1024) throw new Error('Размер выбранных файлов превышает 512 МБ. Исключите часть файлов.'); }
@@ -245,7 +246,7 @@ export async function readTree(resolved: ResolvedSource, profile: Profile): Prom
     }
   } else if (profile.includeIgnored.length) throw new Error('Удалённый репозиторий не содержит файлов, исключённых Git.');
   files.sort((a, b) => a.path.localeCompare(b.path));
-  return { files, bytes, excludedGit, excludedCustom, ignored };
+  return { files, bytes, excludedGit, excludedCustom, ignored, excluded, gitEntries: entries.map(entry => { const tab = entry.indexOf('\t'); return { path: entry.slice(tab + 1), oid: entry.slice(0, tab).split(/\s+/)[2]! }; }) };
 }
 export async function baselineBytes(root: string, state: string, files: FileEntry[], localRepository?: string): Promise<Map<string, Buffer>> {
   let useLocal = false;
@@ -297,11 +298,31 @@ export async function localState(source: Source): Promise<LocalGitState> {
     try { await lstat(path.resolve(root, name)); operations.push(label!); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   }
   const dirty = workingChanges.staged + workingChanges.unstaged + workingChanges.untracked > 0;
-  const issue = !headText ? 'В репозитории нет коммитов. Создайте первый коммит.' : conflicts ? `Неразрешённых конфликтов: ${conflicts}. Устраните их в Git.` : operations.length ? `Незавершённая операция Git: ${operations.join(', ')}. Завершите или отмените её в Git.` : dirty ? `Рабочая копия не чистая: staged — ${workingChanges.staged}, unstaged — ${workingChanges.unstaged}, untracked — ${workingChanges.untracked}. Сохраните изменения коммитом или устраните их вручную.` : !branches.includes(source.branch) ? `Выбранная ветка «${source.branch}» отсутствует. Выберите существующую ветку в настройках.` : branchText !== source.branch ? `Выбрана ветка «${source.branch}», текущая — ${branchText ? `«${branchText}»` : 'detached HEAD'}. Переключите ветку перед применением.` : null;
+  const issue = !headText ? 'В репозитории нет коммитов. Создайте первый коммит.' : conflicts ? `Неразрешённых конфликтов: ${conflicts}. Устраните их в Git.` : operations.length ? `Незавершённая операция Git: ${operations.join(', ')}. Завершите или отмените её в Git.` : dirty ? `Рабочая копия не чистая: staged — ${workingChanges.staged}, unstaged — ${workingChanges.unstaged}, untracked — ${workingChanges.untracked}. Сохраните изменения коммитом или устраните их вручную.` : !branches.includes(source.branch) ? `Выбранная ветка «${source.branch}» отсутствует. Выберите существующую ветку в настройках.` : branchText !== source.branch ? `Для применения нужна ветка «${source.branch}». ${branchText ? `Сейчас открыта «${branchText}».` : 'Сейчас HEAD не привязан к ветке.'}` : null;
   return { branch: branchText || null, head: headText || null, branches, workingChanges, conflicts, operations, issue, canSwitch: Boolean(headText) && !dirty && !conflicts && !operations.length && branches.includes(source.branch) };
 }
 export async function requireLocalReady(source: Source): Promise<LocalGitState> {
   const state = await localState(source);
   if (state.issue) throw new Error(`Применение остановлено: ${state.issue}`);
   return state;
+}
+
+export async function projectGitSummary(profile: Profile, cache: string): Promise<ProjectGitSummary> {
+  const result: ProjectGitSummary = { checkedAt: new Date().toISOString() };
+  if (profile.sources.internal) {
+    try { result.local = await localState(profile.sources.internal); if (result.local.head) result.localDate = (await git(profile.sources.internal.location, ['show', '-s', '--format=%cI', result.local.head])).toString().trim(); }
+    catch (error) { result.localError = error instanceof Error ? error.message : 'Не удалось прочитать локальный Git.'; }
+  }
+  const source = profile.sources.global;
+  if (source?.kind === 'remote') {
+    const remote: NonNullable<ProjectGitSummary['remote']> = { branch: source.branch, head: null }; result.remote = remote;
+    try {
+      const root = remoteRoot(source, cache);
+      try { await lstat(root); remote.head = (await git(root, ['rev-parse', '--verify', '--quiet', `refs/heads/${source.branch}`], undefined, 1)).toString().trim() || null; if (remote.head) remote.date = (await git(root, ['show', '-s', '--format=%cI', remote.head])).toString().trim(); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      remote.availableHead = (await remoteHeads(source, cache, 15_000)).get(source.branch) ?? null;
+      remote.checkedAt = new Date().toISOString();
+    } catch (error) { remote.error = error instanceof Error ? error.message : 'Не удалось проверить внешний Git.'; }
+  }
+  return result;
 }

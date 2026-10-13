@@ -137,23 +137,24 @@ export function parseTransport(value: unknown): Transport {
     sourceState: raw.sourceState === null ? null : state(raw.sourceState), targetState: state(raw.targetState),
     scope: digest(raw.scope), files, records };
 }
-export async function loadTransport(filename: string): Promise<Transport> {
+export async function loadTransport(selection: string | string[]): Promise<Transport> {
+  const files = typeof selection === 'string' ? [selection] : selection;
+  if (!files.length || files.length > MAX_PARTS || new Set(files).size !== files.length) throw new Error('Выберите неповторяющиеся части одного пакета.');
+  const filename = files[0]!;
+  const selected = files.length > 1 ? files : undefined;
   const firstBytes = await limitedRead(filename);
-  if (firstBytes.subarray(0, NATIVE_HEADER.length).equals(Buffer.from(NATIVE_HEADER))) return loadOpenTransport(filename, firstBytes);
-  if (firstBytes.subarray(0, FILE_HEADER.length).equals(Buffer.from(FILE_HEADER))) return loadOpenTransport(filename, firstBytes);
-  if (firstBytes.subarray(0, TEXT_HEADER.length).equals(Buffer.from(TEXT_HEADER))) return loadOpenTransport(filename, firstBytes);
-  if (firstBytes.subarray(0, OPEN_HEADER.length).equals(Buffer.from(OPEN_HEADER))) return loadOpenTransport(filename, firstBytes);
+  if (firstBytes.subarray(0, NATIVE_HEADER.length).equals(Buffer.from(NATIVE_HEADER))) return loadOpenTransport(filename, firstBytes, selected);
+  if (firstBytes.subarray(0, FILE_HEADER.length).equals(Buffer.from(FILE_HEADER))) return loadOpenTransport(filename, firstBytes, selected);
+  if (firstBytes.subarray(0, TEXT_HEADER.length).equals(Buffer.from(TEXT_HEADER))) return loadOpenTransport(filename, firstBytes, selected);
+  if (firstBytes.subarray(0, OPEN_HEADER.length).equals(Buffer.from(OPEN_HEADER))) return loadOpenTransport(filename, firstBytes, selected);
   const first = parsePart(firstBytes);
-  const names = await readdir(path.dirname(filename));
+  const candidates = selected ?? (await readdir(path.dirname(filename))).filter(name => name.endsWith('.md') && name.includes(first.packageId)).map(name => path.join(path.dirname(filename), name));
+  if (!candidates.includes(filename)) candidates.push(filename);
   const parts = new Map<number, Buffer>();
   let assembled = 0;
-  for (const name of names.filter(name => name.endsWith('.md'))) {
-    const candidate = path.join(path.dirname(filename), name);
-    let part: Part;
-    // Экспорт включает UUID в имя: соседние Markdown-файлы не читаются.
-    if (candidate !== filename && !name.includes(first.packageId)) continue;
-    part = parsePart(await limitedRead(candidate));
-    if (part.packageId !== first.packageId) continue;
+  for (const candidate of candidates) {
+    const part = parsePart(await limitedRead(candidate));
+    if (part.packageId !== first.packageId) { if (selected) throw new Error('Выбраны части разных пакетов. Выберите части одного пакета.'); continue; }
     if (part.totalParts !== first.totalParts || part.packageSha256 !== first.packageSha256 || part.totalBytes !== first.totalBytes
       || part.sourceState !== first.sourceState || part.targetState !== first.targetState || part.packageType !== first.packageType || part.records !== first.records) throw new Error('Выбраны части разных пакетов. Соберите все части одного пакета в отдельной папке.');
     if (parts.has(part.partNumber)) throw new Error('Часть пакета повторяется. Проверьте набор файлов.');
@@ -162,7 +163,7 @@ export async function loadTransport(filename: string): Promise<Transport> {
     if (assembled > first.totalBytes) throw new Error('Превышен размер логического пакета');
     parts.set(part.partNumber, bytes);
   }
-  if (parts.size !== first.totalParts) throw new Error('Не найдены все части пакета. Соберите их в одной папке и сохраните исходные имена.');
+  if (parts.size !== first.totalParts) throw new Error('Не найдены все части пакета. Выберите все части или соберите их в одной папке с исходными именами.');
   const result = Buffer.concat(Array.from({ length: first.totalParts }, (_, i) => parts.get(i + 1)!));
   if (result.length !== first.totalBytes || sha256(result) !== first.packageSha256) throw new Error('Пакет не прошёл проверку целостности. Получите все исходные части заново.');
   const transport = parseTransport(JSON.parse(result.toString('utf8')) as unknown);
@@ -241,17 +242,17 @@ function openPart(bytes: Buffer): { metadata: Record<string, unknown>; body: Buf
   if (!/^[0-9a-f-]{36}$/.test(string(metadata.packageId, 36))) throw new Error('Некорректный идентификатор пакета.');
   return { metadata, body };
 }
-async function loadOpenTransport(filename: string, bytes: Buffer): Promise<Transport> {
+async function loadOpenTransport(filename: string, bytes: Buffer, selected?: string[]): Promise<Transport> {
   const first = openPart(bytes); const id = string(first.metadata.packageId, 36); const parts = new Map<number, Buffer>(); let assembled = 0;
-  for (const name of await readdir(path.dirname(filename))) {
-    const candidate = path.join(path.dirname(filename), name);
-    if (candidate !== filename && (!name.startsWith(`${id}.part`) || !name.endsWith('.md'))) continue;
+  const candidates = selected ?? (await readdir(path.dirname(filename))).filter(name => name.startsWith(`${id}.part`) && name.endsWith('.md')).map(name => path.join(path.dirname(filename), name));
+  if (!candidates.includes(filename)) candidates.push(filename);
+  for (const candidate of candidates) {
     const part = openPart(candidate === filename ? bytes : await limitedRead(candidate));
     for (const key of ['protocolVersion', 'schemaVersion', 'packageId', 'totalParts', 'totalBytes', 'packageSha256']) if (part.metadata[key] !== first.metadata[key]) throw new Error('Выбраны части разных пакетов. Соберите все части одного пакета в отдельной папке.');
     const number = Number(part.metadata.partNumber); if (parts.has(number)) throw new Error('Часть пакета повторяется. Проверьте набор файлов.');
     assembled += part.body.length; if (assembled > Number(first.metadata.totalBytes)) throw new Error('Превышен размер пакета'); parts.set(number, part.body);
   }
-  if (parts.size !== Number(first.metadata.totalParts)) throw new Error('Не найдены все части пакета. Соберите их в одной папке и сохраните исходные имена.');
+  if (parts.size !== Number(first.metadata.totalParts)) throw new Error('Не найдены все части пакета. Выберите все части или соберите их в одной папке с исходными именами.');
   const document = Buffer.concat(Array.from({ length: parts.size }, (_, index) => parts.get(index + 1)!));
   if (document.length !== Number(first.metadata.totalBytes) || sha256(document) !== first.metadata.packageSha256) throw new Error('Пакет не прошёл проверку целостности. Получите все исходные части заново.');
   const boundary = document.indexOf(OPEN_BODY); if (boundary < 0) throw new Error('В пакете отсутствует описание содержимого.');
@@ -260,7 +261,7 @@ async function loadOpenTransport(filename: string, bytes: Buffer): Promise<Trans
   if (raw.protocolVersion === 3 || Number(raw.protocolVersion) >= 4) {
     if (typeof raw.readable !== 'boolean') throw new Error('Некорректное представление пакета');
     let offset = boundary + Buffer.byteLength(OPEN_BODY); let binaryBytes = 0;
-    const records: RecordData[] = [];
+    const records: RecordData[] = []; const unavailablePaths: string[] = [];
     for (let index = 0; index < raw.records.length; index++) {
       const record = object(raw.records[index]); const size = integer(record.payloadBytes, 0, MAX_BYTES);
       if (raw.protocolVersion === 5 && record.encoding === 'FILE') {
@@ -269,7 +270,13 @@ async function loadOpenTransport(filename: string, bytes: Buffer): Promise<Trans
         if (record.payload !== attachment || record.operation === 'DELETE') throw new Error('Некорректное бинарное вложение.');
         binaryBytes += size;
         if (binaryBytes + document.length > MAX_BYTES) throw new Error('Пакет превышает 512 МБ');
-        const content = await limitedRead(path.join(path.dirname(filename), attachment), size);
+        if (digest(record.payloadSha256) !== digest(record.afterSha256)) throw new Error('Бинарное вложение повреждено.');
+        let content: Buffer;
+        try { content = await limitedRead(path.join(path.dirname(filename), attachment), size); }
+        catch (error) {
+          if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 'ENOENT') throw error;
+          unavailablePaths.push(name); records.push({ ...record, encoding: 'RAW', payload: '' } as unknown as RecordData); continue;
+        }
         if (sha256(content) !== digest(record.payloadSha256) || record.payloadSha256 !== record.afterSha256) throw new Error('Бинарное вложение повреждено.');
         records.push({ ...record, ...encode(content) } as unknown as RecordData);
         continue;
@@ -286,7 +293,10 @@ async function loadOpenTransport(filename: string, bytes: Buffer): Promise<Trans
       records.push({ ...record, payload } as unknown as RecordData);
     }
     if (offset !== document.length) throw new Error('Пакет содержит лишние данные.');
-    return parseTransport({ ...raw, records });
+    const transport = parseTransport({ ...raw, records });
+    if (!unavailablePaths.length) return transport;
+    const unavailable = new Set(unavailablePaths);
+    return { ...transport, unavailablePaths, files: transport.files.filter(file => !unavailable.has(file.path)), records: transport.records.filter(record => !unavailable.has(record.path)) };
   }
   let offset = boundary + Buffer.byteLength(OPEN_BODY); let binaryBytes = 0;
   const records: RecordData[] = [];
