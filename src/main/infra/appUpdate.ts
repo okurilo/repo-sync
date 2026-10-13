@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { access, constants, readFileSync } from 'node:fs';
 import { copyFile, cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -10,15 +10,34 @@ import { object, string } from '../transport';
 
 export const sameUpdatePath = (left: string, right: string, platform: NodeJS.Platform = process.platform): boolean => platform === 'win32' ? path.win32.resolve(left).toLowerCase() === path.win32.resolve(right).toLowerCase() : path.resolve(left) === path.resolve(right);
 async function executable(filename: string): Promise<boolean> { return new Promise(resolve => access(filename, constants.X_OK, error => resolve(!error))); }
+async function readable(filename: string): Promise<boolean> { return new Promise(resolve => access(filename, constants.R_OK, error => resolve(!error))); }
 export async function updateTools(): Promise<{ node: string; npm: string; env: NodeJS.ProcessEnv }> {
   const dirs = [...(process.env.PATH ?? '').split(path.delimiter), '/opt/homebrew/bin', '/usr/local/bin', path.join(homedir(), '.volta/bin'), path.join(process.env.ProgramFiles ?? 'C:\\Program Files', 'nodejs'), process.env.NVM_SYMLINK ?? ''];
-  const versions = path.join(homedir(), '.nvm/versions/node');
+  const versions = path.join(process.env.NVM_DIR || path.join(homedir(), '.nvm'), 'versions/node');
   try { for (const version of (await readdir(versions)).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))) dirs.push(path.join(versions, version, 'bin')); } catch { /* nvm is optional */ }
+  const pair = async (node: string, npm: string): Promise<{ node: string; npm: string; env: NodeJS.ProcessEnv } | undefined> => {
+    if (!path.isAbsolute(node) || !path.isAbsolute(npm) || !await executable(node) || !await readable(npm)) return undefined;
+    try {
+      const resolvedNode = await realpath(node); const resolvedNpm = await realpath(npm);
+      const env: NodeJS.ProcessEnv = { ...process.env, npm_config_arch: process.arch, npm_config_platform: process.platform };
+      for (const key of Object.keys(env)) if (key.toLowerCase() === 'path') delete env[key];
+      env.PATH = [...new Set([path.dirname(node), path.dirname(resolvedNode), ...dirs.filter(Boolean)])].join(path.delimiter);
+      return { node: resolvedNode, npm: resolvedNpm, env };
+    } catch { return undefined; }
+  };
   for (const dir of dirs.filter(Boolean)) {
     const node = path.join(dir, process.platform === 'win32' ? 'node.exe' : 'node'); const npm = process.platform === 'win32' ? path.join(dir, 'node_modules/npm/bin/npm-cli.js') : path.join(dir, 'npm');
-    if (await executable(node) && await executable(npm)) { const env: NodeJS.ProcessEnv = { ...process.env, npm_config_arch: process.arch, npm_config_platform: process.platform }; for (const key of Object.keys(env)) if (key.toLowerCase() === 'path') delete env[key]; env.PATH = [...new Set([dir, ...dirs])].join(path.delimiter); return { node: await realpath(node), npm: await realpath(npm), env }; }
+    const tools = await pair(node, npm); if (tools) return tools;
   }
-  throw new Error('Для сборки нужны Node.js и npm. Установите Node.js, затем повторите обновление.');
+  if (process.platform === 'darwin') {
+    const shell = process.env.SHELL && path.isAbsolute(process.env.SHELL) ? process.env.SHELL : '/bin/zsh';
+    const output = await new Promise<string>(resolve => execFile(shell, ['-ilc', 'command -v node; command -v npm'], { timeout: 5000, killSignal: 'SIGKILL', maxBuffer: 8192 }, (error, stdout) => resolve(error ? '' : stdout)));
+    const paths = output.split(/\r?\n/).map(value => value.trim());
+    const node = paths.find(value => path.isAbsolute(value) && path.basename(value) === 'node');
+    const npm = paths.find(value => path.isAbsolute(value) && path.basename(value) === 'npm');
+    if (node && npm) { const tools = await pair(node, npm); if (tools) return tools; }
+  }
+  throw new Error('RepoSync не удалось найти Node.js или npm для сборки. Если они установлены, закройте приложение и запустите его из терминала, где работают node и npm.');
 }
 export async function updateManifest(root: string, platform: NodeJS.Platform = process.platform): Promise<{ script: string; product: string }> {
   const raw = object(JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')));
