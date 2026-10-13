@@ -8,7 +8,7 @@ async function call<T>(command: Command, args: unknown[] = []): Promise<T> {
 }
 const api: API = {
   appUpdateStatus: () => call('appUpdateStatus'),
-  appUpdateInspect: root => call('appUpdateInspect', root ? [root] : []),
+  appUpdateInspect: () => call('appUpdateInspect'),
   appUpdate: branch => call('appUpdate', [branch]),
   cancelAppUpdate: () => call('cancelAppUpdate'),
   localState: source => call('localState', [source]),

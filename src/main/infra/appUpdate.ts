@@ -1,11 +1,11 @@
 import { spawn } from 'node:child_process';
 import { access, constants } from 'node:fs';
-import { copyFile, cp, lstat, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
+import { copyFile, cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { AppUpdateState } from '../../shared/types';
-import { git, stopGit } from './git';
+import { git } from './git';
 import { object, string } from '../transport';
 
 export const sameUpdatePath = (left: string, right: string, platform: NodeJS.Platform = process.platform): boolean => platform === 'win32' ? path.win32.resolve(left).toLowerCase() === path.win32.resolve(right).toLowerCase() : path.resolve(left) === path.resolve(right);
@@ -46,13 +46,14 @@ const open=filename=>process.platform==='win32'?new Promise((resolve,reject)=>{c
 export class AppUpdater {
   private root = '';
   private stopping = false;
+  private abort = new AbortController();
   private stopProcess: (() => void) | undefined;
   private state: AppUpdateState = { root: '', branch: '', branches: [], phase: 'idle', message: '', command: '' };
-  constructor(private readonly data: string, private readonly appPath: string, private readonly target: string, private readonly quit: () => void) {}
-  status(): AppUpdateState { return { ...this.state, branches: [...this.state.branches] }; }
-  cancel(): void { if (this.state.phase !== 'checking' && this.state.phase !== 'building') return; this.stopping = true; this.stopProcess?.(); stopGit(); }
+  constructor(private readonly data: string, private readonly appPath: string, private readonly target: string, private readonly quit: () => void, private readonly revisionFile = path.join(appPath, 'dist/app-revision.json')) {}
+  status(): AppUpdateState { return { ...this.state, heads: this.state.heads ? { ...this.state.heads } : undefined, branches: [...this.state.branches] }; }
+  cancel(): void { if (this.state.phase !== 'checking' && this.state.phase !== 'building') return; this.stopping = true; this.stopProcess?.(); this.abort.abort(); }
   private check(): void { if (this.stopping) throw new Error('Обновление отменено. Текущая версия продолжает работать.'); }
-  private async repo(args: string[], allowedFailureCode?: number): Promise<Buffer> { this.check(); const value = await git(this.root, args, undefined, allowedFailureCode); this.check(); return value; }
+  private async repo(args: string[], allowedFailureCode?: number, timeoutMs?: number): Promise<Buffer> { this.check(); try { const value = await git(this.root, args, undefined, allowedFailureCode, timeoutMs, this.abort.signal); this.check(); return value; } catch (error) { this.check(); throw error; } }
   private async command(file: string, args: string[], env: NodeJS.ProcessEnv, label: string, timeout = 1_800_000): Promise<void> {
     this.check(); this.state.message = label;
     await new Promise<void>((resolve, reject) => {
@@ -65,40 +66,63 @@ export class AppUpdater {
       child.on('close', code => { clearTimeout(timer); this.stopProcess = undefined; code === 0 && !this.stopping ? resolve() : reject(new Error(this.stopping ? 'Обновление отменено. Текущая версия продолжает работать.' : reason || `${label}: процесс завершился с кодом ${code}. Текущая версия сохранена; повторите обновление после проверки подключения и инструментов сборки.`)); });
     });
   }
-  async inspect(selectedRoot?: string): Promise<AppUpdateState> {
+  private async candidate(directory: string): Promise<string | undefined> {
+    this.check();
+    try {
+      const root = await realpath(directory); await updateManifest(root);
+      const top = (await git(root, ['rev-parse', '--show-toplevel'], undefined, undefined, 15_000, this.abort.signal)).toString().trim();
+      const origin = (await git(root, ['remote', 'get-url', 'origin'], undefined, undefined, 15_000, this.abort.signal)).toString().trim();
+      this.check();
+      if (sameUpdatePath(top, root) && /^(?:https:\/\/github\.com\/|git@github\.com:)okurilo\/repo-sync(?:\.git)?$/.test(origin)) return root;
+    } catch { this.check(); }
+    return undefined;
+  }
+  async inspect(): Promise<AppUpdateState> {
     if (this.state.phase === 'building' || this.state.phase === 'checking') throw new Error('Дождитесь завершения обновления.');
-    this.stopping = false; this.state.phase = 'checking'; this.state.message = 'Получение веток RepoSync…'; this.state.error = undefined;
+    this.stopping = false; this.abort = new AbortController(); this.state.phase = 'checking'; this.state.message = 'Проверка обновления…'; this.state.error = undefined;
     try {
       if (process.platform !== 'darwin' && process.platform !== 'win32') throw new Error('Сборка и автоматический перезапуск доступны на macOS и Windows.');
-      if (selectedRoot) { if (!path.isAbsolute(selectedRoot)) throw new Error('Выберите абсолютный путь исходников.'); this.root = await realpath(selectedRoot); }
+      if (!this.state.installedCommit) { try { const revision = object(JSON.parse(await readFile(this.revisionFile, 'utf8'))); if (revision.schemaVersion === 1 && typeof revision.commit === 'string' && /^[a-f0-9]{40,64}$/.test(revision.commit)) { this.state.installedCommit = revision.commit; this.state.installedBranch = typeof revision.branch === 'string' ? revision.branch : undefined; } } catch { /* an old build may have no embedded revision */ } }
       if (!this.root) { try { this.root = await readFile(path.join(this.data, 'app-update-source.txt'), 'utf8'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; } }
+      if (this.root) this.root = await this.candidate(this.root) ?? '';
       if (!this.root) {
         let dir = this.appPath;
         for (let n = 0; n < 9; n++, dir = path.dirname(dir)) {
-          try { await updateManifest(dir); await lstat(path.join(dir, '.git')); this.root = await realpath(dir); break; } catch { /* try the enclosing source directory */ }
+          const candidate = await this.candidate(dir); if (candidate) { this.root = candidate; break; }
         }
       }
-      if (!this.root) throw new Error('Не найдены исходники. Выберите папку Git-репозитория RepoSync.');
+      if (!this.root) {
+        await mkdir(this.data, { recursive: true }); let managed = path.join(this.data, 'app-source');
+        const candidate = await this.candidate(managed);
+        if (candidate) this.root = candidate;
+        else {
+          try { await lstat(managed); managed = `${managed}-${randomUUID()}`; } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+          const temporary = `${managed}.${randomUUID()}.tmp`;
+          try { await git(this.data, ['clone', '--', 'https://github.com/okurilo/repo-sync.git', temporary], undefined, undefined, 15_000, this.abort.signal); this.check(); await rename(temporary, managed); } finally { await rm(temporary, { recursive: true, force: true, maxRetries: 50, retryDelay: 100 }); }
+          this.root = await realpath(managed);
+        }
+      }
       await updateManifest(this.root);
       if (!sameUpdatePath(await realpath(this.root), this.root)) throw new Error('Папка исходников изменилась. Выберите её заново.');
       if (!sameUpdatePath((await this.repo(['rev-parse', '--show-toplevel'])).toString().trim(), this.root)) throw new Error('Выберите корень Git-репозитория RepoSync.');
       const origin = (await this.repo(['remote', 'get-url', 'origin'])).toString().trim();
       if (!/^(?:https:\/\/github\.com\/|git@github\.com:)okurilo\/repo-sync(?:\.git)?$/.test(origin)) throw new Error('Origin должен указывать на github.com/okurilo/repo-sync.');
-      await this.repo(['fetch', '--prune', 'origin']); this.check();
-      const refs = (await this.repo(['for-each-ref', '--format=%(refname:strip=3)', 'refs/remotes/origin/'])).toString().trim().split('\n').filter(branch => branch && branch !== 'HEAD');
-      this.state = { root: this.root, branch: (await this.repo(['symbolic-ref', '--short', '-q', 'HEAD'], 1)).toString().trim(), branches: refs, phase: 'idle', message: '', command: `npm run ${(await updateManifest(this.root)).script}` };
+      await this.repo(['fetch', '--prune', 'origin'], undefined, 15_000); this.check();
+      const heads: Record<string, string> = Object.fromEntries((await this.repo(['for-each-ref', '--format=%(refname:strip=3)%09%(objectname)', 'refs/remotes/origin/'])).toString().trim().split('\n').map(line => line.split('\t')).filter(([branch, head]) => branch && branch !== 'HEAD' && head)); const refs = Object.keys(heads);
+      this.state = { installedCommit: this.state.installedCommit, installedBranch: this.state.installedBranch, heads, checkedAt: new Date().toISOString(), root: this.root, branch: (await this.repo(['symbolic-ref', '--short', '-q', 'HEAD'], 1)).toString().trim(), branches: refs, phase: 'idle', message: '', command: `npm run ${(await updateManifest(this.root)).script}` };
       await mkdir(this.data, { recursive: true }); await writeFile(path.join(this.data, 'app-update-source.txt'), this.root, { mode: 0o600 });
       return this.status();
-    } catch (error) { this.state.phase = 'error'; this.state.error = error instanceof Error ? error.message : 'Не удалось получить ветки.'; this.state.root = this.root; throw error; }
+    } catch (error) { this.state.phase = 'error'; this.state.error = error instanceof Error ? error.message : 'Не удалось проверить обновление.'; this.state.root = this.root; throw error; }
   }
   async update(branch: string): Promise<void> {
-    if (this.state.phase !== 'idle' || !this.state.branches.includes(branch)) throw new Error('Получите список веток и выберите ветку обновления.');
-    this.stopping = false; this.state.phase = 'building'; this.state.error = undefined;
+    if (this.state.phase !== 'idle' || !this.state.branches.includes(branch)) throw new Error('Проверьте обновление и выберите ветку.');
+    if (!this.state.installedCommit || !this.state.heads?.[branch] || this.state.heads[branch] === this.state.installedCommit) throw new Error('Для выбранной ветки нет доступного обновления.');
+    this.stopping = false; this.abort = new AbortController(); this.state.phase = 'building'; this.state.error = undefined;
     try {
       this.state.message = 'Проверка исходников…';
       if (!sameUpdatePath(await realpath(this.root), this.root)) throw new Error('Папка исходников изменилась. Выберите её заново.');
       const origin = (await this.repo(['remote', 'get-url', 'origin'])).toString().trim();
-      if (!/^(?:https:\/\/github\.com\/|git@github\.com:)okurilo\/repo-sync(?:\.git)?$/.test(origin)) throw new Error('Origin RepoSync изменился. Получите ветки заново.');
+      if (!/^(?:https:\/\/github\.com\/|git@github\.com:)okurilo\/repo-sync(?:\.git)?$/.test(origin)) throw new Error('Origin RepoSync изменился. Проверьте обновление ещё раз.');
       await this.repo(['check-ref-format', '--branch', branch]);
       if ((await this.repo(['status', '--porcelain', '--untracked-files=no'])).length) throw new Error('В исходниках RepoSync есть незакоммиченные изменения. Сохраните их перед обновлением.');
       const gitDir = (await this.repo(['rev-parse', '--absolute-git-dir'])).toString().trim();

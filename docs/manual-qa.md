@@ -300,3 +300,10 @@ Renderer визуально проверен в локальном in-app browse
 - Actual production Renderer с временным Engine: source-1440/source-900 и compare-900/light-compare-900 в .impeccable/review/branches. Same-branch button disabled, A/B выбор, реальный diff src/base.ts 1→2, автоматическая preflight и обе темы; console errors пусто. Полные capture от scrollY0. Remote fetch/API/native dialogs mocked.
 - Wide source переснят после завершения resize: clientWidth/scrollWidth1440, inspector x1132 width280 right1412; fresh full review ship после recapture.
 - macOS arm64 .app/ZIP/DMG пересобраны; 13 dist-файлов совпали с .app, DMG checksum VALID. Без Developer ID signing.
+
+### Упрощённая проверка обновлений (2026-10-13)
+
+- npm run build; node scripts/check-app-update.cjs: matching SHA rejected, checkout SHA independent, installed SHA immutable, offline error, automatic managed source, interrupted clone retry, removed/invalid cached root with user file preserved. Own updater cancellation rejects только owned process; parallel foreground Git subprocess completes. Windows path/manifest/installer VM checks прежние.
+- 32 full updater fixture checks passed; startup IPC QA (Electron shell mocked) подтвердил один check и доступный settings IPC во время pending inspection. Branch-comparison и 8 Git-summary regression checks passed после изменения Git signal.
+- .impeccable/review/update-simple: home-current-1440, current-1440/current-900, available-900 (dark), light-available-900. Actual production Renderer/mocked IPC: no main CTA when equal; данные веток есть без user action; «Получить ветки» и «Выбрать исходники» отсутствуют; ручная проверка показывает install CTA; switching to equal main hides it. Console errors отсутствуют. Fresh review P2/P2 resolved/ship.
+- Installed SHA берётся из dist/app-revision.json schema1, не из checkout; release metadata проверяется против commit. Native Windows/live network/actual replacement не проверены.

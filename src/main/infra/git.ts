@@ -33,8 +33,9 @@ export async function safePath(root: string, name: string): Promise<string> {
   }
   return current;
 }
-export async function git(cwd: string, args: string[], input?: Buffer, allowedFailureCode?: number, timeoutMs = 120_000): Promise<Buffer> {
+export async function git(cwd: string, args: string[], input?: Buffer, allowedFailureCode?: number, timeoutMs = 120_000, signal?: AbortSignal): Promise<Buffer> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(new Error('Операция Git отменена.')); return; }
     const child = spawn('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'http.followRedirects=false', ...args], {
       cwd, shell: false, env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' },
       stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32',
@@ -51,6 +52,8 @@ export async function git(cwd: string, args: string[], input?: Buffer, allowedFa
     };
     const fail = (message: string): void => { if (!failed) { failed = true; killTree(); reject(new Error(message)); } };
     const stop = (): void => fail('Операция Git отменена при закрытии приложения.');
+    const abort = (): void => fail('Операция Git отменена.');
+    signal?.addEventListener('abort', abort, { once: true });
     runningGit.add(stop);
     const timer = setTimeout(() => fail('Git не ответил вовремя. Проверьте источник и подключение, затем повторите операцию.'), timeoutMs);
     child.stdout.on('data', (chunk: Buffer) => {
@@ -60,9 +63,9 @@ export async function git(cwd: string, args: string[], input?: Buffer, allowedFa
     });
     // stderr может содержать URL с credentials и другие приватные данные: не сохраняем и не отображаем.
     child.stderr.resume();
-    child.on('error', () => { clearTimeout(timer); runningGit.delete(stop); reject(new Error('Не удалось запустить Git. Проверьте его установку и доступность в PATH.')); });
+    child.on('error', () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); runningGit.delete(stop); reject(new Error('Не удалось запустить Git. Проверьте его установку и доступность в PATH.')); });
     child.on('close', code => {
-      clearTimeout(timer);
+      clearTimeout(timer); signal?.removeEventListener('abort', abort);
       runningGit.delete(stop);
       if (!failed) code === 0 || code === allowedFailureCode ? resolve(Buffer.concat(chunks)) : reject(new Error(`Git завершился с кодом ${code}. Проверьте адрес репозитория, ветку и авторизацию в системных Git-инструментах.`));
     });
