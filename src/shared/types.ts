@@ -41,7 +41,7 @@ export interface RecordData {
 }
 export interface Transport {
   unavailablePaths?: string[];
-  protocolVersion: 1 | 2 | 3 | 4 | 5; schemaVersion: 1 | 2 | 3 | 4 | 5; packageId: string; packageType: PackageType;
+  protocolVersion: 1 | 2 | 3 | 4 | 5 | 6; schemaVersion: 1 | 2 | 3 | 4 | 5 | 6; packageId: string; packageType: PackageType;
   sourceState: string | null; targetState: string; scope: string;
   files: FileEntry[]; records: RecordData[];
 }

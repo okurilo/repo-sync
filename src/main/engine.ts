@@ -213,7 +213,7 @@ export class Engine {
     const transport: Transport = { protocolVersion: 3, schemaVersion: 3, packageId: newPackageId(), packageType: type,
       sourceState: type === 'diff' ? baseline!.state : null, targetState, scope, files: tree.files, records };
     if (!incoming) {
-      transport.protocolVersion = 5; transport.schemaVersion = 5;
+      transport.protocolVersion = 6; transport.schemaVersion = 6;
       transport.targetState = `content:files:${sha256(JSON.stringify(tree.files))}`;
       const prior = new Map(baseline!.files.map(file => [file.path, file]));
       transport.records = records.map(record => ({ ...record, beforeMode: prior.get(record.oldPath ?? record.path)?.mode, ...(record.operation === 'RENAME' ? encode(tree.bytes.get(record.path)!) : {}) }));

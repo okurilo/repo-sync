@@ -82,7 +82,7 @@ export function parseFile(value: unknown): FileEntry {
 }
 export function parseTransport(value: unknown): Transport {
   const raw = object(value);
-  if (!((raw.protocolVersion === 1 && raw.schemaVersion === 1) || (raw.protocolVersion === 2 && raw.schemaVersion === 2) || (raw.protocolVersion === 3 && raw.schemaVersion === 3) || (raw.protocolVersion === 4 && raw.schemaVersion === 4) || (raw.protocolVersion === 5 && raw.schemaVersion === 5))) throw new Error('Версия пакета не поддерживается. Проверьте версию RepoSync.');
+  if (!((raw.protocolVersion === 1 && raw.schemaVersion === 1) || (raw.protocolVersion === 2 && raw.schemaVersion === 2) || (raw.protocolVersion === 3 && raw.schemaVersion === 3) || (raw.protocolVersion === 4 && raw.schemaVersion === 4) || (raw.protocolVersion === 5 && raw.schemaVersion === 5) || (raw.protocolVersion === 6 && raw.schemaVersion === 6))) throw new Error('Версия пакета не поддерживается. Проверьте версию RepoSync.');
   if (raw.packageType !== 'snapshot' && raw.packageType !== 'diff') throw new Error('Тип пакета не поддерживается.');
   if (!Array.isArray(raw.files) || !Array.isArray(raw.records) || raw.files.length > 100_000 || raw.records.length > 100_000) throw new Error('Некорректный список файлов или изменений в пакете.');
   const files = raw.files.map(parseFile);
@@ -143,6 +143,7 @@ export async function loadTransport(selection: string | string[]): Promise<Trans
   const filename = files[0]!;
   const selected = files.length > 1 ? files : undefined;
   const firstBytes = await limitedRead(filename);
+  if (firstBytes.subarray(0, COMPACT_HEADER.length).equals(Buffer.from(COMPACT_HEADER))) return loadOpenTransport(filename, firstBytes, selected);
   if (firstBytes.subarray(0, NATIVE_HEADER.length).equals(Buffer.from(NATIVE_HEADER))) return loadOpenTransport(filename, firstBytes, selected);
   if (firstBytes.subarray(0, FILE_HEADER.length).equals(Buffer.from(FILE_HEADER))) return loadOpenTransport(filename, firstBytes, selected);
   if (firstBytes.subarray(0, TEXT_HEADER.length).equals(Buffer.from(TEXT_HEADER))) return loadOpenTransport(filename, firstBytes, selected);
@@ -185,27 +186,31 @@ const OPEN_HEADER = '# RepoSync transport v2\n\n';
 const OPEN_BODY = '\n\n---\n';
 interface Artifact { name: string; bytes: Buffer }
 const binaryName = (id: string, index: number, name: string): string => `${id}.binary${String(index + 1).padStart(3, '0')}${path.posix.extname(name)}`;
+const COMPACT_HEADER = '# RepoSync transport v6\n\n';
 const NATIVE_HEADER = '# RepoSync transport v5\n\n';
 const FILE_HEADER = '# RepoSync transport v4\n\n';
 const TEXT_HEADER = '# RepoSync transport v3\n\n';
 function textDocument(transport: Transport, mode: TransportMode, attachments: Artifact[]): Buffer {
-  const version = transport.protocolVersion >= 4 ? 5 : 2;
+  const version = transport.protocolVersion >= 6 ? 6 : transport.protocolVersion >= 4 ? 5 : 2;
   const readable = mode === 'readable' || version === 2;
   const bodies: Buffer[] = [];
   const records = transport.records.map((record, index) => {
     const bytes = decode(record); const raw = bytes.toString('utf8');
+    const { payload: _payload, encoding: _encoding, ...descriptor } = record;
+    if (version === 6 && record.operation === 'DELETE') return descriptor;
     if (!Buffer.from(raw).equals(bytes) || bytes.includes(0)) {
       const name = binaryName(transport.packageId, index, record.path);
       attachments.push({ name, bytes });
-      return { ...record, encoding: 'FILE', payload: name, payloadBytes: bytes.length, payloadSha256: sha256(bytes) };
+      return version === 6 ? { ...descriptor, encoding: 'FILE' } : { ...record, encoding: 'FILE', payload: name, payloadBytes: bytes.length, payloadSha256: sha256(bytes) };
     }
     const payload = bytes;
     if (readable) bodies.push(Buffer.from(`\n## ${record.operation} ${record.path}\n\n`));
     bodies.push(payload);
     if (readable) bodies.push(Buffer.from('\n'));
-    return { ...record, encoding: 'RAW', payload: '', payloadBytes: payload.length };
+    return version === 6 ? { ...descriptor, encoding: 'RAW' } : { ...record, encoding: 'RAW', payload: '', payloadBytes: payload.length };
   });
-  const metadata = { ...transport, protocolVersion: version, schemaVersion: version, readable, records };
+  const { files: _files, unavailablePaths: _unavailable, ...description } = transport;
+  const metadata = { ...(version === 6 ? description : transport), protocolVersion: version, schemaVersion: version, readable, records };
   return Buffer.concat([Buffer.from(JSON.stringify(metadata) + OPEN_BODY), ...bodies]);
 }
 export function exportArtifacts(transport: Transport, maxBytes: number, mode: TransportMode = 'compact'): Artifact[] {
@@ -213,9 +218,9 @@ export function exportArtifacts(transport: Transport, maxBytes: number, mode: Tr
   const attachments: Artifact[] = [];
   const document = textDocument(transport, mode, attachments);
   if (document.length + attachments.reduce((size, file) => size + file.bytes.length, 0) > MAX_BYTES) throw new Error('Пакет превышает 512 МБ');
-  const version = transport.protocolVersion >= 4 ? 5 : 2;
+  const version = transport.protocolVersion >= 6 ? 6 : transport.protocolVersion >= 4 ? 5 : 2;
   const template = { protocolVersion: version, schemaVersion: version, packageId: transport.packageId, partNumber: MAX_PARTS, totalParts: MAX_PARTS, totalBytes: document.length, packageSha256: sha256(document), partSha256: sha256(document) };
-  const prefix = (metadata: typeof template): Buffer => Buffer.from((version === 5 ? NATIVE_HEADER : OPEN_HEADER) + JSON.stringify(metadata) + OPEN_BODY);
+  const prefix = (metadata: typeof template): Buffer => Buffer.from((version === 6 ? COMPACT_HEADER : version === 5 ? NATIVE_HEADER : OPEN_HEADER) + JSON.stringify(metadata) + OPEN_BODY);
   const capacity = maxBytes - prefix(template).length;
   if (capacity < 4) throw new Error('Размер части слишком мал для описания пакета. Увеличьте его в настройках.');
   const fragments: Buffer[] = []; let offset = 0;
@@ -229,12 +234,12 @@ export function exportArtifacts(transport: Transport, maxBytes: number, mode: Tr
 }
 export function splitTransport(transport: Transport, maxBytes: number, mode: TransportMode = 'compact'): Buffer[] { return exportArtifacts(transport, maxBytes, mode).map(file => file.bytes); }
 function openPart(bytes: Buffer): { metadata: Record<string, unknown>; body: Buffer } {
-  const header = bytes.subarray(0, NATIVE_HEADER.length).equals(Buffer.from(NATIVE_HEADER)) ? NATIVE_HEADER : bytes.subarray(0, FILE_HEADER.length).equals(Buffer.from(FILE_HEADER)) ? FILE_HEADER : bytes.subarray(0, TEXT_HEADER.length).equals(Buffer.from(TEXT_HEADER)) ? TEXT_HEADER : OPEN_HEADER;
+  const header = bytes.subarray(0, COMPACT_HEADER.length).equals(Buffer.from(COMPACT_HEADER)) ? COMPACT_HEADER : bytes.subarray(0, NATIVE_HEADER.length).equals(Buffer.from(NATIVE_HEADER)) ? NATIVE_HEADER : bytes.subarray(0, FILE_HEADER.length).equals(Buffer.from(FILE_HEADER)) ? FILE_HEADER : bytes.subarray(0, TEXT_HEADER.length).equals(Buffer.from(TEXT_HEADER)) ? TEXT_HEADER : OPEN_HEADER;
   if (!bytes.subarray(0, header.length).equals(Buffer.from(header))) throw new Error('Файл не похож на пакет RepoSync. Выберите исходную часть .md.');
   const boundary = bytes.indexOf(OPEN_BODY, header.length);
   if (boundary < 0) throw new Error('В пакете отсутствует описание содержимого.');
   const metadata = object(JSON.parse(bytes.subarray(header.length, boundary).toString('utf8')) as unknown);
-  if (metadata.protocolVersion !== (header === NATIVE_HEADER ? 5 : header === FILE_HEADER ? 4 : header === TEXT_HEADER ? 3 : 2) || metadata.schemaVersion !== metadata.protocolVersion) throw new Error('Версия пакета не поддерживается. Проверьте версию RepoSync.');
+  if (metadata.protocolVersion !== (header === COMPACT_HEADER ? 6 : header === NATIVE_HEADER ? 5 : header === FILE_HEADER ? 4 : header === TEXT_HEADER ? 3 : 2) || metadata.schemaVersion !== metadata.protocolVersion) throw new Error('Версия пакета не поддерживается. Проверьте версию RepoSync.');
   const body = bytes.subarray(boundary + Buffer.byteLength(OPEN_BODY));
   integer(metadata.partNumber, 1, MAX_PARTS); integer(metadata.totalParts, 1, MAX_PARTS); integer(metadata.totalBytes, 1, MAX_BYTES);
   if (Number(metadata.partNumber) > Number(metadata.totalParts) || sha256(body) !== digest(metadata.partSha256)) throw new Error('Часть пакета повреждена. Получите исходный файл заново.');
@@ -258,13 +263,31 @@ async function loadOpenTransport(filename: string, bytes: Buffer, selected?: str
   const boundary = document.indexOf(OPEN_BODY); if (boundary < 0) throw new Error('В пакете отсутствует описание содержимого.');
   const raw = object(JSON.parse(document.subarray(0, boundary).toString('utf8')) as unknown);
   if (raw.protocolVersion !== first.metadata.protocolVersion || raw.schemaVersion !== first.metadata.schemaVersion || raw.packageId !== id || !Array.isArray(raw.records) || raw.records.length > 100_000) throw new Error('Описание пакета повреждено или не соответствует его частям.');
+  let wireRecords: unknown[] = raw.records;
+  if (raw.protocolVersion === 6) {
+    if ('files' in raw) throw new Error('В пакете v6 состав файлов вычисляется из операций.');
+    const keys = new Set(['path', 'oldPath', 'operation', 'size', 'mode', 'beforeMode', 'beforeSha256', 'afterSha256', 'encoding']);
+    wireRecords = wireRecords.map((value: unknown, index: number) => {
+      const record = object(value);
+      if (Object.keys(record).some(key => !keys.has(key)) || (record.operation === 'DELETE' ? record.encoding !== undefined : record.encoding !== 'RAW' && record.encoding !== 'FILE')) throw new Error('Некорректное описание операции v6.');
+      const name = string(record.path); validatePath(name);
+      const size = integer(record.size, 0, MAX_BYTES);
+      return { ...record, encoding: record.encoding ?? 'RAW', payloadBytes: record.operation === 'DELETE' ? 0 : size,
+        payload: record.encoding === 'FILE' ? binaryName(id, index, name) : '', ...(record.encoding === 'FILE' ? { payloadSha256: digest(record.afterSha256) } : {}) };
+    });
+    raw.files = wireRecords.map(object).filter(record => record.operation !== 'DELETE').map(record => ({ path: record.path, mode: record.mode, size: record.size, sha256: record.afterSha256 }));
+    raw.records = wireRecords;
+    // Validate the complete operation set before omitting unavailable attachments.
+    parseTransport({ ...raw, records: wireRecords.map(value => ({ ...object(value), encoding: 'RAW', payload: '' })) });
+  }
   if (raw.protocolVersion === 3 || Number(raw.protocolVersion) >= 4) {
     if (typeof raw.readable !== 'boolean') throw new Error('Некорректное представление пакета');
     let offset = boundary + Buffer.byteLength(OPEN_BODY); let binaryBytes = 0;
     const records: RecordData[] = []; const unavailablePaths: string[] = [];
-    for (let index = 0; index < raw.records.length; index++) {
-      const record = object(raw.records[index]); const size = integer(record.payloadBytes, 0, MAX_BYTES);
-      if (raw.protocolVersion === 5 && record.encoding === 'FILE') {
+    for (let index = 0; index < wireRecords.length; index++) {
+      const record = object(wireRecords[index]); const size = integer(record.payloadBytes, 0, MAX_BYTES);
+      if (raw.protocolVersion === 6 && record.operation === 'DELETE') { records.push({ ...record, payload: '' } as unknown as RecordData); continue; }
+      if (Number(raw.protocolVersion) >= 5 && record.encoding === 'FILE') {
         const name = string(record.path); validatePath(name);
         const attachment = binaryName(id, index, name);
         if (record.payload !== attachment || record.operation === 'DELETE') throw new Error('Некорректное бинарное вложение.');
@@ -281,7 +304,7 @@ async function loadOpenTransport(filename: string, bytes: Buffer, selected?: str
         records.push({ ...record, ...encode(content) } as unknown as RecordData);
         continue;
       }
-      if (raw.protocolVersion === 5 && (record.encoding !== 'RAW' || record.payload !== '')) throw new Error('В пакете v5 допустимы только RAW и FILE.');
+      if (Number(raw.protocolVersion) >= 5 && (record.encoding !== 'RAW' || record.payload !== '')) throw new Error('В пакете допустимы только RAW и FILE.');
       if (raw.readable) {
         const header = Buffer.from(`\n## ${string(record.operation)} ${string(record.path)}\n\n`);
         if (!document.subarray(offset, offset + header.length).equals(header)) throw new Error('Заголовок данных не соответствует описанию пакета.'); offset += header.length;
@@ -289,7 +312,8 @@ async function loadOpenTransport(filename: string, bytes: Buffer, selected?: str
       const bytes = document.subarray(offset, offset + size); offset += size;
       if (bytes.length !== size || (raw.readable && document[offset++] !== 10)) throw new Error('Размер данных не соответствует описанию пакета.');
       const payload = bytes.toString('utf8');
-      if (!Buffer.from(payload).equals(bytes) || (raw.protocolVersion === 5 && bytes.includes(0))) throw new Error('Текст пакета повреждён: неверная кодировка UTF-8.');
+      if (!Buffer.from(payload).equals(bytes) || (Number(raw.protocolVersion) >= 5 && bytes.includes(0))) throw new Error('Текст пакета повреждён: неверная кодировка UTF-8.');
+      if (Number(raw.protocolVersion) >= 5 && record.operation !== 'DELETE' && (bytes.length !== record.size || sha256(bytes) !== digest(record.afterSha256))) throw new Error('Содержимое файла не соответствует размеру или контрольной сумме.');
       records.push({ ...record, payload } as unknown as RecordData);
     }
     if (offset !== document.length) throw new Error('Пакет содержит лишние данные.');
@@ -300,8 +324,8 @@ async function loadOpenTransport(filename: string, bytes: Buffer, selected?: str
   }
   let offset = boundary + Buffer.byteLength(OPEN_BODY); let binaryBytes = 0;
   const records: RecordData[] = [];
-  for (let index = 0; index < raw.records.length; index++) {
-    const record = object(raw.records[index]); const name = string(record.path); validatePath(name);
+  for (let index = 0; index < wireRecords.length; index++) {
+    const record = object(wireRecords[index]); const name = string(record.path); validatePath(name);
     const size = integer(record.payloadBytes, 0, MAX_BYTES); let payload: string; let encoding: Encoding;
     if (record.encoding === 'RAW') {
       const header = Buffer.from(`\n## ${string(record.operation)} ${name}\n\n`);

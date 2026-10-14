@@ -1,5 +1,6 @@
+import { imageOperation } from '../shared/fileRules';
 import { appVersionLabel } from '../shared/types';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { BackupSummary, RestorePreview, AppUpdateState, LocalGitState, ProjectGitSummary, ProjectFilters, API, Analysis, BranchContext, ExportReview, CommitOption, IncomingSelection, OutgoingSelection, CodeComparison, Direction, Finding, ImportPreview, Profile, Settings } from '../shared/types';
 import { AppearanceStyle, BusyNotice, Icon, type Appearance } from './Appearance';
 import { RepositoryCard, RepositoryGrid, syncDate } from './features/Repositories';
@@ -40,6 +41,7 @@ export function App(): React.JSX.Element {
   const [overwriteToken, setOverwriteToken] = useState('');
   const [incomingSelection, setIncomingSelection] = useState<IncomingSelection>({ mode: 'branch' });
   const [selectedIncomingPaths, setSelectedIncomingPaths] = useState<string[]>([]);
+  const [includeImages, setIncludeImages] = useState(true); const rememberedImages = useRef<string[]>([]);
   const [localGit, setLocalGit] = useState<LocalGitState | null>(null); const [localError, setLocalError] = useState('');
   const [status, setStatus] = useState<{ incoming?: number; outgoing?: number }>({});
   const packageFile = useRef<string[] | null>(null);
@@ -78,7 +80,7 @@ export function App(): React.JSX.Element {
     window.addEventListener('focus', focus); document.addEventListener('visibilitychange', focus);
     return () => { stopped = true; clearInterval(timer); window.removeEventListener('focus', focus); document.removeEventListener('visibilitychange', focus); };
   }, [sourcesKey, locked, step]);
-  function reset(): void { setFailedPath(''); setBackupView(null); setOverwriteToken(''); setOutgoingSelection({ mode: 'commit' }); packageFile.current = null; setLocalGit(null); setLocalError(''); setPackageComparison(null); setExportReview(null); setStep(null); setAnalysis(null); setImportPreview(null); setSelectedIncomingPaths([]); setKept([]); setRedactedIds([]); setOverride(false); setExported([]); setError(''); setNotice(''); setStatus({}); }
+  function reset(): void { setIncludeImages(true); rememberedImages.current = []; setFailedPath(''); setBackupView(null); setOverwriteToken(''); setOutgoingSelection({ mode: 'commit' }); packageFile.current = null; setLocalGit(null); setLocalError(''); setPackageComparison(null); setExportReview(null); setStep(null); setAnalysis(null); setImportPreview(null); setSelectedIncomingPaths([]); setKept([]); setRedactedIds([]); setOverride(false); setExported([]); setError(''); setNotice(''); setStatus({}); }
   function home(): void { reset(); setSelected(''); }
   async function openBackups(current: Profile): Promise<void> {
     reset(); setSelected(current.id); setOperationLabel('Чтение резервных копий…');
@@ -124,9 +126,18 @@ export function App(): React.JSX.Element {
       void run(async () => { setOperationLabel('Загрузка истории ветки…'); await api.refreshSource(source); setCommits(await api.listCommits(source)); });
     }
   }
-  function changePaths(paths: string[]): void {
-    const allowed = new Set(comparison?.entries.filter(entry => !entry.excludedBy).map(entry => entry.path));
+  function changePaths(paths: string[], images = includeImages): void {
+    const allowed = new Set((direction === 'outgoing' ? analysis?.entries : comparison?.entries)?.filter(entry => !entry.excludedBy && (direction !== 'outgoing' || images || !imageOperation(entry))).map(entry => entry.path));
     setSelectedIncomingPaths([...new Set(paths)].filter(path => allowed.has(path))); setOverwriteToken(''); setRedactedIds([]); setImportPreview(null); setExportReview(null); setKept([]); setOverride(false); setError(''); setStep('compare');
+  }
+  function toggleImages(enabled: boolean): void {
+    if (!analysis || direction !== 'outgoing' || locked) return;
+    const imagePaths = new Set(analysis.entries.filter(imageOperation).map(entry => entry.path));
+    if (!enabled) rememberedImages.current = selectedIncomingPaths.filter(path => imagePaths.has(path));
+    const allowed = new Set(analysis.entries.filter(entry => !entry.excludedBy && (enabled || !imageOperation(entry))).map(entry => entry.path));
+    const paths = [...new Set(enabled ? [...selectedIncomingPaths, ...rememberedImages.current] : selectedIncomingPaths)].filter(path => allowed.has(path));
+    setIncludeImages(enabled); changePaths(paths, enabled);
+    void run(async () => { setOperationLabel('Пересчёт выбранных файлов…'); const result = await api.selectExport(analysis.token, paths); setExportReview(result); });
   }
   async function compareIncoming(selection: IncomingSelection): Promise<void> {
     if (!profile) return;
@@ -140,7 +151,7 @@ export function App(): React.JSX.Element {
     reset(); setSelected(current.id); await readLocal(current); setDirection('incoming'); setStep('compare'); packageFile.current = file; setOperationLabel('Чтение и проверка частей пакета…');
     const result = await api.loadPackage(file, current.id); setPackageComparison(result); setSelectedIncomingPaths(result.entries.filter(entry => !entry.excludedBy).map(entry => entry.path));
   }
-  const comparison: CodeComparison | null = packageComparison ? { ...packageComparison, token: importPreview?.token ?? packageComparison.token } : (analysis ? { token: importPreview?.token ?? analysis.token, from: analysis.sourceState, to: analysis.state, entries: analysis.entries, lineChanges: analysis.lineChanges } : null);
+  const comparison: CodeComparison | null = useMemo(() => packageComparison ? { ...packageComparison, token: importPreview?.token ?? packageComparison.token } : (analysis ? { token: importPreview?.token ?? analysis.token, from: analysis.sourceState, to: analysis.state, entries: analysis.entries.map(entry => direction === 'outgoing' && !includeImages && imageOperation(entry) ? { ...entry, excludedBy: entry.excludedBy ?? 'Изображения выключены' } : entry), lineChanges: analysis.lineChanges } : null), [packageComparison, importPreview?.token, analysis, direction, includeImages]);
   const selectionKey = `${selected}:${direction}:${packageComparison?.token ?? analysis?.token ?? ''}:${JSON.stringify(selectedIncomingPaths)}`;
   const currentSelection = useRef(selectionKey); currentSelection.current = selectionKey;
   useEffect(() => {
@@ -177,11 +188,13 @@ export function App(): React.JSX.Element {
   }
   function updateReview(paths: string[], masks: string[]): void {
     if (!analysis) return;
+    const allowed = new Set(comparison?.entries.filter(entry => !entry.excludedBy).map(entry => entry.path));
+    paths = paths.filter(path => allowed.has(path));
     setSelectedIncomingPaths(paths); setRedactedIds(masks); setOverride(false);
     void run(async () => { setOperationLabel('Пересчёт выгрузки…'); const activePaths = new Set(paths); const findingPaths = new Map(exportReview?.originalFindings?.map(finding => [finding.id, finding.path])); const activeMasks = masks.filter(id => activePaths.has(findingPaths.get(id) ?? ''));
       const result = await api.selectExport(analysis.token, paths, activeMasks); setRedactedIds([...new Set([...masks, ...(result.redactedIds ?? [])])]); setExportReview(result); setSettings(await api.settings()); });
   }
-  function exclude(finding: Finding): void { if (analysis?.entries.find(entry => entry.path === finding.path)?.excludedBy) return; updateReview(selectedIncomingPaths.includes(finding.path) ? selectedIncomingPaths.filter(path => path !== finding.path) : [...selectedIncomingPaths, finding.path], redactedIds); }
+  function exclude(finding: Finding): void { if (comparison?.entries.find(entry => entry.path === finding.path)?.excludedBy) return; updateReview(selectedIncomingPaths.includes(finding.path) ? selectedIncomingPaths.filter(path => path !== finding.path) : [...selectedIncomingPaths, finding.path], redactedIds); }
   function redact(ids: string[], enabled: boolean): void { if (enabled) setKept(previous => previous.filter(id => !ids.includes(id))); updateReview(selectedIncomingPaths, enabled ? [...new Set([...redactedIds, ...ids])] : redactedIds.filter(id => !ids.includes(id))); }
   async function saveFileFilters(global: string[] | null, filters?: ProjectFilters): Promise<void> {
     await run(async () => {
@@ -219,7 +232,7 @@ export function App(): React.JSX.Element {
         {profile.pending ? <Surface><h2>Пакет ожидает подтверждения</h2><Muted>{profile.pending.partial ? 'Подтвердите получение выбранных файлов снаружи. Подтверждение завершает ожидание передачи.' : 'Подтверждайте полный пакет после применения всех его операций. Если применили только часть, отмените ожидание, чтобы сохранить прежнее общее состояние.'}</Muted>{profile.pending.paths.map(file => <p key={file}><code>{file}</code></p>)}<Row><Button $primary disabled={locked} onClick={() => void run(async () => { setSettings(await api.confirmTransfer(profile.id)); setNotice(profile.pending?.partial ? 'Передача выбранных файлов подтверждена.' : 'Применение подтверждено. Состояние синхронизации обновлено.'); })}>Подтвердить применение</Button><Button disabled={locked} onClick={() => void run(async () => { setSettings(await api.discardPending(profile.id)); setNotice('Ожидание отменено. Файлы пакета сохранены на диске.'); })}>Отменить ожидание</Button></Row></Surface> : profile.role === 'internal' ? <Surface style={{ padding: 36 }}><h2>Синхронизация</h2><div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 48px minmax(0, 1fr)', gap: 24, margin: '32px 0' }}><div><Badge>Внешний Git</Badge><Muted><code>{profile.sources.global?.location ?? 'Настройте внешний Git'}</code><br />{profile.sources.global?.branch}</Muted><p>{status.incoming === undefined ? 'Сравните ветку с её основой' : `Изменено файлов: ${status.incoming}`}</p><Button $primary disabled={locked || !profile.sources.global || !profile.sources.internal} onClick={() => void run(() => begin('incoming'))}><Icon name="import" />Получить изменения из Git</Button></div><div style={{ alignSelf: 'center', color: 'var(--muted)' }}><Icon name="sync" /></div><div><Badge>Локальный репозиторий</Badge><Muted><code>{profile.sources.internal?.location}</code><br />{profile.sources.internal?.branch}</Muted><p>{status.outgoing === undefined ? 'Изменения ещё не проверены' : `Изменено файлов: ${status.outgoing}`}</p><Button disabled={locked || !profile.sources.internal} onClick={() => void run(() => begin('outgoing'))}><Icon name="arrow" />Подготовить пакет</Button></div></div><Row style={{ justifyContent: 'space-between' }}><small>Последняя синхронизация: {syncDate(profile.syncedAt)}</small><Button disabled={locked} onClick={() => void run(() => refresh(profile))}>Проверить изменения</Button></Row><details style={{ marginTop: 20 }}><summary>Подробности</summary><p><code>{profile.baseline?.state ?? 'Состояние синхронизации ещё не сохранено'}</code></p><small>Файлов в общем состоянии: {profile.baseline?.files.length ?? 0}.</small></details></Surface> : <EmptyState title="Пакет изменений"><Muted>Выберите любую часть пакета .md. Все части должны лежать в одной папке с исходными именами. Перед применением вы увидите изменения.</Muted><Button $primary disabled={locked || !profile.sources.internal} onClick={() => void run(() => importPackage())}><Icon name="import" />Выбрать пакет</Button></EmptyState>}
       </> : <>
 
-        <SyncWorkflow failedPath={failedPath} workingSource={outgoingSelection.mode === 'working'} overwriteConfirmed={overwriteToken === importPreview?.token} confirmOverwrite={checked => setOverwriteToken(checked ? importPreview?.token ?? '' : '')} fileFilters={fileFilters} redactedIds={redactedIds} redact={redact} reviewFindings={exportReview?.originalFindings} localStatus={localStatus} sourceControls={sourceControls} profile={profile} settings={settings} direction={direction} step={step} analysis={analysis && exportReview ? { ...analysis, ...exportReview } : analysis} importPreview={importPreview} comparison={comparison} kept={kept} override={override} exported={exported} busy={busy} locked={locked} error={error} retryComparison={() => void run(() => profile.role === 'external' ? importPackage() : direction === 'incoming' ? compareIncoming(incomingSelection) : begin(direction, profile, outgoingSelection))} pending={pending} setPreviewBusy={setPreviewBusy} setStep={setStep} setOverride={setOverride} close={() => { reset(); void run(() => readLocal(profile)); }} keep={(ids, retained) => setKept(previous => retained ? [...new Set([...previous, ...ids])] : previous.filter(id => !ids.includes(id)))} exclude={exclude} showFinding={showFinding} selectedIncomingPaths={selectedIncomingPaths} onSelectedIncomingPathsChange={changePaths} checkSelection={() => void run(checkSelection)}
+        <SyncWorkflow includeImages={includeImages} toggleImages={toggleImages} failedPath={failedPath} workingSource={outgoingSelection.mode === 'working'} overwriteConfirmed={overwriteToken === importPreview?.token} confirmOverwrite={checked => setOverwriteToken(checked ? importPreview?.token ?? '' : '')} fileFilters={fileFilters} redactedIds={redactedIds} redact={redact} reviewFindings={exportReview?.originalFindings} localStatus={localStatus} sourceControls={sourceControls} profile={profile} settings={settings} direction={direction} step={step} analysis={analysis ? { ...analysis, ...exportReview, entries: comparison?.entries ?? analysis.entries } : null} importPreview={importPreview} comparison={comparison} kept={kept} override={override} exported={exported} busy={busy} locked={locked} error={error} retryComparison={() => void run(() => profile.role === 'external' ? importPackage() : direction === 'incoming' ? compareIncoming(incomingSelection) : begin(direction, profile, outgoingSelection))} pending={pending} setPreviewBusy={setPreviewBusy} setStep={setStep} setOverride={setOverride} close={() => { reset(); void run(() => readLocal(profile)); }} keep={(ids, retained) => setKept(previous => retained ? [...new Set([...previous, ...ids])] : previous.filter(id => !ids.includes(id)))} exclude={exclude} showFinding={showFinding} selectedIncomingPaths={selectedIncomingPaths} onSelectedIncomingPathsChange={changePaths} checkSelection={() => void run(checkSelection)}
           resolveConflict={(name, accept) => void run(() => resolveConflicts([name], accept))} acceptAllConflicts={() => void run(() => resolveConflicts(importPreview?.conflicts?.map(conflict => conflict.path) ?? [], true))} exportReady={!!exportReview} completeReview={() => { if (exportReview?.findings.length) setStep('security'); }}
           chooseOutput={() => void run(async () => { const directory = await api.chooseDirectory(); if (directory) setSettings(await api.setOutputDirectory(directory)); })}
           exportPackage={() => { if (analysis) void run(async () => { setOperationLabel('Запись частей пакета…'); setExported(await api.exportPackage(analysis.token, kept.filter(id => exportReview?.findings.some(finding => finding.id === id)), override)); setSettings(await api.settings()); setStep('done'); }); }}
