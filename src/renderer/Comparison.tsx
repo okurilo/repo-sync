@@ -1,17 +1,19 @@
-import { Icon, reveal } from './Appearance';
+import type { ReactNode } from 'react';
+import { Icon } from './Appearance';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { diffLines, diffWordsWithSpace } from 'diff';
-import styled, { css } from 'styled-components';
-import type { CodeComparison, CodePreview } from '../shared/types';
+import styled from 'styled-components';
+import type { CodeComparison, CodePreview, ImportPreview } from '../shared/types';
 import { Button } from './ui/components';
 
-const Panel = styled('section')({ minWidth: 0, display: 'flex', flexDirection: 'column', height: 'max(480px, calc(100dvh - 300px))', border: '1px solid var(--line)', borderRadius: 10, overflow: 'hidden' }, css`animation: ${reveal} 180ms ease-out;`);
+const emptyIssues: never[] = [];
+const Panel = styled('section')({ '&:has(> div > details[open])': { height: 'auto', '& > div:last-child': { minHeight: 360, flex: 'none' } }, minWidth: 0, display: 'flex', flexDirection: 'column', height: 'max(420px, calc(100dvh - 400px))', borderTop: '1px solid var(--line)', borderRadius: 0, overflow: 'hidden', background: 'var(--surface)' });
 const Bar = styled('div')({ padding: '12px 14px', borderBottom: '1px solid var(--line)', flexShrink: 0, '& p': { margin: '5px 0', fontSize: 12 }, '& h3': { margin: 0 }, background: 'var(--raised)' });
 const Workspace = styled('div')({ display: 'grid', gridTemplateColumns: 'auto minmax(0, 1fr)', flex: 1, minHeight: 0, '@media (max-width: 700px)': { gridTemplateColumns: 'minmax(0, 1fr)' } });
-const Tree = styled('nav')({ overflow: 'auto', width: 290, minWidth: 210, maxWidth: 380, resize: 'horizontal', '@media(max-width: 700px)': { width: '100%', maxWidth: 'none', maxHeight: 180, resize: 'none' }, borderRight: '1px solid var(--line)', padding: 10, fontSize: 12, '& summary': { padding: '5px 0', whiteSpace: 'nowrap' }, '& details > div': { paddingLeft: 12 } });
-const File = styled('button')<{ $selected: boolean }>(({ $selected }) => ({ display: 'block', width: '100%', border: 0, boxShadow: $selected ? 'inset 2px 0 var(--accent)' : 'none', background: $selected ? 'var(--tint)' : 'transparent', textAlign: 'left', padding: '6px 4px', whiteSpace: 'normal', overflowWrap: 'anywhere', color: 'var(--text)', borderRadius: 4 }));
-const Switch = styled('button')<{ $active: boolean }>(({ $active }) => ({ border: '1px solid var(--line)', borderRadius: 6, padding: '5px 8px', background: $active ? 'var(--tint)' : 'var(--surface)', color: $active ? 'var(--accent)' : 'var(--muted)', fontSize: 11 }));
-const Code = styled('div')({ overflow: 'auto', minWidth: 0, background: 'var(--input)', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12, '& table': { width: '100%', fontSize: 12 }, '& td': { border: 0, padding: '2px 6px', whiteSpace: 'pre' }, '& td:last-child': { width: '100%' }, '& .syntax-keyword': { color: 'var(--accent)' }, '& .syntax-string': { color: 'var(--success)' }, '& .syntax-comment': { color: 'var(--muted)', fontStyle: 'italic' }, '& .syntax-number': { color: 'var(--warning)' }, '& .split td': { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', verticalAlign: 'top', borderRight: '1px solid var(--line)' }, '& .split td:nth-child(even)': { width: '50%' }, '& .split td:nth-child(odd)': { color: 'var(--muted)', width: 36, userSelect: 'none' } });
+const Tree = styled('nav')({ overflow: 'auto', width: 250, minWidth: 190, maxWidth: 380, resize: 'horizontal', '@media(max-width: 700px)': { width: '100%', maxWidth: 'none', maxHeight: 180, resize: 'none' }, borderRight: '1px solid var(--line)', padding: 12, background: 'var(--raised)', fontSize: 12, '& summary': { padding: '5px 0', overflowWrap: 'anywhere' }, '& details > div': { paddingLeft: 12 } });
+const File = styled('button')<{ $selected: boolean }>(({ $selected }) => ({ display: 'block', width: '100%', border: 0, background: $selected ? 'var(--tint)' : 'transparent', textAlign: 'left', padding: '8px 6px', whiteSpace: 'normal', overflowWrap: 'anywhere', color: 'var(--text)', borderRadius: 4 }));
+const Switch = styled('button')<{ $active: boolean }>(({ $active }) => ({ border: '1px solid var(--line)', borderRadius: 6, padding: '5px 8px', background: $active ? 'var(--tint)' : 'var(--surface)', color: $active ? 'var(--accent)' : 'var(--muted)', fontSize: 12, minHeight: 32 }));
+const Code = styled('div')({ overflow: 'auto', minWidth: 0, background: 'var(--surface)', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12, '& table': { width: '100%', fontSize: 12 }, '& td': { border: 0, padding: '4px 6px', whiteSpace: 'pre' }, '& td:last-child': { width: '100%' }, '& .syntax-keyword': { color: 'var(--accent)' }, '& .syntax-string': { color: 'var(--success)' }, '& .syntax-comment': { color: 'var(--muted)', fontStyle: 'italic' }, '& .syntax-number': { color: 'var(--warning)' }, '& .split td': { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', verticalAlign: 'top', borderRight: '1px solid var(--line)' }, '& .split td:nth-child(even)': { width: '50%' }, '& .split td:nth-child(odd)': { color: 'var(--muted)', width: 48, whiteSpace: 'nowrap', userSelect: 'none' } });
 const Line = styled('tr')<{ $kind: string }>(({ $kind }) => ({ background: $kind === '+' ? 'var(--added)' : $kind === '-' ? 'var(--removed)' : 'transparent', '& td:not(:last-child)': { color: 'var(--muted)', textAlign: 'right', userSelect: 'none' } }));
 function lines(preview: CodePreview): { old: number | string; next: number | string; kind: string; text: string }[] {
   const changes = diffLines(preview.before, preview.after, { timeout: 1000 });
@@ -54,20 +56,23 @@ function paired(rows: ReturnType<typeof lines>): { left?: ReturnType<typeof line
   }
   return result;
 }
-export function Comparison({ comparison, busy, onBusy, request, selectable = false, selectedPaths = [], alreadyAppliedPaths = [], onSelectedPathsChange }: { comparison: CodeComparison; busy: boolean; onBusy: (value: boolean) => void; request: React.MutableRefObject<Promise<void> | null>; selectable?: boolean; selectedPaths?: string[]; alreadyAppliedPaths?: string[]; onSelectedPathsChange?: (paths: string[]) => void }): React.JSX.Element {
+export function Comparison({ comparison, busy, onBusy, request, selectable = false, selectedPaths = [], alreadyAppliedPaths = [], conflicts = emptyIssues, divergences = emptyIssues, fileFilters, onSelectedPathsChange }: { comparison: CodeComparison; busy: boolean; onBusy: (value: boolean) => void; request: React.MutableRefObject<Promise<void> | null>; fileFilters?: ReactNode; selectable?: boolean; selectedPaths?: string[]; alreadyAppliedPaths?: string[]; conflicts?: ImportPreview['conflicts']; divergences?: ImportPreview['divergences']; onSelectedPathsChange?: (paths: string[]) => void }): React.JSX.Element {
   const pending = request;
   const generation = useRef(0);
   const [sideBySide, setSideBySide] = useState(true);
   const [filters, setFilters] = useState(0);
   const options = [{ bit: 1, label: 'CRLF / LF' }, { bit: 2, label: 'отступы и пробелы в конце строк' }, { bit: 4, label: 'пустые строки' }, { bit: 8, label: 'длину пробелов и переносов (как compare-projects)' }];
-  const visibleEntries = useMemo(() => comparison.entries.filter(entry => !filters || !entry.ignoredBy?.includes(filters)), [comparison.entries, filters]);
+  const [query, setQuery] = useState('');
+  const flaggedPaths = useMemo(() => new Set([...conflicts, ...divergences].map(issue => issue.path)), [conflicts, divergences]);
+  const visibleEntries = useMemo(() => comparison.entries.filter(entry => (flaggedPaths.has(entry.path) || !filters || !entry.ignoredBy?.includes(filters)) && `${entry.oldPath ?? ''} ${entry.path}`.toLowerCase().includes(query.trim().toLowerCase())), [comparison.entries, filters, query, flaggedPaths]);
   const [preview, setPreview] = useState<CodePreview | null>(null);
   const [selected, setSelected] = useState(''); const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false); const [query, setQuery] = useState('');
+  const [loading, setLoading] = useState(false);
   useEffect(() => {
     const current = ++generation.current; let active = true;
-    setPreview(null); setError(''); setSelected(visibleEntries[0]?.path ?? '');
-    const first = visibleEntries[0];
+    setPreview(null); setError('');
+    const first = visibleEntries.find(entry => entry.path === selected && !entry.excludedBy) ?? visibleEntries.find(entry => !entry.excludedBy);
+    setSelected(first?.path ?? '');
     if (!first) { setLoading(false); onBusy(false); return; }
     onBusy(true); setLoading(true);
     const previous = pending.current;
@@ -75,50 +80,82 @@ export function Comparison({ comparison, busy, onBusy, request, selectable = fal
       await previous;
       if (!active) return;
       try { const result = await window.reposync.previewCode(comparison.token, first.path); if (active && generation.current === current) setPreview(result); }
-      catch (cause) { if (active) setError(cause instanceof Error ? cause.message : 'Ошибка предпросмотра'); }
-      finally { if (active) setLoading(false); onBusy(false); }
+      catch (cause) { if (active && generation.current === current) setError(cause instanceof Error ? cause.message : 'Ошибка предпросмотра'); }
+      finally { if (active) { setLoading(false); onBusy(false); } }
     })(); pending.current = task;
     return () => { active = false; onBusy(false); };
   }, [comparison.token, visibleEntries, onBusy, pending]);
   async function open(name: string): Promise<void> {
     if (!comparison || loading) return; setSelected(name); setPreview(null); setError(''); setLoading(true); onBusy(true);
-    const current = generation.current;
+    const current = ++generation.current; const previous = pending.current;
     const task = (async (): Promise<void> => {
+      await previous; if (generation.current !== current) return;
       try { const result = await window.reposync.previewCode(comparison.token, name); if (generation.current === current) setPreview(result); }
       catch (cause) { if (generation.current === current) setError(cause instanceof Error ? cause.message : 'Не удалось прочитать файл'); }
-      finally { if (generation.current === current) setLoading(false); onBusy(false); }
+      finally { if (generation.current === current) { setLoading(false); onBusy(false); } }
     })();
     pending.current = task; await task;
   }
-  const entries = visibleEntries.filter(entry => `${entry.oldPath ?? ''} ${entry.path}`.toLowerCase().includes(query.toLowerCase())) ?? [];
-  const listedPaths = new Set(entries.map(entry => entry.path));
+  const entries = visibleEntries;
+  const listedPaths = useMemo(() => new Set(entries.map(entry => entry.path)), [entries]);
+  const shownPaths = useMemo(() => new Set(entries.slice(0, 1000).map(entry => entry.path)), [entries]);
   const alreadyAppliedSet = new Set(alreadyAppliedPaths);
+  const conflictByPath = new Map(conflicts.map(conflict => [conflict.path, conflict.message])); const divergenceByPath = new Map(divergences.map(issue => [issue.path, issue.message]));
   const folderEntries = useMemo(() => {
     const result = new Map<string, string[]>();
-    for (const entry of comparison.entries) { const parts = entry.path.split('/'); parts.pop(); let prefix = ''; for (const part of parts) { prefix += `${part}/`; const paths = result.get(prefix) ?? []; paths.push(entry.path); result.set(prefix, paths); } }
+    for (const entry of entries.slice(0, 1000).filter(entry => !entry.excludedBy)) { const parts = entry.path.split('/'); parts.pop(); let prefix = ''; for (const part of parts) { prefix += `${part}/`; const paths = result.get(prefix) ?? []; paths.push(entry.path); result.set(prefix, paths); } }
     return result;
-  }, [comparison.entries]);
+  }, [entries]);
   const selectedSet = useMemo(() => new Set(selectedPaths), [selectedPaths]);
   function togglePath(name: string): void {
     if (!onSelectedPathsChange) return;
     onSelectedPathsChange(selectedSet.has(name) ? selectedPaths.filter(item => item !== name) : [...selectedPaths, name]);
   }
-  function tree(items: CodeComparison['entries'], prefix = ''): React.JSX.Element[] {
-    const folders = new Map<string, CodeComparison['entries']>(); const files: CodeComparison['entries'] = [];
-    for (const item of items) { const tail = item.path.slice(prefix.length); const slash = tail.indexOf('/');
-      if (slash < 0) files.push(item); else { const folder = tail.slice(0, slash); folders.set(folder, [...(folders.get(folder) ?? []), item]); }
+  const grouped = useMemo(() => {
+    const groups = new Map<string, { folders: Set<string>; files: CodeComparison['entries'] }>();
+    const groupFor = (prefix: string): { folders: Set<string>; files: CodeComparison['entries'] } => {
+      let group = groups.get(prefix);
+      if (!group) { group = { folders: new Set(), files: [] }; groups.set(prefix, group); }
+      return group;
+    };
+    for (const entry of entries.slice(0, 1000)) {
+      const parts = entry.path.split('/'); parts.pop(); let prefix = '';
+      for (const folder of parts) { groupFor(prefix).folders.add(folder); prefix += `${folder}/`; }
+      groupFor(prefix).files.push(entry);
     }
-    return [...[...folders].map(([folder, nested]) => {
+    return groups;
+  }, [entries]);
+  const folderCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const [folder, paths] of folderEntries) counts.set(folder, paths.reduce((sum, path) => sum + Number(selectedSet.has(path)), 0));
+    return counts;
+  }, [folderEntries, selectedSet]);
+  function tree(prefix = ''): React.JSX.Element[] {
+    const { folders, files } = grouped.get(prefix) ?? { folders: new Set<string>(), files: [] };
+    return [...[...folders].map(folder => {
       const folderPath = `${prefix}${folder}/`;
       const descendants = folderEntries.get(folderPath) ?? [];
-      const count = descendants.filter(path => selectedSet.has(path)).length;
-      return <details key={folder} open><summary>{selectable && <input type="checkbox" aria-label={`Выбрать папку: ${folderPath}`} checked={count === descendants.length} ref={element => { if (element) element.indeterminate = count > 0 && count < descendants.length; }} disabled={busy || loading} onClick={event => event.stopPropagation()} onChange={event => { const paths = new Set(selectedPaths); for (const path of descendants) { if (event.target.checked) paths.add(path); else paths.delete(path); } onSelectedPathsChange?.([...paths]); }} />} {folder}/ <small>{count}/{descendants.length}</small></summary><div>{tree(nested, folderPath)}</div></details>;
-    }), ...files.map(entry => <div key={entry.path} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>{selectable && <input style={{ flexShrink: 0 }} type="checkbox" aria-label={`Включить файл: ${entry.path}`} checked={selectedSet.has(entry.path)} disabled={loading || busy} onChange={() => togglePath(entry.path)} />}<File style={{ flex: 1, minWidth: 0 }} $selected={entry.path === selected} disabled={loading || busy} title={entry.oldPath ? `${entry.oldPath} → ${entry.path}` : entry.path} onClick={() => void open(entry.path)}><span style={{ color: entry.operation === 'DELETE' ? 'var(--danger)' : entry.operation === 'ADD' ? 'var(--success)' : 'var(--accent)' }}>{entry.operation === 'ADD' ? '+' : entry.operation === 'DELETE' ? '−' : entry.operation === 'RENAME' ? '↪' : '~'}</span> {entry.oldPath ? `${entry.oldPath} → ${entry.path.slice(prefix.length)}` : entry.path.slice(prefix.length)}{alreadyAppliedSet.has(entry.path) && <small style={{ display: 'block', color: 'var(--success)' }}>Уже применено</small>}</File></div>)];
+      const count = folderCounts.get(folderPath) ?? 0;
+      return <details key={folder} open><summary>{selectable && <input type="checkbox" aria-label={`Выбрать папку: ${folderPath}`} checked={descendants.length > 0 && count === descendants.length} ref={element => { if (element) element.indeterminate = count > 0 && count < descendants.length; }} disabled={busy || loading || descendants.length === 0} onClick={event => event.stopPropagation()} onChange={event => { const paths = new Set(selectedPaths); for (const path of descendants) { if (event.target.checked) paths.add(path); else paths.delete(path); } onSelectedPathsChange?.([...paths]); }} />} {folder}/ <small>{count}/{descendants.length}</small></summary><div>{tree(folderPath)}</div></details>;
+    }), ...files.map(entry => <div key={entry.path} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>{selectable && <input style={{ flexShrink: 0 }} type="checkbox" aria-label={`Включить файл: ${entry.path}`} checked={selectedSet.has(entry.path)} disabled={loading || busy || !!entry.excludedBy} onChange={() => togglePath(entry.path)} />}<File aria-pressed={entry.path === selected} style={{ flex: 1, minWidth: 0, color: entry.excludedBy ? 'var(--muted)' : undefined }} $selected={entry.path === selected} disabled={loading || busy || !!entry.excludedBy} title={entry.excludedBy ? `Исключено: ${entry.excludedBy}` : entry.oldPath ? `${entry.oldPath} → ${entry.path}` : entry.path} onClick={() => void open(entry.path)}><span style={{ color: entry.operation === 'DELETE' ? 'var(--danger)' : entry.operation === 'ADD' ? 'var(--success)' : 'var(--accent)' }}>{entry.operation === 'ADD' ? '+' : entry.operation === 'DELETE' ? '−' : entry.operation === 'RENAME' ? '↪' : '~'}</span> {entry.oldPath ? `${entry.oldPath} → ${entry.path.slice(prefix.length)}` : entry.path.slice(prefix.length)}{entry.excludedBy && <small style={{ display: 'block' }}>Исключено: {entry.excludedBy}</small>}{conflictByPath.has(entry.path) && <small style={{ display: 'block', color: 'var(--danger)' }}>Не применяется · см. причину в просмотре</small>}{divergenceByPath.has(entry.path) && <small style={{ display: 'block', color: 'var(--warning)' }}>Расхождение · будет обновлено</small>}{alreadyAppliedSet.has(entry.path) && <small style={{ display: 'block', color: 'var(--success)' }}>Уже применено</small>}</File></div>)];
   }
-  const rows = useMemo(() => preview && !preview.message ? lines(preview) : [], [preview]);
-  const highlightDeadline = performance.now() + 40;
-  return <Panel aria-label="Просмотр изменений"><Bar><h3>Изменения файлов</h3><div style={{ margin: '5px 0', fontSize: 12 }}>Показано файлов: {visibleEntries.length} из {comparison.entries.length} {comparison.lineChanges && <span>· <span style={{ color: 'var(--success)' }}>+{comparison.lineChanges.added}</span> <span style={{ color: 'var(--danger)' }}>−{comparison.lineChanges.removed}</span> строк в точном сравнении </span>}· <details style={{ display: 'inline' }}><summary>Подробности</summary><code>{comparison.from ?? 'Первичная синхронизация'} → {comparison.to}</code></details></div><div style={{ display: 'flex', gap: '8px 16px', margin: '10px 0', flexWrap: 'wrap', fontSize: 12 }}>{options.map(option => <label key={option.bit} style={{ display: 'flex', alignItems: 'center', gap: 6 }}><input type="checkbox" checked={!!(filters & option.bit)} disabled={loading || busy} onChange={event => setFilters(previous => event.target.checked ? option.bit === 8 ? 8 : (previous & 7) | option.bit : previous & ~option.bit)} />Не учитывать {option.label} · {comparison.entries.filter(entry => entry.ignoredBy?.includes(option.bit)).length}</label>)}</div><small>Скрыто файлов: {comparison.entries.length - visibleEntries.length}. Фильтры меняют только список, не пакет и применение. {filters === 8 ? 'Режим compare-projects сворачивает все пробельные последовательности, включая пробелы внутри строк. Это не проверка равнозначности кода.' : 'Пробелы внутри строк и комментарии учитываются.'}</small></Bar>
+  function renderCode(value: CodePreview): React.JSX.Element {
+    const rows = value.message ? [] : lines(value);
+    const highlightDeadline = performance.now() + 40;
+    return value.message ? <Bar>{value.message}</Bar> : sideBySide ? <table className="split" aria-label="Сравнение рядом"><thead><tr><th scope="colgroup" colSpan={2}>{value.beforeLabel ?? 'До'}</th><th scope="colgroup" colSpan={2}>{value.afterLabel ?? 'После'}</th></tr></thead><tbody>{paired(rows).map((row, index) => <tr key={index}><td style={{ background: !row.left ? 'var(--raised)' : row.left.kind === '-' ? 'var(--removed)' : undefined }}>{row.left?.kind === '-' && <span aria-label="Удалённая строка">− </span>}{row.left?.old}</td><td style={{ background: !row.left ? 'var(--raised)' : row.left.kind === '-' ? 'var(--removed)' : undefined }}>{fragments(row.left?.text ?? '', row.right?.text, 'left', row.left?.kind === '-', highlightDeadline)}</td><td style={{ background: !row.right ? 'var(--raised)' : row.right.kind === '+' ? 'var(--added)' : undefined }}>{row.right?.kind === '+' && <span aria-label="Добавленная строка">+ </span>}{row.right?.next}</td><td style={{ background: !row.right ? 'var(--raised)' : row.right.kind === '+' ? 'var(--added)' : undefined }}>{fragments(row.right?.text ?? '', row.left?.text, 'right', row.right?.kind === '+', highlightDeadline)}</td></tr>)}</tbody></table> : <table aria-label="Построчное сравнение"><tbody>{rows.map((row, i) => <Line key={i} $kind={row.kind}><td>{row.old}</td><td>{row.next}</td><td>{row.kind}</td><td>{syntax(row.text || ' ')}</td></Line>)}</tbody></table>;
+  }
+  const codeTable = useMemo(() => preview && <>{preview.details && <Bar>{preview.details}</Bar>}{renderCode(preview)}{preview.source && <details><summary>Исходный путь переименования</summary><Bar>{preview.source.details}</Bar>{renderCode(preview.source)}</details>}</>, [preview, sideBySide]);
+  return <Panel aria-label="Просмотр изменений"><Bar>
+    <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap', justifyContent: 'space-between' }}><h3>Изменения файлов</h3><span style={{ color: 'var(--muted)', fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>Показано: {entries.length} из {comparison.entries.length}{comparison.lineChanges && <> · <span style={{ color: 'var(--success)' }}>+{comparison.lineChanges.added}</span> <span style={{ color: 'var(--danger)' }}>−{comparison.lineChanges.removed}</span> строк</>}</span></div>
+    <details style={{ marginTop: 10 }}><summary>Настройки просмотра{filters ? ` · активны: ${options.filter(option => filters & option.bit).length}` : ''}</summary>
+      <div style={{ display: 'flex', gap: '8px 16px', margin: '12px 0', flexWrap: 'wrap', fontSize: 12 }}>{options.map(option => <label key={option.bit} style={{ display: 'flex', alignItems: 'center', gap: 6 }}><input type="checkbox" checked={!!(filters & option.bit)} disabled={loading || busy} onChange={event => setFilters(previous => event.target.checked ? option.bit === 8 ? 8 : (previous & 7) | option.bit : previous & ~option.bit)} />Не учитывать {option.label} · {comparison.entries.filter(entry => entry.ignoredBy?.includes(option.bit)).length}</label>)}</div>
+      {fileFilters}
+      <small>Фильтры пробелов меняют только просмотр. Выбранные файлы, пакет и применение не меняются. {filters === 8 ? 'Режим compare-projects сворачивает все пробельные последовательности, включая пробелы внутри строк. Это не проверка равнозначности кода.' : 'Пробелы внутри строк и комментарии учитываются.'}</small>
+      <details style={{ marginTop: 10 }}><summary>Границы сравнения</summary><code>{comparison.from ?? 'Первичная синхронизация'} → {comparison.to}</code></details>
+    </details>
+    {(filters !== 0 || query) && <p role="status">Скрыто просмотром: {comparison.entries.length - entries.length}. Выбор файлов сохранён.</p>}
+  </Bar>
     {error && <Bar role="alert">{error}</Bar>}
-    <Workspace><Tree>{selectable && <div style={{ display: 'grid', gap: 6, marginBottom: 10 }}><small>Выбрано: {selectedPaths.length} из {comparison.entries.length}</small><div style={{ display: 'flex', gap: 6 }}><Button disabled={busy || loading} onClick={() => onSelectedPathsChange?.(comparison.entries.map(entry => entry.path))}>Выбрать все</Button><Button disabled={busy || loading} onClick={() => onSelectedPathsChange?.([])}>Снять все</Button></div><small>Выбрано вне списка: {selectedPaths.filter(path => !listedPaths.has(path)).length}. Поиск и фильтры не меняют выбор. Галочка папки выбирает все вложенные операции.</small></div>}<input aria-label="Поиск файла в изменениях" placeholder="Найти файл…" value={query} onChange={event => setQuery(event.target.value)} />{tree(entries.slice(0, 1000))}{entries.length > 1000 && <p>Показаны первые 1000 файлов. Уточните поиск.</p>}</Tree><Code><Bar style={{ position: 'sticky', top: 0, zIndex: 1 }}><div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}><Icon name="file" /><span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>{selected || (visibleEntries.length === 0 ? filters && comparison.entries.length ? 'Все различия скрыты фильтром' : 'Изменений нет' : 'Выберите файл')}</span><Switch $active={!sideBySide} onClick={() => setSideBySide(false)}>В одном списке</Switch><Switch $active={sideBySide} onClick={() => setSideBySide(true)}>Рядом</Switch></div>{loading && <div className="reposync-skeleton" role="status" aria-label="Загрузка содержимого файла" style={{ height: 36, marginTop: 8 }} />}</Bar>{preview?.message ? <Bar>{preview.message}</Bar> : sideBySide ? <table className="split" aria-label="Сравнение рядом"><thead><tr><th colSpan={2}>До</th><th colSpan={2}>После</th></tr></thead><tbody>{paired(rows).map((row, index) => <tr key={index}><td style={{ background: !row.left ? 'repeating-linear-gradient(135deg, var(--raised) 0 4px, var(--line) 4px 5px)' : row.left.kind === '-' ? 'var(--removed)' : undefined }}>{row.left?.old}</td><td style={{ background: !row.left ? 'repeating-linear-gradient(135deg, var(--raised) 0 4px, var(--line) 4px 5px)' : row.left.kind === '-' ? 'var(--removed)' : undefined }}>{fragments(row.left?.text ?? '', row.right?.text, 'left', row.left?.kind === '-', highlightDeadline)}</td><td style={{ background: !row.right ? 'repeating-linear-gradient(135deg, var(--raised) 0 4px, var(--line) 4px 5px)' : row.right.kind === '+' ? 'var(--added)' : undefined }}>{row.right?.next}</td><td style={{ background: !row.right ? 'repeating-linear-gradient(135deg, var(--raised) 0 4px, var(--line) 4px 5px)' : row.right.kind === '+' ? 'var(--added)' : undefined }}>{fragments(row.right?.text ?? '', row.left?.text, 'right', row.right?.kind === '+', highlightDeadline)}</td></tr>)}</tbody></table> : <table aria-label="Построчное сравнение"><tbody>{rows.map((row, i) => <Line key={i} $kind={row.kind}><td>{row.old}</td><td>{row.next}</td><td>{row.kind}</td><td>{syntax(row.text || ' ')}</td></Line>)}</tbody></table>}</Code></Workspace>
+    <Workspace><Tree>{selectable && <div style={{ display: 'grid', gap: 6, marginBottom: 10 }}><small>Выбрано: {selectedPaths.length} из {comparison.entries.length}</small><div style={{ display: 'flex', gap: 6 }}><Button disabled={busy || loading} onClick={() => onSelectedPathsChange?.([...new Set([...selectedPaths, ...entries.slice(0, 1000).filter(entry => !entry.excludedBy).map(entry => entry.path)])])}>Выбрать показанные</Button><Button disabled={busy || loading} onClick={() => onSelectedPathsChange?.(selectedPaths.filter(path => !shownPaths.has(path)))}>Снять показанные</Button></div><small>Выбрано вне списка: {selectedPaths.filter(path => !listedPaths.has(path)).length}. Галочка папки включает только показанные доступные файлы.</small></div>}<input aria-label="Поиск файла в изменениях" placeholder="Найти файл…" value={query} onChange={event => setQuery(event.target.value)} />{tree()}{entries.length === 0 && comparison.entries.length > 0 && <p>Файлы не найдены. Измените поиск или настройки просмотра. Выбранные файлы сохраняются.</p>}{entries.length > 1000 && <p>Показаны первые 1000 файлов. Уточните поиск.</p>}</Tree><Code><Bar style={{ position: 'sticky', top: 0, zIndex: 1 }}><div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}><Icon name="file" /><span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>{selected || (visibleEntries.length === 0 ? filters && comparison.entries.length ? 'Все различия скрыты фильтром' : 'Изменений нет' : 'Выберите файл')}</span><Switch aria-pressed={!sideBySide} $active={!sideBySide} onClick={() => setSideBySide(false)}>В одном списке</Switch><Switch aria-pressed={sideBySide} $active={sideBySide} onClick={() => setSideBySide(true)}>Рядом</Switch></div>{conflictByPath.has(selected) && <p role="alert">{conflictByPath.get(selected)}</p>}{divergenceByPath.has(selected) && <p role="status">{divergenceByPath.get(selected)} Выбрана входящая версия; локальная будет сохранена в резервной копии.</p>}{loading && <div className="reposync-skeleton" role="status" aria-label="Загрузка содержимого файла" style={{ height: 36, marginTop: 8 }} />}</Bar>{codeTable}</Code></Workspace>
   </Panel>;
 }

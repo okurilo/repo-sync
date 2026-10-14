@@ -22,9 +22,9 @@ Engine: выбранные immutable Git trees, compare/full-file records, selec
 
 ## Контракты и persistence
 
-Transport v5: diff package с минимальным files inventory, полными ADD/REPLACE/RENAME payload, DELETE intent и before hash/mode. Multipart UTF-8 `.md` с исходным текстом и RAW/FILE, бинарные вложения в исходных байтах; минифицируются только метаданные, exact bytes/EOL/отступы/modes сохраняются. Экспорт без Base64/Brotli. Legacy v1–v4 читаются своим прежним путём; v2 требует sidecars. V5 требует обновления обеих сторон.
+Transport v5: diff package с минимальным files inventory, полными ADD/REPLACE/RENAME payload, DELETE intent и before hash/mode. Multipart UTF-8 `.md` с исходным текстом и RAW/FILE, бинарные вложения в исходных байтах; минифицируются только метаданные, exact bytes/EOL/отступы/modes сохраняются, кроме явно выбранных замен чувствительных диапазонов звёздочками только в выгрузке; исходник неизменен. Экспорт без Base64/Brotli. Legacy v1–v4 читаются своим прежним путём; v2 требует sidecars. V5 требует обновления обеих сторон.
 
-Settings остаются schemaVersion=5, структура не расширена. V4 Pending.partial=true запрещает продвижение common state даже при выборе всех операций. Profile хранит sources, exclusions, part size/format, legacy baseline, pending, syncedAt/commitRequired. Git selectors живут только в RAM/IPC.
+Settings schemaVersion=6: globalExclusions, Profile.filters (extra/disabled) и lastAction (type/at). Миграция v1–v5 сохраняет исходный JSON в backup и прежние baseline/pending; legacy exclusions сохраняются для scope старых пакетов. Новые glob-маски — операционные ограничения выбора, проверяемые в Main, а не изменение legacy scope. V4 Pending.partial=true запрещает продвижение common state даже при выборе всех операций. Profile хранит sources, exclusions, part size/format, legacy baseline, pending, syncedAt/commitRequired. Git selectors живут только в RAM/IPC.
 
 ```text
 userData/settings.json

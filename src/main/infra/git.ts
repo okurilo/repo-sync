@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { minimatch } from 'minimatch';
-import type { BranchContext, CommitOption, Environment, FileEntry, Profile, RemoteUpdate, Source } from '../../shared/types';
+import type { LocalGitState, ProjectGitSummary, BranchContext, CommitOption, Environment, FileEntry, Profile, RemoteUpdate, Source } from '../../shared/types';
 
 export const sha256 = (bytes: Buffer | string): string => createHash('sha256').update(bytes).digest('hex');
 const runningGit = new Set<() => void>();
@@ -33,8 +33,9 @@ export async function safePath(root: string, name: string): Promise<string> {
   }
   return current;
 }
-export async function git(cwd: string, args: string[], input?: Buffer): Promise<Buffer> {
+export async function git(cwd: string, args: string[], input?: Buffer, allowedFailureCode?: number, timeoutMs = 120_000, signal?: AbortSignal): Promise<Buffer> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(new Error('Операция Git отменена.')); return; }
     const child = spawn('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'http.followRedirects=false', ...args], {
       cwd, shell: false, env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' },
       stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32',
@@ -51,8 +52,10 @@ export async function git(cwd: string, args: string[], input?: Buffer): Promise<
     };
     const fail = (message: string): void => { if (!failed) { failed = true; killTree(); reject(new Error(message)); } };
     const stop = (): void => fail('Операция Git отменена при закрытии приложения.');
+    const abort = (): void => fail('Операция Git отменена.');
+    signal?.addEventListener('abort', abort, { once: true });
     runningGit.add(stop);
-    const timer = setTimeout(() => fail('Git не ответил за 120 секунд. Проверьте источник и подключение, затем повторите операцию.'), 120_000);
+    const timer = setTimeout(() => fail('Git не ответил вовремя. Проверьте источник и подключение, затем повторите операцию.'), timeoutMs);
     child.stdout.on('data', (chunk: Buffer) => {
       bytes += chunk.length;
       if (bytes > 512 * 1024 * 1024) fail('Объём данных от Git превышает 512 МБ.');
@@ -60,11 +63,11 @@ export async function git(cwd: string, args: string[], input?: Buffer): Promise<
     });
     // stderr может содержать URL с credentials и другие приватные данные: не сохраняем и не отображаем.
     child.stderr.resume();
-    child.on('error', () => { clearTimeout(timer); runningGit.delete(stop); reject(new Error('Не удалось запустить Git. Проверьте его установку и доступность в PATH.')); });
+    child.on('error', () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); runningGit.delete(stop); reject(new Error('Не удалось запустить Git. Проверьте его установку и доступность в PATH.')); });
     child.on('close', code => {
-      clearTimeout(timer);
+      clearTimeout(timer); signal?.removeEventListener('abort', abort);
       runningGit.delete(stop);
-      if (!failed) code === 0 ? resolve(Buffer.concat(chunks)) : reject(new Error(`Git завершился с кодом ${code}. Проверьте адрес репозитория, ветку и авторизацию в системных Git-инструментах.`));
+      if (!failed) code === 0 || code === allowedFailureCode ? resolve(Buffer.concat(chunks)) : reject(new Error(`Git завершился с кодом ${code}. Проверьте адрес репозитория, ветку и авторизацию в системных Git-инструментах.`));
     });
     child.stdin.on('error', () => { /* процесс может закрыть stdin раньше */ });
     child.stdin.end(input);
@@ -116,9 +119,9 @@ export async function resolveSource(source: Source, environment: Environment, ca
   if (source.kind === 'remote' && source.commit) await git(root, ['update-ref', `refs/reposync/pins/${commit}`, commit]);
   return { root, commit, source };
 }
-async function remoteHeads(source: Source, cache: string): Promise<Map<string, string>> {
+async function remoteHeads(source: Source, cache: string, timeoutMs = 120_000): Promise<Map<string, string>> {
   await mkdir(cache, { recursive: true, mode: 0o700 });
-  const output = (await git(cache, ['-c', 'protocol.file.allow=never', '-c', 'protocol.ext.allow=never', 'ls-remote', '--heads', '--', source.location])).toString('utf8');
+  const output = (await git(cache, ['-c', 'protocol.file.allow=never', '-c', 'protocol.ext.allow=never', 'ls-remote', '--heads', '--', source.location], undefined, undefined, timeoutMs)).toString('utf8');
   const heads = new Map<string, string>();
   for (const row of output.split('\n').filter(Boolean)) { const [oid, ref] = row.split('\t'); if (!oid || !/^[a-f0-9]{40,64}$/.test(oid) || !ref?.startsWith('refs/heads/')) throw new Error('Не удалось прочитать список веток удалённого репозитория.'); heads.set(ref.slice(11), oid); }
   const file = path.join(cache, `${sha256(source.location)}.branches.json`); const temporary = `${file}.${process.hrtime.bigint()}.tmp`;
@@ -190,7 +193,7 @@ export async function readBlobs(root: string, oids: string[]): Promise<Map<strin
   if (offset !== raw.length) throw new Error('Git вернул лишние данные файлов.');
   return result;
 }
-export interface Tree { files: FileEntry[]; bytes: Map<string, Buffer>; excludedGit: number; excludedCustom: number; ignored: string[] }
+export interface Tree { files: FileEntry[]; bytes: Map<string, Buffer>; excludedGit: number; excludedCustom: number; ignored: string[]; excluded?: { path: string; oid: string; size: number }[]; gitEntries?: { path: string; oid: string }[] }
 export const scopeHash = (profile: Profile): string => sha256(JSON.stringify({ exclusions: profile.exclusions, includeIgnored: [...profile.includeIgnored].sort() }));
 export async function readTree(resolved: ResolvedSource, profile: Profile): Promise<Tree> {
   const { root, commit, source } = resolved;
@@ -205,6 +208,7 @@ export async function readTree(resolved: ResolvedSource, profile: Profile): Prom
   let ignored: string[] = [];
   const tracked = new Set<string>();
   let totalBytes = 0;
+  const excluded = entries.filter(entry => profile.exclusions.some(rule => minimatch(entry.slice(entry.indexOf('\t') + 1), rule, { dot: true }))).map(entry => { const tab = entry.indexOf('\t'); const fields = entry.slice(0, tab).split(/\s+/); return { path: entry.slice(tab + 1), oid: fields[2]!, size: Number(fields[3]) || 0 }; });
   const included = entries.filter(entry => { const name = entry.slice(entry.indexOf('\t') + 1); return !profile.exclusions.some(rule => minimatch(name, rule, { dot: true })); });
   let includedSize = 0;
   for (const entry of included) { const tab = entry.indexOf('\t'); validatePath(entry.slice(tab + 1)); const [mode, type, , size] = entry.slice(0, tab).split(/\s+/); if (type !== 'blob' || (mode !== '100644' && mode !== '100755')) throw new Error('Символические ссылки и подмодули Git не поддерживаются. Исключите их из синхронизации.'); includedSize += Number(size); if (!Number.isSafeInteger(includedSize) || includedSize > 512 * 1024 * 1024) throw new Error('Размер выбранных файлов превышает 512 МБ. Исключите часть файлов.'); }
@@ -245,7 +249,7 @@ export async function readTree(resolved: ResolvedSource, profile: Profile): Prom
     }
   } else if (profile.includeIgnored.length) throw new Error('Удалённый репозиторий не содержит файлов, исключённых Git.');
   files.sort((a, b) => a.path.localeCompare(b.path));
-  return { files, bytes, excludedGit, excludedCustom, ignored };
+  return { files, bytes, excludedGit, excludedCustom, ignored, excluded, gitEntries: entries.map(entry => { const tab = entry.indexOf('\t'); return { path: entry.slice(tab + 1), oid: entry.slice(0, tab).split(/\s+/)[2]! }; }) };
 }
 export async function baselineBytes(root: string, state: string, files: FileEntry[], localRepository?: string): Promise<Map<string, Buffer>> {
   let useLocal = false;
@@ -268,4 +272,128 @@ export async function baselineBytes(root: string, state: string, files: FileEntr
     result.set(file.path, bytes);
   }
   return result;
+}
+
+export async function localState(source: Source): Promise<LocalGitState> {
+  validateSource({ ...source, branch: source.branch || 'HEAD' }, 'internal');
+  if (source.kind !== 'local') throw new Error('Выберите папку локального репозитория.');
+  let root: string;
+  try { root = await realpath(source.location); } catch { throw new Error('Папка локального репозитория недоступна. Выберите папку снова.'); }
+  let top: string;
+  try { top = (await git(root, ['rev-parse', '--show-toplevel'])).toString().trim(); } catch { throw new Error('Не удалось прочитать локальный Git. Проверьте папку и установку Git.'); }
+  if (await realpath(top) !== root) throw new Error('Выберите корневую папку Git-репозитория.');
+  const branchText = (await git(root, ['symbolic-ref', '--quiet', '--short', 'HEAD'], undefined, 1)).toString().trim();
+  const headText = (await git(root, ['rev-parse', '--verify', '--quiet', 'HEAD'], undefined, 1)).toString().trim();
+  const branches = (await git(root, ['for-each-ref', '--format=%(refname:short)', 'refs/heads/'])).toString().trim().split('\n').filter(Boolean);
+  const workingChanges = { staged: 0, unstaged: 0, untracked: 0 }; let conflicts = 0;
+  const entries = (await git(root, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=none'])).toString().split('\0');
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i]; if (!entry) continue;
+    const code = entry.slice(0, 2);
+    if (['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU'].includes(code)) conflicts++;
+    if (code === '??') workingChanges.untracked++;
+    else { if (code[0] !== ' ') workingChanges.staged++; if (code[1] !== ' ') workingChanges.unstaged++; }
+    if (/[RC]/.test(code)) i++;
+  }
+  const operations: string[] = [];
+  for (const [marker, label] of [['MERGE_HEAD', 'merge'], ['rebase-merge', 'rebase'], ['rebase-apply', 'rebase / am'], ['CHERRY_PICK_HEAD', 'cherry-pick'], ['REVERT_HEAD', 'revert'], ['sequencer', 'sequencer']]) {
+    const name = (await git(root, ['rev-parse', '--git-path', marker!])).toString().trim();
+    try { await lstat(path.resolve(root, name)); operations.push(label!); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  }
+  const dirty = workingChanges.staged + workingChanges.unstaged + workingChanges.untracked > 0;
+  const issue = !headText ? 'В репозитории нет коммитов. Создайте первый коммит.' : conflicts ? `Неразрешённых конфликтов: ${conflicts}. Устраните их в Git.` : operations.length ? `Незавершённая операция Git: ${operations.join(', ')}. Завершите или отмените её в Git.` : !branches.includes(source.branch) ? `Выбранная ветка «${source.branch}» отсутствует. Выберите существующую ветку в настройках.` : branchText !== source.branch ? `Для применения нужна ветка «${source.branch}». ${branchText ? `Сейчас открыта «${branchText}».` : 'Сейчас HEAD не привязан к ветке.'}` : null;
+  return { branch: branchText || null, head: headText || null, branches, workingChanges, conflicts, operations, issue, canSwitch: Boolean(headText) && !dirty && !conflicts && !operations.length && branches.includes(source.branch) };
+}
+export async function requireLocalReady(source: Source): Promise<LocalGitState> {
+  const state = await localState(source);
+  if (state.issue) throw new Error(`Применение остановлено: ${state.issue}`);
+  return state;
+}
+
+export async function projectGitSummary(profile: Profile, cache: string): Promise<ProjectGitSummary> {
+  const result: ProjectGitSummary = { checkedAt: new Date().toISOString() };
+  if (profile.sources.internal) {
+    try { result.local = await localState(profile.sources.internal); if (result.local.head) result.localDate = (await git(profile.sources.internal.location, ['show', '-s', '--format=%cI', result.local.head])).toString().trim(); }
+    catch (error) { result.localError = error instanceof Error ? error.message : 'Не удалось прочитать локальный Git.'; }
+  }
+  const source = profile.sources.global;
+  if (source?.kind === 'remote') {
+    const remote: NonNullable<ProjectGitSummary['remote']> = { branch: source.branch, head: null }; result.remote = remote;
+    try {
+      const root = remoteRoot(source, cache);
+      try { await lstat(root); remote.head = (await git(root, ['rev-parse', '--verify', '--quiet', `refs/heads/${source.branch}`], undefined, 1)).toString().trim() || null; if (remote.head) remote.date = (await git(root, ['show', '-s', '--format=%cI', remote.head])).toString().trim(); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      remote.availableHead = (await remoteHeads(source, cache, 15_000)).get(source.branch) ?? null;
+      remote.checkedAt = new Date().toISOString();
+    } catch (error) { remote.error = error instanceof Error ? error.message : 'Не удалось проверить внешний Git.'; }
+  }
+  return result;
+}
+
+// Read the index inventory, but always export the working version of each file.
+export async function readWorkingTree(root: string, profile: Profile): Promise<Tree> {
+  const raw = await git(root, ['ls-files', '--cached', '--others', '--exclude-standard', '-z']);
+  const text = raw.toString('utf8');
+  if (!Buffer.from(text).equals(raw)) throw new Error('Пути файлов в Git должны быть в кодировке UTF-8.');
+  const ignored = (await git(root, ['ls-files', '--others', '--ignored', '--exclude-standard', '-z'])).toString('utf8').split('\0').filter(Boolean);
+  const names = new Set(text.split('\0').filter(Boolean));
+  for (const name of profile.includeIgnored) { if (!ignored.includes(name)) throw new Error('Включённый игнорируемый файл отсутствует. Обновите выбор файлов.'); names.add(name); }
+  const files: FileEntry[] = []; const bytes = new Map<string, Buffer>(); let total = 0; let excludedCustom = 0;
+  for (const name of [...names].sort()) {
+    validatePath(name);
+    if (profile.exclusions.some(rule => minimatch(name, rule, { dot: true }))) { excludedCustom++; continue; }
+    const filename = await safePath(root, name); let stat;
+    try { stat = await lstat(filename); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+    if (!stat.isFile()) throw new Error('Символические ссылки, подмодули и специальные файлы не поддерживаются. Исключите их из синхронизации.');
+    if (total + stat.size > 512 * 1024 * 1024) throw new Error('Размер выбранных файлов превышает 512 МБ.');
+    const content = await readFile(filename); total += content.length;
+    if (total > 512 * 1024 * 1024) throw new Error('Размер выбранных файлов превышает 512 МБ.');
+    files.push({ path: name, sha256: sha256(content), size: content.length, mode: stat.mode & 0o111 ? 0o755 : 0o644 }); bytes.set(name, content);
+  }
+  files.sort((a, b) => a.path.localeCompare(b.path));
+  return { files, bytes, ignored, excludedGit: ignored.filter(name => !profile.includeIgnored.includes(name)).length, excludedCustom };
+}
+
+// Include ignored files and both names of a rename; keep index identity for stale checks.
+export async function workingPaths(root: string): Promise<Map<string, { status: string; staged: boolean; index?: string }>> {
+  const entries = (await git(root, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored=matching', '--ignore-submodules=none'])).toString('utf8').split('\0');
+  const result = new Map<string, { status: string; staged: boolean; index?: string }>();
+  for (let i = 0; i < entries.length; i++) {
+    const row = entries[i]; if (!row) continue; const code = row.slice(0, 2);
+    const value = { status: code, staged: ![' ', '?', '!'].includes(code[0]!) };
+    for (const name of [row.slice(3), ...(/[RC]/.test(code) ? [entries[++i]!] : [])]) { const previous = result.get(name); result.set(name, previous ? { status: previous.status + '|' + code, staged: previous.staged || value.staged } : { ...value }); }
+  }
+  for (const [name, index] of await indexEntries(root)) { const value = result.get(name) ?? { status: '', staged: false }; value.index = index; result.set(name, value); }
+  return result;
+}
+
+export async function indexEntries(root: string): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  for (const row of (await git(root, ['ls-files', '--stage', '-z'])).toString('utf8').split('\0')) {
+    const tab = row.indexOf('\t'); if (tab < 0) continue; const name = row.slice(tab + 1); const entry = row.slice(0, tab);
+    result.set(name, result.has(name) ? `${result.get(name)}|${entry}` : entry);
+  }
+  return result;
+}
+
+// Metadata only triggers revalidation; Git verifies selected entries again at commit.
+export async function writeGitGuard(source: Source, head: string, status: string): Promise<(force?: boolean) => Promise<void>> {
+  const root = source.location;
+  const names = ['index', 'HEAD', `refs/heads/${source.branch}`, 'packed-refs', 'MERGE_HEAD', 'rebase-merge', 'rebase-apply', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'sequencer'];
+  const paths = (await git(root, ['rev-parse', '--path-format=absolute', ...names.flatMap(name => ['--git-path', name])])).toString().trim().split('\n');
+  if (paths.length !== names.length || paths.some(name => !path.isAbsolute(name))) throw new Error('Не удалось определить служебные пути Git. Запись не началась.');
+  const expected = (JSON.parse(status) as [string, string, string][]).map(([name, , index]) => [name, index] as const);
+  let shared = ''; let previous = '';
+  const fingerprint = async (): Promise<string> => JSON.stringify(await Promise.all([...paths, ...(shared ? [shared] : [])].map(async name => {
+    try { const stat = await lstat(name, { bigint: true }); return [name, stat.dev, stat.ino, stat.size, stat.mode, ...(name === shared ? [] : [stat.mtimeNs, stat.ctimeNs])].map(String); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [name, 'absent']; throw error; }
+  })));
+  const check = async (force = false): Promise<void> => {
+    if (!force && await fingerprint() === previous) return;
+    shared = (await git(root, ['rev-parse', '--shared-index-path'])).toString().trim(); if (shared && !path.isAbsolute(shared)) shared = path.resolve(root, shared);
+    const before = await fingerprint(); const ready = await requireLocalReady(source); const index = await indexEntries(root);
+    if (ready.head !== head || expected.some(([name, value]) => (index.get(name) ?? '') !== value)) throw new Error('HEAD, ветка или индекс выбранных файлов изменились во время записи.');
+    previous = await fingerprint(); if (before !== previous) throw new Error('Git изменяется во время проверки. Повторите операцию после завершения внешней команды.');
+  };
+  await check(true); return check;
 }

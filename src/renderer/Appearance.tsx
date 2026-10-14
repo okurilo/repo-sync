@@ -5,10 +5,10 @@ export type Appearance = 'dark' | 'light';
 export const reveal = 'reposync-reveal';
 const progress = 'reposync-progress';
 export const AppearanceStyle = createGlobalStyle<{ $appearance: Appearance }>(({ $appearance }) => ({
-  '@keyframes reposync-reveal': { from: { opacity: 0, transform: 'translateY(8px)' }, to: { opacity: 1, transform: 'translateY(0)' } },
+  '@keyframes reposync-reveal': { from: { opacity: 1 }, to: { opacity: 1 } },
   '@keyframes reposync-progress': { from: { transform: 'translateX(-100%)' }, to: { transform: 'translateX(300%)' } },
   '@keyframes reposync-pulse': { '0%, 100%': { opacity: 0.45 }, '50%': { opacity: 0.85 } },
-  '.reposync-skeleton': { borderRadius: 10, background: 'linear-gradient(110deg, var(--raised), var(--line), var(--raised))', animation: 'reposync-pulse 1.4s ease-in-out infinite' },
+  '.reposync-skeleton': { borderRadius: 10, background: 'var(--raised)', animation: 'reposync-pulse 1.4s ease-in-out infinite' },
   ':root': { colorScheme: $appearance, ...Object.fromEntries(Object.entries(tokens.colors[$appearance]).map(([key, value]) => [`--${key}`, value])) },
   body: { background: 'var(--bg)', color: 'var(--text)' },
   '::selection': { background: 'var(--tint)', color: 'var(--text)' },
@@ -20,7 +20,7 @@ export const AppearanceStyle = createGlobalStyle<{ $appearance: Appearance }>(({
   'input:hover, textarea:hover, select:hover': { borderColor: 'var(--muted)' },
   'input:focus, textarea:focus, select:focus': { outline: 'none', borderColor: 'var(--accent)', boxShadow: '0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent)' },
   'pre, code': { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' },
-  mark: { color: '#172132' },
+  mark: { color: 'var(--text)' },
   '::-webkit-scrollbar': { width: 8, height: 8 }, '::-webkit-scrollbar-thumb': { background: 'var(--line)', borderRadius: 8, border: '2px solid var(--surface)' },
   '@media (prefers-reduced-motion: reduce)': { '*, *::before, *::after': { animation: 'none !important', transition: 'none !important' } },
 }));

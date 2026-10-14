@@ -2,10 +2,12 @@ import { spawn } from 'node:child_process';
 import { createServer } from 'vite';
 import electronPath from 'electron';
 import { config } from './vite.mjs';
+import { writeAppRevision } from './app-revision.mjs';
 
 const compiler = spawn(process.execPath, ['node_modules/typescript/bin/tsc', '-p', 'tsconfig.main.json'], { stdio: 'inherit' });
 const code = await new Promise(resolve => compiler.on('exit', resolve));
 if (code !== 0) process.exit(1);
+await writeAppRevision();
 const server = await createServer({ ...config, configFile: false });
 await server.listen();
 const electron = spawn(electronPath, ['.'], { stdio: 'inherit', env: { ...process.env, REPOSYNC_DEV_URL: 'http://127.0.0.1:5173' } });

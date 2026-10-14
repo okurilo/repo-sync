@@ -2,9 +2,10 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { lstat, realpath } from 'node:fs/promises';
+import { AppUpdater } from './infra/appUpdate';
 import { Engine, parseIncomingSelection } from './engine';
-import { SettingsStore, parseProfile, parseSource } from './infra/settings';
-import { branchContext, listBranches, listCommits, refreshSource, safePath, stopGit } from './infra/git';
+import { SettingsStore, parseProfile, parseSource, parseRules, parseFilters } from './infra/settings';
+import { localState, branchContext, listBranches, listCommits, refreshSource, safePath, stopGit, projectGitSummary } from './infra/git';
 import { string } from './transport';
 import type { Reply } from '../shared/types';
 
@@ -20,9 +21,20 @@ async function start(): Promise<void> {
   await store.load();
   const engine = new Engine(store);
   await engine.recover();
+  const target = app.isPackaged ? process.platform === 'win32' ? path.dirname(app.getPath('exe')) : path.resolve(app.getPath('exe'), '../../..') : process.platform === 'win32' ? path.join(app.getAppPath(), 'release', process.arch === 'x64' ? 'win-unpacked' : `win-${process.arch}-unpacked`) : path.join(app.getAppPath(), 'release', process.arch === 'arm64' ? 'mac-arm64' : 'mac', 'RepoSync.app');
+  const updater = new AppUpdater(app.getPath('userData'), app.isPackaged ? target : app.getAppPath(), target, () => app.quit(), path.join(app.getAppPath(), 'dist/app-revision.json'));
+  app.on('before-quit', () => updater.cancel());
   ipcMain.handle('reposync', async (event, command: unknown, incoming: unknown): Promise<Reply<unknown>> => {
     if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) return { ok: false, error: 'Запрос поступил из недопустимого источника.' };
-    if (!Array.isArray(incoming) || incoming.length > 3) return { ok: false, error: 'Некорректный запрос к приложению.' };
+    if (!Array.isArray(incoming) || incoming.length > (command === 'analyze' ? 4 : 3)) return { ok: false, error: 'Некорректный запрос к приложению.' };
+    if (command === 'appUpdateStatus') return { ok: true, value: updater.status() };
+    if (command === 'cancelAppUpdate') { updater.cancel(); return { ok: true, value: undefined }; }
+    if (updater.status().phase === 'building' || updater.status().phase === 'restarting') return { ok: false, error: 'Дождитесь завершения обновления приложения.' };
+    if (command === 'projectGit') {
+      if (busy) return { ok: false, error: 'Дождитесь завершения текущей операции' };
+      try { const profile = store.get().profiles.find(item => item.id === string(incoming[0], 36)); if (!profile) throw new Error('Профиль не найден'); return { ok: true, value: await projectGitSummary(profile, engine.cache) }; }
+      catch (error) { return { ok: false, error: error instanceof Error ? error.message : 'Проверка не выполнена' }; }
+    }
     if (command === 'refreshSource') {
       try {
         const mode = (argsMode(incoming[0]));
@@ -37,6 +49,24 @@ async function start(): Promise<void> {
     try {
       let value: unknown;
       switch (command) {
+        case 'listBackups': value = await engine.listBackups(string(args[0], 36)); break;
+        case 'prepareRestore': value = await engine.prepareRestore(string(args[0], 36), string(args[1], 36)); break;
+        case 'applyRestore': value = await engine.applyRestore(string(args[0], 36)); break;
+        case 'appUpdateInspect': value = await updater.inspect(); break;
+        case 'appUpdate': await updater.update(string(args[0], 255)); value = undefined; break;
+        case 'saveFilters': {
+          const settings = store.get();
+          if (args[0] !== null) { settings.globalExclusions = parseRules(args[0]); for (const profile of settings.profiles) profile.lastAction = { type: 'Общие фильтры', at: new Date().toISOString() }; }
+          if (args[1] !== undefined) { const profile = settings.profiles.find(item => item.id === string(args[1], 36)); if (!profile) throw new Error('Профиль не найден'); profile.filters = parseFilters(args[2]); profile.lastAction = { type: 'Настройки фильтров', at: new Date().toISOString() }; }
+          engine.invalidate(); value = await store.save(settings); break;
+        }
+        case 'refreshProject': {
+          const profile = store.get().profiles.find(item => item.id === string(args[0], 36)); if (!profile) throw new Error('Профиль не найден');
+          if (command === 'refreshProject') { if (!profile.sources.global) throw new Error('Внешний Git не настроен'); const refreshed = await refreshSource(profile.sources.global, 'global', engine.cache); engine.invalidateRemote(profile.sources.global.location, refreshed.changedBranches); await store.action(profile.id, 'Обновление внешнего Git'); }
+          value = await projectGitSummary(profile, engine.cache); break;
+        }
+        case 'localState': value = await localState(parseSource(args[0], 'internal')); break;
+        case 'switchLocalBranch': value = await engine.switchLocalBranch(string(args[0], 36)); break;
         case 'settings': value = store.get(); break;
         case 'saveProfile': {
           const settings = store.get();
@@ -46,7 +76,7 @@ async function start(): Promise<void> {
           if (existing?.pending) throw new Error('Сначала подтвердите применение созданного пакета или отмените ожидание.');
           if (existing) settings.profiles = settings.profiles.map(p => p.id === id ? profile : p);
           else { if (settings.profiles.length >= 100) throw new Error('Можно добавить не более 100 репозиториев.'); settings.profiles.push(profile); }
-          engine.invalidate(); value = await store.save(settings); break;
+          profile.lastAction = { type: 'Настройки проекта', at: new Date().toISOString() }; engine.invalidate(); value = await store.save(settings); break;
         }
         case 'deleteProfile': {
           const settings = store.get();
@@ -62,12 +92,12 @@ async function start(): Promise<void> {
           const result = await dialog.showOpenDialog(window, { title: 'Выбор папки', buttonLabel: 'Выбрать папку', properties: ['openDirectory'] }); value = result.canceled ? null : result.filePaths[0]; break;
         }
         case 'choosePackage': {
-          const result = await dialog.showOpenDialog(window, { title: 'Выбор пакета', buttonLabel: 'Выбрать пакет', properties: ['openFile'], filters: [{ name: 'Пакеты RepoSync', extensions: ['md'] }] }); value = result.canceled ? null : result.filePaths[0]; break;
+          const result = await dialog.showOpenDialog(window, { title: 'Выбор частей пакета', buttonLabel: 'Выбрать пакет', properties: ['openFile', 'multiSelections'], filters: [{ name: 'Пакеты RepoSync', extensions: ['md'] }] }); value = result.canceled || !result.filePaths.length ? null : result.filePaths; break;
         }
         case 'setOutputDirectory': {
           const name = await realpath(string(args[0]));
           if (!(await lstat(name)).isDirectory()) throw new Error('Выберите папку для сохранения пакетов.');
-          const settings = store.get(); settings.outputDirectory = name; value = await store.save(settings); break;
+          const settings = store.get(); settings.outputDirectory = name; for (const profile of settings.profiles) profile.lastAction = { type: 'Папка экспорта', at: new Date().toISOString() }; value = await store.save(settings); break;
         }
         case 'previewComparison': {
           const id = string((args[0] as { id?: unknown })?.id, 36);
@@ -76,7 +106,7 @@ async function start(): Promise<void> {
         }
         case 'previewCode': value = await engine.previewCode(string(args[0], 36), string(args[1])); break;
         case 'analyze': {
-          value = await engine.analyze(string(args[0], 36), direction(args[1]), args[2] === undefined ? undefined : parseIncomingSelection(args[2])); break;
+          value = await engine.analyze(string(args[0], 36), direction(args[1]), args[2] === undefined ? undefined : parseIncomingSelection(args[2]), args[3] as import('../shared/types').OutgoingSelection | undefined); break;
         }
         case 'branchContext': case 'listBranches': case 'listCommits': {
           const mode = argsMode(args[0]);
@@ -102,18 +132,24 @@ async function start(): Promise<void> {
         }
         case 'previewReplacement': value = await engine.previewReplacement(string(args[0], 36), string(args[1], 20)); break;
         case 'applyReplacement': await engine.applyReplacement(string(args[0], 36)); value = undefined; break;
-        case 'loadPackage': value = await engine.loadPackage(string(args[0]), string(args[1], 36)); break;
+        case 'loadPackage': {
+          const files = args[0];
+          if (Array.isArray(files) && (!files.length || files.length > 10_000)) throw new Error('Выберите от 1 до 10 000 частей одного пакета.');
+          value = await engine.loadPackage(Array.isArray(files) ? files.map(file => string(file)) : string(files), string(args[1], 36)); break;
+        }
         case 'selectExport': case 'preparePackage':
         case 'prepareIncoming': {
           const paths = args[1];
           if (paths !== undefined && (!Array.isArray(paths) || paths.length > 100_000)) throw new Error('Не удалось прочитать выбранные файлы. Обновите сравнение.');
           const selected = paths === undefined ? undefined : paths.map(item => string(item));
-          value = command === 'selectExport' ? await engine.selectExport(string(args[0], 36), selected) : command === 'preparePackage' ? await engine.preparePackage(string(args[0], 36), selected) : await engine.prepareIncoming(string(args[0], 36), selected);
+          if (args[2] !== undefined && (!Array.isArray(args[2]) || args[2].length > (command === 'selectExport' ? 10_000 : 100_000))) throw new Error('Некорректные решения проверки.');
+          const redacted = args[2] === undefined ? [] : (args[2] as unknown[]).map(item => string(item, command === 'selectExport' ? 20 : 4096));
+          value = command === 'selectExport' ? await engine.selectExport(string(args[0], 36), selected, redacted) : command === 'preparePackage' ? await engine.preparePackage(string(args[0], 36), selected, redacted) : await engine.prepareIncoming(string(args[0], 36), selected, redacted);
           break;
         }
         case 'openRepository': { const profile = store.get().profiles.find(p => p.id === string(args[0], 36)); if (!profile?.sources.internal) throw new Error('Укажите локальный репозиторий в настройках.'); const error = await shell.openPath(await realpath(profile.sources.internal.location)); if (error) throw new Error('Не удалось открыть папку репозитория. Проверьте путь в настройках.'); value = undefined; break; }
         case 'preflight': value = await engine.preflight(string(args[0]), string(args[1]), string(args[2], 36)); break;
-        case 'applyImport': value = await engine.applyImport(string(args[0], 36)); break;
+        case 'applyImport': value = await engine.applyImport(string(args[0], 36), args[1] === true); break;
         default: throw new Error('Запрошенная команда недоступна.');
       }
       return { ok: true, value };
@@ -121,7 +157,7 @@ async function start(): Promise<void> {
       const message = error instanceof Error ? error.message : 'Операция не выполнена';
       // Системные ошибки могут включать содержимое JSON / Git: выводим только известные сообщения.
       const safe = error instanceof SyntaxError ? 'Не удалось прочитать JSON: пакет или настройки повреждены.' : message;
-      return { ok: false, error: safe };
+      return { ok: false, error: safe, path: error instanceof Error && 'syncPath' in error && typeof error.syncPath === 'string' ? error.syncPath : undefined };
     } finally { busy = false; }
   });
   const createWindow = (): void => {
@@ -144,9 +180,10 @@ async function start(): Promise<void> {
     });
     if (isDev) void window.loadURL('http://127.0.0.1:5173');
     else void window.loadFile(rendererFile);
-    window.on('closed', () => { window = null; stopGit(); });
+    window.on('closed', () => { window = null; updater.cancel(); stopGit(); });
   };
   createWindow();
+  void updater.inspect().catch(() => { /* startup check is reported only in settings */ });
   app.on('activate', () => { if (!window) createWindow(); });
 }
 if (!app.requestSingleInstanceLock()) app.quit();

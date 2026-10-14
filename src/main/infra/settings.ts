@@ -2,7 +2,7 @@ import { mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { minimatch } from 'minimatch';
 import { randomUUID } from 'node:crypto';
-import type { Baseline, Environment, Profile, Settings, Source } from '../../shared/types';
+import type { Baseline, Environment, Profile, ProjectFilters, Settings, Source } from '../../shared/types';
 import { integer, MAX_BYTES, object, parseFile, string } from '../transport';
 import { scopeHash, validatePath, validateSource } from './git';
 
@@ -33,6 +33,15 @@ export function parseSource(value: unknown, mode: Environment): Source {
   if (result.kind === 'local' && !path.isAbsolute(result.location)) throw new Error('Выберите абсолютный путь репозитория');
   return result;
 }
+export function parseRules(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > 200) throw new Error('Можно задать не более 200 glob-масок.');
+  const rules = [...new Set(value.map(rule => string(rule, 512).trim()).filter(Boolean))];
+  if (rules.some(rule => rule.startsWith('!') || rule.includes('\\') || rule.startsWith('/') || minimatch.makeRe(rule, { dot: true, nonegate: true }) === false)) throw new Error('Используйте относительные glob-маски с / без отрицания !.');
+  return rules;
+}
+export function parseFilters(value: unknown): ProjectFilters {
+  const raw = object(value); return { extra: parseRules(raw.extra), disabled: parseRules(raw.disabled) };
+}
 export function parseProfile(value: unknown, existing?: Profile): Profile {
   const raw = object(value);
   const sources = object(raw.sources);
@@ -49,6 +58,8 @@ export function parseProfile(value: unknown, existing?: Profile): Profile {
   if (raw.transportMode !== 'compact' && raw.transportMode !== 'readable') throw new Error('Выберите формат пакета.');
   const result: Profile = { id, name, role: raw.role, transportMode: raw.transportMode, sources: {}, baseline: existing?.baseline, pending: existing?.pending, syncedAt: existing?.syncedAt, commitRequired: existing?.commitRequired, exclusions, includeIgnored,
     maxPartMB: integer(raw.maxPartMB, 1, 512) };
+  result.filters = raw.filters === undefined ? existing?.filters ?? { extra: exclusions, disabled: [] } : parseFilters(raw.filters);
+  result.lastAction = existing?.lastAction;
   for (const mode of ['internal', 'global'] as const) {
     if (sources[mode] !== undefined) result.sources[mode] = parseSource(sources[mode], mode);
     if (result.sources[mode]) { delete result.sources[mode]!.commit; delete result.sources[mode]!.base; }
@@ -76,14 +87,14 @@ function parseBaseline(value: unknown): Baseline {
   }
   return result;
 }
-function parseSettings(raw: Record<string, unknown>): Settings {
-      if ((raw.schemaVersion !== 1 && raw.schemaVersion !== 2 && raw.schemaVersion !== 3 && raw.schemaVersion !== 4 && raw.schemaVersion !== 5) || !Array.isArray(raw.profiles) || raw.profiles.length > 100) throw new Error('Настройки повреждены или версия не поддерживается');
+export function parseSettings(raw: Record<string, unknown>): Settings {
+      if ((raw.schemaVersion !== 1 && raw.schemaVersion !== 2 && raw.schemaVersion !== 3 && raw.schemaVersion !== 4 && raw.schemaVersion !== 5 && raw.schemaVersion !== 6) || !Array.isArray(raw.profiles) || raw.profiles.length > 100) throw new Error('Настройки повреждены или версия не поддерживается');
       const profiles = raw.profiles.map((value: unknown): Profile => {
         const saved = object(value);
         // Legacy profiles are retained for explicit setup; divergent old baselines are
         // never promoted to a common state because that could erase local changes.
         let profile: Profile;
-        if ((raw.schemaVersion === 4 || raw.schemaVersion === 5)) {
+        if ((raw.schemaVersion === 4 || raw.schemaVersion === 5 || raw.schemaVersion === 6)) {
           if (saved.role !== 'internal' && saved.role !== 'external') throw new Error('Некорректный тип репозитория.');
           if (object(saved.sources).internal === undefined || (saved.role === 'internal' && object(saved.sources).global === undefined)) {
             profile = { id: string(saved.id, 36), name: string(saved.name, 100), role: saved.role === 'internal' ? 'internal' : 'external', transportMode: 'compact', sources: {}, exclusions: Array.isArray(saved.exclusions) ? saved.exclusions.map((v: unknown) => string(v, 512)) : [], includeIgnored: [], maxPartMB: integer(saved.maxPartMB, 1, 512) };
@@ -101,20 +112,22 @@ function parseSettings(raw: Record<string, unknown>): Settings {
           if (local) { profile.sources.internal = parseSource(local, 'internal'); delete profile.sources.internal.commit; delete profile.sources.internal.base; }
           if (remote) { profile.sources.global = parseSource(remote, 'global'); delete profile.sources.global.commit; delete profile.sources.global.base; }
         }
-        const pending = (raw.schemaVersion === 4 || raw.schemaVersion === 5) ? saved.pending : object(saved.pending)[raw.environment === 'global' ? 'global' : 'internal'];
+        const pending = (raw.schemaVersion === 4 || raw.schemaVersion === 5 || raw.schemaVersion === 6) ? saved.pending : object(saved.pending)[raw.environment === 'global' ? 'global' : 'internal'];
         if (pending !== undefined) {
           const item = object(pending);
           if (!Array.isArray(item.paths) || item.paths.length > 10_000) throw new Error('Повреждён список файлов пакета, ожидающего подтверждения.');
           if (item.partial !== undefined && typeof item.partial !== 'boolean') throw new Error('Повреждён признак частичного пакета.');
           profile.pending = { partial: item.partial as boolean | undefined, packageId: string(item.packageId, 36), target: parseBaseline(item.target), paths: item.paths.map((v: unknown) => string(v)) };
         }
+        profile.filters = saved.filters === undefined ? { extra: [...profile.exclusions], disabled: [] } : parseFilters(saved.filters);
+        if (saved.lastAction !== undefined) { const action = object(saved.lastAction); const at = string(action.at, 40); if (!Number.isFinite(Date.parse(at))) throw new Error('Некорректная дата действия.'); profile.lastAction = { type: string(action.type, 100), at }; }
         return profile;
       });
       if (new Set(profiles.map(p => p.id)).size !== profiles.length || !Array.isArray(raw.lastRepositories) || raw.lastRepositories.length > 10) throw new Error('Список репозиториев или история повреждены.');
-      return { schemaVersion: 5, profiles, outputDirectory: string(raw.outputDirectory), lastRepositories: raw.lastRepositories.map((p: unknown) => string(p)) };
+      return { schemaVersion: 6, globalExclusions: raw.schemaVersion === 6 ? parseRules(raw.globalExclusions) : [], profiles, outputDirectory: string(raw.outputDirectory), lastRepositories: raw.lastRepositories.map((p: unknown) => string(p)) };
 }
 export class SettingsStore {
-  private value: Settings = { schemaVersion: 5, profiles: [], outputDirectory: '', lastRepositories: [] };
+  private value: Settings = { schemaVersion: 6, globalExclusions: [], profiles: [], outputDirectory: '', lastRepositories: [] };
   readonly filename: string;
   constructor(readonly directory: string) { this.filename = path.join(directory, 'settings.json'); }
   async load(): Promise<void> {
@@ -123,13 +136,18 @@ export class SettingsStore {
       const original = await readFile(this.filename, 'utf8');
       const raw = object(JSON.parse(original) as unknown);
       this.value = parseSettings(raw);
-      if (raw.schemaVersion !== 5) {
+      if (raw.schemaVersion !== 6) {
         try { await writeFile(path.join(this.directory, `settings.v${Number(raw.schemaVersion)}.backup.json`), original, { flag: 'wx', mode: 0o600 }); }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+        await atomicJSON(this.filename, this.value);
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Не удалось прочитать настройки RepoSync. Сохраните settings.json для восстановления.');
     }
+  }
+  async action(id: string, type: string): Promise<void> {
+    const next = this.get(); const profile = next.profiles.find(item => item.id === id);
+    if (profile) { profile.lastAction = { type, at: new Date().toISOString() }; await this.save(next); }
   }
   get(): Settings { return structuredClone(this.value); }
   async save(value: Settings): Promise<Settings> {

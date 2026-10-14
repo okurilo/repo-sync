@@ -1,0 +1,231 @@
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const os = require('node:os');
+const crypto = require('node:crypto');
+const assert = require('node:assert/strict');
+const { execFileSync } = require('node:child_process');
+const gm = require('../dist/main/main/infra/git.js');
+const { Engine } = require('../dist/main/main/engine.js');
+const { SettingsStore } = require('../dist/main/main/infra/settings.js');
+const { exportArtifacts } = require('../dist/main/main/transport.js');
+(async () => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'reposync-conflicts-')));
+  const resolve = gm.resolveSource; const refresh = gm.refreshSource;
+  const git = (dir, args) => execFileSync('git', args, { cwd: dir, stdio: 'pipe' }).toString().trim();
+  const commit = dir => { git(dir, ['add', '.']); git(dir, ['-c', 'user.name=QA', '-c', 'user.email=qa@example.invalid', 'commit', '-m', 'Тестовое состояние']); };
+  try {
+    const remote = path.join(root, 'remote'); const local = path.join(root, 'local');
+    await fs.mkdir(remote); git(remote, ['init', '-b', 'main']);
+    await fs.writeFile(path.join(remote, 'old.txt'), 'rename source\n');
+    await fs.writeFile(path.join(remote, 'deleted.txt'), 'delete source\n');
+    for (const [name, bytes] of [['ordinary.txt', 'base\n'], ['mode.txt', 'mode\n'], ['binary.bin', Buffer.from([0, 1])], ['empty.txt', 'base'], ['large.txt', 'small'], ['.gitignore', 'oldIgnored/\n'], ['.gitattributes', '*.txt -text\n']]) await fs.writeFile(path.join(remote, name), bytes);
+    await fs.chmod(path.join(remote, 'mode.txt'), 0o644); commit(remote);
+    git(root, ['clone', remote, local]);
+    git(remote, ['switch', '-c', 'feature']);
+    await fs.rename(path.join(remote, 'old.txt'), path.join(remote, 'renamed.txt'));
+    await fs.rm(path.join(remote, 'deleted.txt'));
+    await fs.writeFile(path.join(remote, 'added.txt'), 'incoming\r\n');
+    await fs.writeFile(path.join(remote, 'safe.txt'), 'safe incoming\n');
+    for (const [name, bytes] of [['ordinary.txt', '\ufeffupdated\r\n'], ['binary.bin', Buffer.from([0, 255, 2])], ['empty.txt', ''], ['large.txt', 'large'.repeat(30000)], ['.gitignore', 'ignored/\n'], ['.gitattributes', '*.txt text eol=lf\nadded.txt -text\nordinary.txt -text\n']]) await fs.writeFile(path.join(remote, name), bytes);
+    await fs.chmod(path.join(remote, 'mode.txt'), 0o755);
+    await fs.mkdir(path.join(remote, 'fresh')); await fs.writeFile(path.join(remote, 'fresh/created.txt'), '');
+    await fs.mkdir(path.join(remote, 'ignored')); await fs.writeFile(path.join(remote, 'ignored/new.txt'), 'incoming ignored\n'); git(remote, ['add', '-f', 'ignored/new.txt']); commit(remote);
+    await fs.writeFile(path.join(local, 'added.txt'), 'local added\n');
+    await fs.writeFile(path.join(local, 'renamed.txt'), 'local destination\n');
+    await fs.writeFile(path.join(local, 'deleted.txt'), 'local deletion\n'); commit(local);
+    const profile = { id: crypto.randomUUID(), name: 'Конфликты', role: 'internal', sources: { internal: { kind: 'local', location: local, branch: 'main' }, global: { kind: 'remote', location: 'https://example.invalid/conflicts.git', branch: 'feature' } }, exclusions: [], includeIgnored: [], maxPartMB: 1, transportMode: 'compact' };
+    const store = new SettingsStore(path.join(root, 'settings')); await store.load();
+    await store.save({ schemaVersion: 6, globalExclusions: [], profiles: [profile], outputDirectory: '', lastRepositories: [] });
+    gm.refreshSource = async () => ({ changedBranches: [], branches: ['main', 'feature'], commits: [], baseCommits: [] });
+    gm.resolveSource = async (source, mode, cache) => source.kind === 'remote' ? { ...await resolve({ ...source, kind: 'local', location: remote }, 'internal', cache), source } : resolve(source, mode, cache);
+    const engine = new Engine(store); const selection = { mode: 'branch', baseBranch: 'main', branch: 'feature' };
+    let analysis = await engine.analyze(profile.id, 'incoming', selection);
+    const artifacts = exportArtifacts(engine.exportSession.transport, 1024 * 1024);
+    const paths = ['added.txt', 'deleted.txt', 'renamed.txt', 'safe.txt'];
+    const keptLocal = await engine.prepareIncoming(analysis.token, ['safe.txt']);
+    assert.equal(keptLocal.conflicts.length, 0);
+    let preview = await engine.prepareIncoming(analysis.token, paths);
+    assert.equal(preview.conflicts.length, 0);
+    assert.equal(preview.divergences.length, 3);
+    assert.equal(preview.entries.length, 4);
+    assert.equal((await engine.previewCode(preview.token, 'added.txt')).before, 'local added\n');
+    assert.equal((await engine.previewCode(preview.token, 'renamed.txt')).before, 'local destination\n');
+    assert.equal((await engine.previewCode(preview.token, 'renamed.txt')).source.before, 'rename source\n');
+    assert.equal((await engine.previewCode(analysis.token, 'added.txt')).before, '');
+    const safeOnly = await engine.prepareIncoming(analysis.token, ['safe.txt']);
+    await engine.applyImport(safeOnly.token);
+    assert.equal(await fs.readFile(path.join(local, 'added.txt'), 'utf8'), 'local added\n');
+    assert.equal(await fs.readFile(path.join(local, 'renamed.txt'), 'utf8'), 'local destination\n');
+    assert.equal(await fs.readFile(path.join(local, 'deleted.txt'), 'utf8'), 'local deletion\n');
+    analysis = await engine.analyze(profile.id, 'incoming', selection);
+    const accepted = ['added.txt', 'deleted.txt', 'renamed.txt'];
+    await assert.rejects(engine.prepareIncoming(analysis.token, paths, ['unknown.txt']), /вне выбранного/);
+    await assert.rejects(engine.prepareIncoming(analysis.token, paths, ['added.txt', 'added.txt']), /вне выбранного/);
+    preview = await engine.prepareIncoming(analysis.token, paths, accepted);
+    assert.equal(preview.conflicts.length, 0);
+    assert.equal(preview.entries.length, 3);
+    assert.deepEqual(preview.acceptedPaths, []);
+    await fs.writeFile(path.join(local, 'added.txt'), 'changed after preview');
+    await assert.rejects(engine.applyImport(preview.token), /изменились после просмотра/);
+    assert.equal(await fs.readFile(path.join(local, 'deleted.txt'), 'utf8'), 'local deletion\n');
+    preview = await engine.prepareIncoming(analysis.token, paths, accepted);
+    assert(preview.overwritePaths.some(file => file.path === 'added.txt'));
+    await assert.rejects(engine.applyImport(preview.token), /Подтвердите перезапись/);
+    preview = await engine.prepareIncoming(analysis.token, paths, accepted);
+    const indexBefore = git(local, ['ls-files', '--stage']);
+    const rename = fs.rename;
+    fs.rename = async (from, to) => {
+      if (to === path.join(local, 'renamed.txt') && path.basename(from).startsWith('.reposync-')) throw new Error('fixture: отказ записи назначения');
+      return rename(from, to);
+    };
+    try { await assert.rejects(engine.applyImport(preview.token, true), /отказ записи назначения/); }
+    finally { fs.rename = rename; }
+    assert.equal(await fs.readFile(path.join(local, 'added.txt'), 'utf8'), 'changed after preview');
+    assert.equal(await fs.readFile(path.join(local, 'deleted.txt'), 'utf8'), 'local deletion\n');
+    assert.equal(await fs.readFile(path.join(local, 'old.txt'), 'utf8'), 'rename source\n');
+    assert.equal(await fs.readFile(path.join(local, 'renamed.txt'), 'utf8'), 'local destination\n');
+    analysis = await engine.analyze(profile.id, 'incoming', selection);
+    preview = await engine.prepareIncoming(analysis.token, paths, accepted);
+    await engine.applyImport(preview.token, true);
+    assert.equal(git(local, ['ls-files', '--stage']), indexBefore);
+    assert.equal(await fs.readFile(path.join(local, 'added.txt'), 'utf8'), 'incoming\r\n');
+    assert.equal(await fs.readFile(path.join(local, 'renamed.txt'), 'utf8'), 'rename source\n');
+    await assert.rejects(fs.access(path.join(local, 'old.txt')));
+    await assert.rejects(fs.access(path.join(local, 'deleted.txt')));
+    const backups = [];
+    for (const dir of await fs.readdir(path.join(store.directory, 'backups'))) {
+      for (const file of await fs.readdir(path.join(store.directory, 'backups', dir))) if (file.endsWith('.bin')) backups.push(await fs.readFile(path.join(store.directory, 'backups', dir, file), 'utf8'));
+    }
+    for (const content of ['changed after preview', 'local destination\n', 'local deletion\n', 'rename source\n']) assert(backups.includes(content));
+    assert.equal(store.get().profiles[0].baseline, undefined);
+    // Manual restoration shares the writer; all paths are checked before any mutation.
+    let recovery = new Engine(store); let copies = await recovery.listBackups(profile.id);
+    assert(copies.length); const copy = copies[0]; assert.equal(copy.files, 4);
+    await assert.rejects(recovery.prepareRestore(profile.id, '../not-a-copy'), /идентификатор/);
+    const corrupt = path.join(copy.directory, '0.bin'); const saved = await fs.readFile(corrupt);
+    await fs.writeFile(corrupt, 'corrupted');
+    await assert.rejects(recovery.prepareRestore(profile.id, copy.id), /повреждена/);
+    assert.equal(await fs.readFile(path.join(local, 'added.txt'), 'utf8'), 'incoming\r\n'); await fs.writeFile(corrupt, saved);
+    await fs.rm(corrupt); await assert.rejects(recovery.prepareRestore(profile.id, copy.id), /отсутствует/); await fs.writeFile(corrupt, saved);
+    await fs.writeFile(path.join(local, 'added.txt'), 'new user edit');
+    await assert.rejects(recovery.prepareRestore(profile.id, copy.id), /added.txt.*изменены/);
+    await fs.writeFile(path.join(local, 'added.txt'), 'incoming\r\n');
+    git(local, ['switch', '-c', 'other']); await assert.rejects(recovery.prepareRestore(profile.id, copy.id), /ветка|ветке/); git(local, ['switch', 'main']);
+    let restoration = await recovery.prepareRestore(profile.id, copy.id); assert.equal(restoration.entries.length, 4);
+    await fs.writeFile(path.join(local, 'added.txt'), 'changed after restore preview');
+    await assert.rejects(recovery.applyRestore(restoration.token), /Запись не началась/); await fs.writeFile(path.join(local, 'added.txt'), 'incoming\r\n');
+    restoration = await recovery.prepareRestore(profile.id, copy.id);
+    const save = store.save.bind(store); let fail = true;
+    store.save = async settings => { if (fail) { fail = false; throw new Error('fixture restore settings failure'); } return save(settings); };
+    await assert.rejects(recovery.applyRestore(restoration.token), /полностью отменены/); store.save = save;
+    assert.equal(await fs.readFile(path.join(local, 'added.txt'), 'utf8'), 'incoming\r\n'); await assert.rejects(fs.access(path.join(local, 'old.txt')));
+    const settingsBeforeRestore = store.get(); settingsBeforeRestore.globalExclusions = ['keep-settings']; await store.save(settingsBeforeRestore);
+    recovery = new Engine(store); restoration = await recovery.prepareRestore(profile.id, copy.id); await recovery.applyRestore(restoration.token);
+    assert.equal(await fs.readFile(path.join(local, 'added.txt'), 'utf8'), 'changed after preview');
+    assert.equal(await fs.readFile(path.join(local, 'renamed.txt'), 'utf8'), 'local destination\n');
+    assert.equal(await fs.readFile(path.join(local, 'deleted.txt'), 'utf8'), 'local deletion\n');
+    assert.equal(await fs.readFile(path.join(local, 'old.txt'), 'utf8'), 'rename source\n');
+    assert.equal(git(local, ['ls-files', '--stage']), indexBefore); assert.deepEqual(store.get().globalExclusions, ['keep-settings']);
+    assert.equal(store.get().profiles[0].syncedAt, undefined);
+    copies = await new Engine(store).listBackups(profile.id); assert(copies.length > 1);
+    restoration = await recovery.prepareRestore(profile.id, copies[0].id); await recovery.applyRestore(restoration.token);
+    assert.equal(await fs.readFile(path.join(local, 'added.txt'), 'utf8'), 'incoming\r\n');
+    await fs.writeFile(path.join(local, 'old.txt'), 'rename source\n');
+    analysis = await engine.analyze(profile.id, 'incoming', selection);
+    preview = await engine.prepareIncoming(analysis.token, ['renamed.txt'], ['renamed.txt']);
+    assert.equal(preview.entries.length, 1);
+    await engine.applyImport(preview.token, true);
+    await assert.rejects(fs.access(path.join(local, 'old.txt')));
+    await fs.writeFile(path.join(local, 'renamed.txt'), 'destination without source');
+    analysis = await engine.analyze(profile.id, 'incoming', selection);
+    preview = await engine.prepareIncoming(analysis.token, ['renamed.txt']);
+    assert.equal(preview.conflicts.length, 0);
+    assert.equal(preview.divergences.length, 1);
+    preview = await engine.prepareIncoming(analysis.token, ['renamed.txt'], ['renamed.txt']);
+    await engine.applyImport(preview.token, true);
+    assert.equal(await fs.readFile(path.join(local, 'renamed.txt'), 'utf8'), 'rename source\n');
+    // The same explicit decision works for a received Markdown package.
+    await fs.writeFile(path.join(local, 'added.txt'), 'package local\n');
+    const output = path.join(root, 'package'); await fs.mkdir(output);
+    for (const artifact of artifacts) await fs.writeFile(path.join(output, artifact.name), artifact.bytes);
+    const settings = store.get(); settings.profiles[0].role = 'external'; await store.save(settings);
+    const packageView = await engine.loadPackage(path.join(output, artifacts.find(artifact => artifact.name.endsWith('.md')).name), profile.id);
+    const blockedPackage = await engine.preparePackage(packageView.token, ['added.txt']); assert.equal(blockedPackage.conflicts.length, 1);
+    const packagePreview = await engine.preparePackage(packageView.token, ['added.txt'], ['added.txt']);
+    assert.equal(packagePreview.conflicts.length, 0);
+    await engine.applyImport(packagePreview.token, true);
+    assert.equal(await fs.readFile(path.join(local, 'added.txt'), 'utf8'), 'incoming\r\n');
+    // Normal updates, mode-only changes, binary/empty/large content and self-induced Git status changes.
+    const internalSettings = store.get(); internalSettings.profiles[0].role = 'internal'; await store.save(internalSettings);
+    await fs.chmod(path.join(local, 'mode.txt'), 0o600);
+    await fs.mkdir(path.join(local, 'ignored')); await fs.writeFile(path.join(local, 'ignored/new.txt'), 'local untracked\n');
+    await fs.writeFile(path.join(local, 'binary.bin'), Buffer.from([0, 77]));
+    const otherPaths = ['ordinary.txt', 'mode.txt', 'binary.bin', 'empty.txt', 'large.txt', '.gitignore', '.gitattributes', 'ignored/new.txt', 'fresh/created.txt'];
+    analysis = await engine.analyze(profile.id, 'incoming', selection); preview = await engine.prepareIncoming(analysis.token, otherPaths);
+    assert(!preview.divergences.some(entry => entry.path === 'ordinary.txt' || entry.path === 'mode.txt'));
+    const binaryPreview = await engine.previewCode(preview.token, 'binary.bin'); assert.match(binaryPreview.message, /Бинарный/); assert.match(binaryPreview.details, /Локальная версия.*2 байт/);
+    assert.match((await engine.previewCode(preview.token, 'large.txt')).message, /128 КБ/);
+    assert.match((await engine.previewCode(preview.token, 'mode.txt')).details, /600.*755/);
+    assert.equal((await engine.previewCode(preview.token, 'empty.txt')).after, '');
+    const unchangedIndex = git(local, ['ls-files', '--stage']); await engine.applyImport(preview.token, true);
+    assert.equal(git(local, ['ls-files', '--stage']), unchangedIndex);
+    assert.deepEqual(await fs.readFile(path.join(local, 'ordinary.txt')), Buffer.from('\ufeffupdated\r\n'));
+    assert.deepEqual(await fs.readFile(path.join(local, 'binary.bin')), Buffer.from([0, 255, 2]));
+    assert.equal((await fs.stat(path.join(local, 'empty.txt'))).size, 0);
+    assert.equal((await fs.stat(path.join(local, 'mode.txt'))).mode & 0o777, 0o755);
+    assert.equal((await fs.stat(path.join(local, 'fresh/created.txt'))).size, 0);
+    copies = await engine.listBackups(profile.id); const latestCopy = copies[0];
+    await fs.chmod(path.join(local, 'mode.txt'), 0o644); await assert.rejects(engine.prepareRestore(profile.id, latestCopy.id), /mode.txt.*права изменены/); await fs.chmod(path.join(local, 'mode.txt'), 0o755);
+    restoration = await engine.prepareRestore(profile.id, latestCopy.id); await engine.applyRestore(restoration.token);
+    assert.equal((await fs.stat(path.join(local, 'mode.txt'))).mode & 0o777, 0o600);
+    assert.equal((await fs.stat(path.join(local, 'empty.txt'))).size, 4);
+    assert.deepEqual(await fs.readFile(path.join(local, 'binary.bin')), Buffer.from([0, 77]));
+    assert.equal(await fs.readFile(path.join(local, 'ignored/new.txt'), 'utf8'), 'local untracked\n');
+    await assert.rejects(fs.access(path.join(local, 'fresh/created.txt')));
+    // Simulate interruption after inverse writes/settings but before its commit marker.
+    copies = await engine.listBackups(profile.id); const inverseJournal = path.join(copies[0].directory, 'journal.json');
+    const interruptedInverse = JSON.parse(await fs.readFile(inverseJournal, 'utf8')); interruptedInverse.committed = false;
+    await fs.writeFile(inverseJournal, JSON.stringify(interruptedInverse)); await new Engine(store).recover();
+    assert.equal((await fs.stat(path.join(local, 'mode.txt'))).mode & 0o777, 0o755);
+    assert.equal((await fs.stat(path.join(local, 'fresh/created.txt'))).size, 0);
+    assert.deepEqual(await fs.readFile(path.join(local, 'binary.bin')), Buffer.from([0, 255, 2]));
+    restoration = await engine.prepareRestore(profile.id, latestCopy.id); await engine.applyRestore(restoration.token);
+    assert.equal((await fs.stat(path.join(local, 'mode.txt'))).mode & 0o777, 0o600);
+    // Malformed journal cannot supply paths outside its own copy directory.
+    copies = await engine.listBackups(profile.id); const journalName = path.join(copies[0].directory, 'journal.json'); const validJournal = await fs.readFile(journalName);
+    const malformedJournal = JSON.parse(validJournal); malformedJournal.entries[0].file = '../outside.bin'; await fs.writeFile(journalName, JSON.stringify(malformedJournal));
+    await assert.rejects(engine.prepareRestore(profile.id, copies[0].id), /Повреждена запись/);
+    assert((await engine.listBackups(profile.id)).some(item => item.id === copies[0].id && item.unavailable)); await fs.writeFile(journalName, validJournal);
+    // Unsupported receiving paths stop preparation with the exact operation/path and no writes.
+    const ordinaryBefore = await fs.readFile(path.join(local, 'ordinary.txt')); await fs.rm(path.join(local, 'ordinary.txt')); await fs.mkdir(path.join(local, 'ordinary.txt'));
+    analysis = await engine.analyze(profile.id, 'incoming', selection);
+    await assert.rejects(engine.prepareIncoming(analysis.token, ['ordinary.txt']), error => error.syncPath === 'ordinary.txt' && /Применение не началось/.test(error.message));
+    await fs.rmdir(path.join(local, 'ordinary.txt')); await fs.writeFile(path.join(local, 'ordinary.txt'), ordinaryBefore);
+    await fs.rm(path.join(local, 'ordinary.txt')); await fs.symlink('added.txt', path.join(local, 'ordinary.txt'));
+    await assert.rejects(engine.prepareIncoming(analysis.token, ['ordinary.txt']), /ordinary.txt.*символическ/);
+    await fs.rm(path.join(local, 'ordinary.txt')); await fs.writeFile(path.join(local, 'ordinary.txt'), ordinaryBefore);
+    // Refusing the backup write must leave every receiving file untouched.
+    preview = await engine.prepareIncoming(analysis.token, ['ordinary.txt']); const originalWrite = fs.writeFile;
+    fs.writeFile = async (filename, ...args) => { if (String(filename).includes('/backups/') && String(filename).endsWith('.bin')) throw new Error('fixture backup failure'); return originalWrite(filename, ...args); };
+    try { await assert.rejects(engine.applyImport(preview.token, true), /резервную копию.*не изменены/); } finally { fs.writeFile = originalWrite; }
+    assert.deepEqual(await fs.readFile(path.join(local, 'ordinary.txt')), ordinaryBefore);
+    // A package that both renames and replaces the same receiving path must not write twice.
+    const overlapBytes = Buffer.from('overlap source'); await fs.writeFile(path.join(local, 'overlap-old.txt'), overlapBytes);
+    const overlapRecords = [
+      { path: 'overlap-new.txt', oldPath: 'overlap-old.txt', operation: 'RENAME', mode: 0o644, beforeMode: 0o644, beforeSha256: gm.sha256(overlapBytes), size: overlapBytes.length, afterSha256: gm.sha256(overlapBytes), encoding: 'RAW', payload: overlapBytes.toString() },
+      { path: 'overlap-old.txt', operation: 'ADD', mode: 0o644, size: 3, afterSha256: gm.sha256('new'), encoding: 'RAW', payload: 'new' }
+    ];
+    const overlapTransport = { protocolVersion: 5, schemaVersion: 5, packageId: crypto.randomUUID(), packageType: 'diff', sourceState: null, targetState: 'content:test', scope: 'a'.repeat(64), records: overlapRecords, files: overlapRecords.map(record => ({ path: record.path, size: record.size, mode: record.mode, sha256: record.afterSha256 })) };
+    await assert.rejects(engine.prepareTransport(overlapTransport, local, profile.id, undefined, overlapRecords, overlapRecords.map(record => record.path)), /пересекаются.*overlap-old/);
+    assert.deepEqual(await fs.readFile(path.join(local, 'overlap-old.txt')), overlapBytes); await assert.rejects(fs.access(path.join(local, 'overlap-new.txt')));
+    // A branch switch to an identical HEAD during the first write still aborts and rolls back.
+    analysis = await engine.analyze(profile.id, 'incoming', selection); preview = await engine.prepareIncoming(analysis.token, ['mode.txt', 'ordinary.txt']);
+    const ordinarySnapshot = await fs.readFile(path.join(local, 'ordinary.txt')); const modeSnapshot = (await fs.stat(path.join(local, 'mode.txt'))).mode & 0o777;
+    const originalRename = fs.rename; let switched = false;
+    fs.rename = async (from, to) => { const result = await originalRename(from, to); if (!switched && to === path.join(local, 'mode.txt') && path.basename(from).startsWith('.reposync-')) { switched = true; git(local, ['switch', 'other']); } return result; };
+    try { await assert.rejects(engine.applyImport(preview.token, true), /полностью отменены/); } finally { fs.rename = originalRename; git(local, ['switch', 'main']); }
+    assert(switched); assert.deepEqual(await fs.readFile(path.join(local, 'ordinary.txt')), ordinarySnapshot);
+    assert.equal((await fs.stat(path.join(local, 'mode.txt'))).mode & 0o777, modeSnapshot);
+    console.log('Incoming updates and restoration passed: automatic operations, source/local/rename previews, normal/mode-only/binary/empty/large/BOM/CRLF updates, .gitignore/.gitattributes, consent/index/HEAD guards, checksum/branch/stale restoration, inverse backups, rollback/interrupted recovery, invalid paths and overlapping operations. Remote I/O mocked.');
+  } finally { gm.resolveSource = resolve; gm.refreshSource = refresh; await fs.rm(root, { recursive: true, force: true }); }
+})().catch(error => { console.error(error); process.exitCode = 1; });

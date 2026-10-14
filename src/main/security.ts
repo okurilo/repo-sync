@@ -1,3 +1,4 @@
+import { sha256 } from './infra/git';
 import type { Finding, RecordData } from '../shared/types';
 import { decode } from './transport';
 
@@ -33,17 +34,17 @@ export function scan(records: RecordData[], local: boolean): PrivateFinding[] {
     const bytes = decode(record);
     const text = bytes.toString('utf8');
     const sensitiveFile = /(?:^|\/)\.env(?:\.|$)|\.(?:pem|key)$/i.test(record.path);
-    if (sensitiveFile) findings.push({ public: { id: `${findings.length}`, path: record.path, line: 1, preview: 'Имя файла с возможными данными доступа', context: { before: '', match: record.path, after: '', location: 'Проверка по имени или расширению файла: .env, .pem, .key' }, reason: 'Файл может содержать данные доступа', severity: 'block', replacement: '', canReplace: false }, value: '', offset: 0 });
+    if (sensitiveFile) findings.push({ public: { id: sha256(`${record.path}:sensitive-file`).slice(0, 20), path: record.path, line: 1, preview: 'Имя файла с возможными данными доступа', context: { before: '', match: record.path, after: '', location: 'Проверка по имени или расширению файла: .env, .pem, .key' }, reason: 'Файл может содержать данные доступа', severity: 'block', replacement: '', canReplace: false }, value: '', offset: 0 });
     const firstFinding = findings.length;
     for (const rule of rules) {
       rule.pattern.lastIndex = 0;
       for (const match of text.matchAll(rule.pattern)) {
         const value = match[rule.group ?? 0];
-        if (!value || value === 'REPOSYNC_REDACTED' || value === 'test@example.invalid') continue;
+        if (!value || value === 'REPOSYNC_REDACTED' || value === 'test@example.invalid' || /^\*+$/.test(value)) continue;
         const offset = match.index + (rule.group ? match[0].lastIndexOf(value) : 0);
         const line = text.slice(0, offset).split('\n').length;
         const context = /(?:mock|mocks|fixtures|test-data|seed|demo)(?:\/|$)/i.test(record.path) ? ' · контекст тестовых данных' : '';
-        findings.push({ public: { id: `${findings.length}`, path: record.path, line,
+        findings.push({ public: { id: sha256(`${record.path}:${offset}:${rule.reason}:${value}`).slice(0, 20), path: record.path, line,
           preview: value.slice(0, 160), reason: rule.reason + context,
           severity: rule.severity, replacement: rule.replacement, canReplace: local && value.length > 0 }, value, offset });
         if (findings.length >= 10_000) throw new Error('Найдено 10 000 совпадений. Исключите часть файлов и повторите проверку.');
