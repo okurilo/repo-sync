@@ -103,7 +103,7 @@ async function start(): Promise<void> {
         }
         case 'previewCode': value = await engine.previewCode(string(args[0], 36), string(args[1])); break;
         case 'analyze': {
-          value = await engine.analyze(string(args[0], 36), direction(args[1]), args[2] === undefined ? undefined : parseIncomingSelection(args[2])); break;
+          value = await engine.analyze(string(args[0], 36), direction(args[1]), args[2] === undefined ? undefined : parseIncomingSelection(args[2]), args[3] as import('../shared/types').OutgoingSelection | undefined); break;
         }
         case 'branchContext': case 'listBranches': case 'listCommits': {
           const mode = argsMode(args[0]);
@@ -146,7 +146,7 @@ async function start(): Promise<void> {
         }
         case 'openRepository': { const profile = store.get().profiles.find(p => p.id === string(args[0], 36)); if (!profile?.sources.internal) throw new Error('Укажите локальный репозиторий в настройках.'); const error = await shell.openPath(await realpath(profile.sources.internal.location)); if (error) throw new Error('Не удалось открыть папку репозитория. Проверьте путь в настройках.'); value = undefined; break; }
         case 'preflight': value = await engine.preflight(string(args[0]), string(args[1]), string(args[2], 36)); break;
-        case 'applyImport': value = await engine.applyImport(string(args[0], 36)); break;
+        case 'applyImport': value = await engine.applyImport(string(args[0], 36), args[1] === true); break;
         default: throw new Error('Запрошенная команда недоступна.');
       }
       return { ok: true, value };

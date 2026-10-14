@@ -8,6 +8,7 @@ export type Encoding = 'RAW' | 'BASE64' | 'BROTLI_BASE64';
 export interface GitRevision { branch: string; commit?: string }
 export interface Source { kind: 'local' | 'remote'; location: string; branch: string; commit?: string; base?: GitRevision }
 export interface CommitOption { sha: string; date: string; subject?: string }
+export interface OutgoingSelection { mode: 'commit' | 'working'; commit?: string }
 export interface IncomingSelection { mode: 'branch' | 'branches' | 'commit' | 'range' | 'repositories' | 'zero'; commit?: string; from?: string; baseBranch?: string; branch?: string }
 export interface ProjectFilters { extra: string[]; disabled: string[] }
 export interface LastAction { type: string; at: string }
@@ -61,6 +62,7 @@ export interface Analysis {
   entries: { path: string; oldPath?: string; operation: Operation; size: number; ignoredBy?: number[]; excludedBy?: string }[];
 }
 export interface ImportPreview {
+  overwritePaths?: { path: string; staged: boolean }[];
   incomingMode?: IncomingSelection['mode'];
   workingChanges: Analysis['workingChanges'];
   token: string; packageId: string; sourceState: string | null; targetState: string;
@@ -93,7 +95,7 @@ export interface API {
   listCommits(source: Source): Promise<CommitOption[]>;
   previewComparison(profile: Profile, direction: Direction): Promise<CodeComparison>;
   previewCode(token: string, path: string): Promise<CodePreview>;
-  analyze(id: string, direction: Direction, selection?: IncomingSelection): Promise<Analysis>;
+  analyze(id: string, direction: Direction, selection?: IncomingSelection, outgoing?: OutgoingSelection): Promise<Analysis>;
   selectExport(token: string, selectedPaths: string[], redactedIds?: string[]): Promise<ExportReview>;
   loadPackage(path: string | string[], profileId: string): Promise<CodeComparison>;
   preparePackage(token: string, selectedPaths: string[]): Promise<ImportPreview>;
@@ -107,7 +109,7 @@ export interface API {
   prepareIncoming(token: string, selectedPaths?: string[]): Promise<ImportPreview>;
   openRepository(id: string): Promise<void>;
   preflight(path: string, target: string, profileId: string): Promise<ImportPreview>;
-  applyImport(token: string): Promise<Settings>;
+  applyImport(token: string, overwrite?: boolean): Promise<Settings>;
 }
 export type Command = keyof API;
 export type Reply<T> = { ok: true; value: T } | { ok: false; error: string };

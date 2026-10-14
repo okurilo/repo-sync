@@ -301,7 +301,7 @@ export async function localState(source: Source): Promise<LocalGitState> {
     try { await lstat(path.resolve(root, name)); operations.push(label!); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   }
   const dirty = workingChanges.staged + workingChanges.unstaged + workingChanges.untracked > 0;
-  const issue = !headText ? 'В репозитории нет коммитов. Создайте первый коммит.' : conflicts ? `Неразрешённых конфликтов: ${conflicts}. Устраните их в Git.` : operations.length ? `Незавершённая операция Git: ${operations.join(', ')}. Завершите или отмените её в Git.` : dirty ? `Рабочая копия не чистая: staged — ${workingChanges.staged}, unstaged — ${workingChanges.unstaged}, untracked — ${workingChanges.untracked}. Сохраните изменения коммитом или устраните их вручную.` : !branches.includes(source.branch) ? `Выбранная ветка «${source.branch}» отсутствует. Выберите существующую ветку в настройках.` : branchText !== source.branch ? `Для применения нужна ветка «${source.branch}». ${branchText ? `Сейчас открыта «${branchText}».` : 'Сейчас HEAD не привязан к ветке.'}` : null;
+  const issue = !headText ? 'В репозитории нет коммитов. Создайте первый коммит.' : conflicts ? `Неразрешённых конфликтов: ${conflicts}. Устраните их в Git.` : operations.length ? `Незавершённая операция Git: ${operations.join(', ')}. Завершите или отмените её в Git.` : !branches.includes(source.branch) ? `Выбранная ветка «${source.branch}» отсутствует. Выберите существующую ветку в настройках.` : branchText !== source.branch ? `Для применения нужна ветка «${source.branch}». ${branchText ? `Сейчас открыта «${branchText}».` : 'Сейчас HEAD не привязан к ветке.'}` : null;
   return { branch: branchText || null, head: headText || null, branches, workingChanges, conflicts, operations, issue, canSwitch: Boolean(headText) && !dirty && !conflicts && !operations.length && branches.includes(source.branch) };
 }
 export async function requireLocalReady(source: Source): Promise<LocalGitState> {
@@ -327,5 +327,43 @@ export async function projectGitSummary(profile: Profile, cache: string): Promis
       remote.checkedAt = new Date().toISOString();
     } catch (error) { remote.error = error instanceof Error ? error.message : 'Не удалось проверить внешний Git.'; }
   }
+  return result;
+}
+
+// Read the index inventory, but always export the working version of each file.
+export async function readWorkingTree(root: string, profile: Profile): Promise<Tree> {
+  const raw = await git(root, ['ls-files', '--cached', '--others', '--exclude-standard', '-z']);
+  const text = raw.toString('utf8');
+  if (!Buffer.from(text).equals(raw)) throw new Error('Пути файлов в Git должны быть в кодировке UTF-8.');
+  const ignored = (await git(root, ['ls-files', '--others', '--ignored', '--exclude-standard', '-z'])).toString('utf8').split('\0').filter(Boolean);
+  const names = new Set(text.split('\0').filter(Boolean));
+  for (const name of profile.includeIgnored) { if (!ignored.includes(name)) throw new Error('Включённый игнорируемый файл отсутствует. Обновите выбор файлов.'); names.add(name); }
+  const files: FileEntry[] = []; const bytes = new Map<string, Buffer>(); let total = 0; let excludedCustom = 0;
+  for (const name of [...names].sort()) {
+    validatePath(name);
+    if (profile.exclusions.some(rule => minimatch(name, rule, { dot: true }))) { excludedCustom++; continue; }
+    const filename = await safePath(root, name); let stat;
+    try { stat = await lstat(filename); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+    if (!stat.isFile()) throw new Error('Символические ссылки, подмодули и специальные файлы не поддерживаются. Исключите их из синхронизации.');
+    if (total + stat.size > 512 * 1024 * 1024) throw new Error('Размер выбранных файлов превышает 512 МБ.');
+    const content = await readFile(filename); total += content.length;
+    if (total > 512 * 1024 * 1024) throw new Error('Размер выбранных файлов превышает 512 МБ.');
+    files.push({ path: name, sha256: sha256(content), size: content.length, mode: stat.mode & 0o111 ? 0o755 : 0o644 }); bytes.set(name, content);
+  }
+  files.sort((a, b) => a.path.localeCompare(b.path));
+  return { files, bytes, ignored, excludedGit: ignored.filter(name => !profile.includeIgnored.includes(name)).length, excludedCustom };
+}
+
+// Include ignored files and both names of a rename; keep index identity for stale checks.
+export async function workingPaths(root: string): Promise<Map<string, { status: string; staged: boolean }>> {
+  const entries = (await git(root, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored', '--ignore-submodules=none'])).toString('utf8').split('\0');
+  const result = new Map<string, { status: string; staged: boolean }>();
+  for (let i = 0; i < entries.length; i++) {
+    const row = entries[i]; if (!row) continue; const code = row.slice(0, 2);
+    const value = { status: code, staged: ![' ', '?', '!'].includes(code[0]!) };
+    for (const name of [row.slice(3), ...(/[RC]/.test(code) ? [entries[++i]!] : [])]) { const previous = result.get(name); result.set(name, previous ? { status: previous.status + '|' + code, staged: previous.staged || value.staged } : { ...value }); }
+  }
+  const index = (await git(root, ['ls-files', '--stage', '-z'])).toString('utf8').split('\0');
+  for (const row of index) { const tab = row.indexOf('\t'); const value = result.get(row.slice(tab + 1)); if (tab >= 0 && value) value.status += ':' + row.slice(0, tab); }
   return result;
 }

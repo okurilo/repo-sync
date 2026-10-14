@@ -4,8 +4,8 @@ import { matchingComparisonFilters } from './comparison';
 import { chmod, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, rmdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { applyPatch, createTwoFilesPatch, diffLines, parsePatch } from 'diff';
-import type { Analysis, Baseline, CodeComparison, CodePreview, Direction, Environment, ExportReview, FileEntry, ImportPreview, IncomingSelection, Operation, PackageType, Profile, RecordData, Settings, Transport } from '../shared/types';
-import { localState, requireLocalReady, git, readTree, refreshSource, resolveSource, safePath, scopeHash, sha256, validateSource, type ResolvedSource, type Tree } from './infra/git';
+import type { Analysis, Baseline, CodeComparison, CodePreview, Direction, Environment, ExportReview, FileEntry, ImportPreview, IncomingSelection, OutgoingSelection, Operation, PackageType, Profile, RecordData, Settings, Transport } from '../shared/types';
+import { localState, requireLocalReady, git, readTree, readWorkingTree, workingPaths, refreshSource, resolveSource, safePath, scopeHash, sha256, validateSource, type ResolvedSource, type Tree } from './infra/git';
 import { atomicJSON, SettingsStore } from './infra/settings';
 import { decode, encode, exportArtifacts, loadTransport, MAX_BYTES, newPackageId, parseTransport, splitTransport } from './transport';
 import { findingLocation, scan, type PrivateFinding } from './security';
@@ -19,13 +19,14 @@ export const counts = (records: RecordData[]): Record<Operation, number> => {
   return result;
 };
 interface ExportSession {
+  outgoing?: OutgoingSelection;
   branchComparison?: Analysis['branchComparison']; selectedTransport?: Transport; originalFindings?: PrivateFinding[]; reviewRequired?: PrivateFinding[]; redactedIds?: string[];
   incomingMode?: IncomingSelection['mode']; sourceBaseline?: Baseline; sourceBytes?: Map<string, Buffer>;
   token: string; profileId: string; environment: Environment; resolved: ResolvedSource;
   tree: Tree; workingChanges: Analysis['workingChanges']; transport: Transport; findings: PrivateFinding[]; target: Baseline; maxBytes: number;
 }
 interface PreparedFile { path: string; before: Buffer | null; after: Buffer | null; beforeMode: number | null; afterMode: number }
-interface ImportSession { localHead: string; incoming?: ExportSession; token: string; environment: Environment; profileId: string; target: string; transport: Transport; records: RecordData[]; files: PreparedFile[]; baseline?: Baseline; updateCommon: boolean }
+interface ImportSession { dirtyStatus: string; overwritePaths: NonNullable<ImportPreview['overwritePaths']>; localHead: string; incoming?: ExportSession; token: string; environment: Environment; profileId: string; target: string; transport: Transport; records: RecordData[]; files: PreparedFile[]; baseline?: Baseline; updateCommon: boolean }
 interface BackupEntry { path: string; file: string | null; mode: number | null; beforeSha256: string | null; afterSha256: string | null; touched: boolean }
 interface Journal { target: string; entries: BackupEntry[]; createdDirectories: string[]; temporaryFiles: string[]; settingsBefore: Settings; committed: boolean }
 interface CodeSession { sourceToken?: string; token: string; from: string | null; to: string; entries: Analysis['entries']; before: Map<string, Buffer>; after: Map<string, Buffer> }
@@ -116,24 +117,27 @@ export class Engine {
     if ([before, after].some(bytes => bytes.includes(0) || !Buffer.from(bytes.toString('utf8')).equals(bytes))) return { before: '', after: '', message: 'Бинарный файл. Просмотр кода недоступен.' };
     return { before: before.toString('utf8'), after: after.toString('utf8') };
   }
-  async analyze(id: string, direction: Direction, selection?: IncomingSelection): Promise<Analysis> {
+  async analyze(id: string, direction: Direction, selection?: IncomingSelection, outgoing?: OutgoingSelection): Promise<Analysis> {
     const incoming = direction === 'incoming' ? parseIncomingSelection(selection) : undefined;
     this.invalidate();
     const mode: Environment = direction === 'incoming' ? 'global' : 'internal';
     const { profile } = this.context(id, mode);
     if (profile.role !== 'internal') throw new Error('Эта операция доступна только во внутреннем контуре.');
     if (!profile.sources.internal) throw new Error('Укажите локальный репозиторий в настройках.');
-    if (profile.commitRequired && direction === 'outgoing' && (await git(profile.sources.internal.location, ['status', '--porcelain=v1'])).length) throw new Error('Перед подготовкой пакета создайте коммит с применёнными изменениями.');
     if (profile.pending) throw new Error('Предыдущий пакет ожидает подтверждения. Подтвердите его применение или отмените ожидание перед новой синхронизацией.');
     let source = profile.sources[mode];
     if (!source) throw new Error('Укажите источник изменений в настройках репозитория.');
+    if (outgoing && (direction !== 'outgoing' || !['commit', 'working'].includes(outgoing.mode) || (outgoing.commit !== undefined && (outgoing.mode !== 'commit' || typeof outgoing.commit !== 'string' || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(outgoing.commit))))) throw new Error('Некорректный источник исходящих изменений.');
+    if (outgoing?.mode === 'working') { await requireLocalReady(profile.sources.internal); source = { ...source, commit: undefined }; }
+    if (outgoing?.mode === 'commit') source = { ...source, commit: outgoing.commit };
     if (incoming) source = { ...source, branch: incoming.branch ?? source.branch, commit: incoming.commit, base: undefined };
     if (source.kind === 'remote') await refreshSource(source, 'global', this.cache);
     const branch = incoming ? await resolveSource({ ...source, branch: incoming?.branch ?? source.branch, commit: undefined, base: undefined }, mode, this.cache) : undefined;
     const resolved = await resolveSource(source, mode, this.cache);
     if (branch) await selectedAncestor(resolved.root, resolved.commit, branch.commit);
+    if (outgoing?.commit) await selectedAncestor(resolved.root, resolved.commit, (await resolveSource({ ...source, commit: undefined }, mode, this.cache)).commit);
     const filteredProfile = { ...profile, exclusions: effectiveRules(this.store.get(), profile) };
-    const tree = await readTree(resolved, filteredProfile);
+    const tree = outgoing?.mode === 'working' ? await readWorkingTree(resolved.root, filteredProfile) : await readTree(resolved, filteredProfile);
     let initialExcluded: NonNullable<Tree['excluded']> = [];
     if (tree.files.reduce((total, file) => total + file.size, 0) > MAX_BYTES) throw new Error('Размер выбранных файлов превышает 512 МБ. Исключите часть файлов.');
     const scope = scopeHash(profile);
@@ -200,7 +204,7 @@ export class Engine {
       if (!baseline) throw new Error('Общее состояние синхронизации отсутствует. Требуется первичная синхронизация.');
       records = buildDiff(baseline.files, tree, before, !incoming);
     }
-    const targetState = profile.includeIgnored.length ? `content:${sha256(JSON.stringify(tree.files))}` : resolved.commit;
+    const targetState = outgoing?.mode === 'working' || profile.includeIgnored.length ? `content:${sha256(JSON.stringify(tree.files))}` : resolved.commit;
     const transport: Transport = { protocolVersion: 3, schemaVersion: 3, packageId: newPackageId(), packageType: type,
       sourceState: type === 'diff' ? baseline!.state : null, targetState, scope, files: tree.files, records };
     if (!incoming) {
@@ -217,7 +221,7 @@ export class Engine {
     const parts = splitTransport(transport, maxBytes, profile.transportMode);
     const target: Baseline = { state: targetState, files: tree.files, scope };
     if (profile.includeIgnored.length) target.localRepository = resolved.root;
-    this.exportSession = { incomingMode: incoming?.mode, branchComparison, sourceBaseline: baseline, sourceBytes: before, token: randomUUID(), profileId: id, environment: mode, resolved, tree, workingChanges: { staged: 0, unstaged: 0, untracked: 0 }, transport, findings, target, maxBytes };
+    this.exportSession = { outgoing, incomingMode: incoming?.mode, branchComparison, sourceBaseline: baseline, sourceBytes: before, token: randomUUID(), profileId: id, environment: mode, resolved, tree, workingChanges: { staged: 0, unstaged: 0, untracked: 0 }, transport, findings, target, maxBytes };
     const workingChanges = await workingStatus(profile.sources.internal.location);
     this.exportSession.workingChanges = workingChanges;
     const entries = this.codeFor(this.exportSession.token, transport, before, tree.bytes, new Map(baseline?.files.map(file => [file.path, file.mode]) ?? []));
@@ -287,9 +291,11 @@ export class Engine {
     if (findings.some(f => !keep.includes(f.public.id))) throw new Error('Рассмотрите каждое найденное совпадение.');
     if (findings.some(f => f.public.severity === 'block') && !override) throw new Error('В пакете остались возможные данные доступа. Исключите файл, замените данные в выгрузке или явно разрешите их включение в пакет.');
     // Повторно читаем selected branch и included ignored-файлы перед записью.
-    const current = await readTree(session.resolved, { ...profile, exclusions: effectiveRules(settings, profile) });
+    if (session.outgoing?.mode === 'working') await requireLocalReady(profile.sources.internal!);
+    const current = session.outgoing?.mode === 'working' ? await readWorkingTree(session.resolved.root, { ...profile, exclusions: effectiveRules(settings, profile) }) : await readTree(session.resolved, { ...profile, exclusions: effectiveRules(settings, profile) });
     const head = await git(session.resolved.root, ['rev-parse', '--verify', session.resolved.source.commit || `refs/heads/${session.resolved.source.branch}`]);
-    if (head.toString().trim() !== session.resolved.commit || JSON.stringify(current.files) !== JSON.stringify(session.tree.files)) throw new Error('Источник изменился. Запустите синхронизацию заново.');
+    const selectedSources = new Set(transport.records.flatMap(record => record.oldPath ? [record.path, record.oldPath] : [record.path]));
+    if (head.toString().trim() !== session.resolved.commit || JSON.stringify(current.files.filter(file => selectedSources.has(file.path))) !== JSON.stringify(session.tree.files.filter(file => selectedSources.has(file.path)))) throw new Error('Источник изменился. Запустите синхронизацию заново.');
     if (transport.protocolVersion >= 4) {
       const external = profile.sources.global!; await refreshSource(external, 'global', this.cache);
       if ((await resolveSource(external, 'global', this.cache)).commit !== session.transport.sourceState) throw new Error('Внешняя ветка изменилась. Обновите сравнение.');
@@ -505,7 +511,8 @@ export class Engine {
     await this.saveBaseline(canonical);
     const token = randomUUID();
     const completeSelection = selectedRecords.length === transport.records.length && !incoming?.tree.excluded?.length;
-    this.importSession = { localHead: local.head!, incoming, token, profileId, environment: 'internal', target: root, transport, records: selectedRecords, files, baseline, updateCommon: transport.protocolVersion < 4 && completeSelection && !transport.targetState.startsWith('content:partial:') && (!incoming || incoming.incomingMode === 'repositories' || incoming.incomingMode === 'zero') };
+    const dirty = await affectedWorkingPaths(root, files);
+    this.importSession = { dirtyStatus: dirty.status, overwritePaths: dirty.paths, localHead: local.head!, incoming, token, profileId, environment: 'internal', target: root, transport, records: selectedRecords, files, baseline, updateCommon: transport.protocolVersion < 4 && completeSelection && !transport.targetState.startsWith('content:partial:') && (!incoming || incoming.incomingMode === 'repositories' || incoming.incomingMode === 'zero') };
     const changedPaths = new Set(files.map(file => file.path));
     const previewTransport = { ...transport, records: selectedRecords.filter(record => changedPaths.has(record.path)) };
     const entries = previewTransport.records.map(record => ({ path: record.path, oldPath: record.oldPath, operation: record.operation, size: record.size }));
@@ -520,13 +527,18 @@ export class Engine {
       }
       this.codeSession = { ...code, sourceToken: code.sourceToken ?? code.token, token, before: localBefore, after: localAfter };
     }
-    return { incomingMode: incoming?.incomingMode, token, workingChanges: await workingStatus(root), packageId: transport.packageId, sourceState: transport.sourceState, targetState: transport.targetState,
+    return { overwritePaths: dirty.paths, incomingMode: incoming?.incomingMode, token, workingChanges: await workingStatus(root), packageId: transport.packageId, sourceState: transport.sourceState, targetState: transport.targetState,
       packageType: transport.packageType, changes: counts(previewTransport.records), files: transport.files.length, lineChanges: textChanges(previewTransport, before),
       entries };
   }
-  async applyImport(token: string): Promise<Settings> {
+  async applyImport(token: string, overwrite = false): Promise<Settings> {
+    try { return await this.applyPrepared(token, overwrite); }
+    catch (error) { this.importSession = null; throw error; }
+  }
+  private async applyPrepared(token: string, overwrite: boolean): Promise<Settings> {
     const session = this.importSession;
     if (!session || session.token !== token) throw new Error('Просмотр пакета устарел. Выберите пакет заново.');
+    if (session.overwritePaths.length && !overwrite) throw new Error('Подтвердите перезапись незакоммиченных изменений.');
     const { settings, profile } = this.context(session.profileId, session.environment);
     const configured = profile.sources.internal;
     if (!configured || await realpath(configured.location) !== await realpath(session.target)) throw new Error('Локальный репозиторий или ветка изменились. Запустите синхронизацию заново.');
@@ -539,6 +551,7 @@ export class Engine {
     if (files.length !== session.files.length || files.some((file, i) => file.path !== session.files[i]?.path || !sameBuffer(file.before, session.files[i]?.before ?? null) || file.beforeMode !== session.files[i]?.beforeMode)) throw new Error('Локальные файлы изменились после просмотра. Запустите синхронизацию заново.');
     const latest = await requireLocalReady(configured);
     if (latest.head !== session.localHead) throw new Error('Локальный HEAD изменился во время проверки. Проверьте применение заново.');
+    if ((await affectedWorkingPaths(session.target, session.files)).status !== session.dirtyStatus) throw new Error('Git-статус выбранных файлов изменился. Проверьте применение заново.');
     const directory = path.join(this.store.directory, 'backups', randomUUID());
     await mkdir(directory, { recursive: true, mode: 0o700 });
     const journal: Journal = { target: session.target, entries: [], createdDirectories: [], temporaryFiles: [], settingsBefore: this.store.get(), committed: false };
@@ -553,7 +566,10 @@ export class Engine {
     try {
       const beforeWrite = await requireLocalReady(configured);
       if (beforeWrite.head !== session.localHead) throw new Error('Локальный HEAD изменился перед записью. Проверьте применение заново.');
+      if ((await affectedWorkingPaths(session.target, session.files)).status !== session.dirtyStatus) throw new Error('Git-статус выбранных файлов изменился. Проверьте применение заново.');
+      const checkedStatuses = JSON.parse(session.dirtyStatus) as [string, string][];
       for (const [index, file] of files.entries()) {
+        if ((await affectedWorkingPaths(session.target, files.slice(index))).status !== JSON.stringify(checkedStatuses.slice(index))) throw new Error('Git-статус выбранных файлов изменился во время применения. Проверьте применение заново.');
         const filename = await safePath(session.target, file.path);
         const observed = await optionalRead(filename);
         if (!sameBuffer(observed, file.before) || (observed !== null && (await lstat(filename)).mode % 512 !== file.beforeMode)) throw new Error('Локальные файлы изменены другим процессом во время применения. Операция остановлена.');
@@ -588,7 +604,7 @@ export class Engine {
       profile.lastAction = { type: 'Применение пакета', at: new Date().toISOString() };
       if (session.updateCommon) profile.baseline = { state: session.transport.targetState, files: session.transport.files, scope: session.transport.scope };
       profile.syncedAt = new Date().toISOString();
-      if (files.length) profile.commitRequired = true;
+      profile.commitRequired = false;
       settings.lastRepositories = [session.target, ...settings.lastRepositories.filter(p => p !== session.target)].slice(0, 10);
       await this.store.save(settings);
       journal.committed = true;
@@ -643,7 +659,7 @@ function selectRecords(records: RecordData[], paths?: string[]): RecordData[] {
 async function selectedAncestor(root: string, from: string, to: string): Promise<void> {
   try { await git(root, ['merge-base', '--is-ancestor', from, to]); }
   catch (error) {
-    if (error instanceof Error && error.message.startsWith('Git завершился с кодом 1.')) throw new Error('Выбранный коммит отсутствует в истории внешней ветки. Обновите историю и выберите коммит заново.');
+    if (error instanceof Error && error.message.startsWith('Git завершился с кодом 1.')) throw new Error('Выбранный коммит отсутствует в истории выбранной ветки. Обновите историю и выберите коммит заново.');
     throw error;
   }
 }
@@ -834,4 +850,14 @@ async function restore(directory: string, journal: Journal): Promise<void> {
     try { await rmdir(await safePath(journal.target, name)); }
     catch (error) { if (!['ENOENT', 'ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error; }
   }
+}
+
+async function affectedWorkingPaths(root: string, files: PreparedFile[]): Promise<{ status: string; paths: NonNullable<ImportPreview['overwritePaths']> }> {
+  const dirty = await workingPaths(root); const paths: NonNullable<ImportPreview['overwritePaths']> = [];
+  const statuses = files.map(file => {
+    const match = dirty.get(file.path) ?? [...dirty].find(([name, value]) => value.status.startsWith('!!') && file.path.startsWith(name.endsWith('/') ? name : name + '/'))?.[1];
+    if (match) paths.push({ path: file.path, staged: match.staged });
+    return [file.path, match?.status ?? ''];
+  });
+  return { status: JSON.stringify(statuses), paths };
 }

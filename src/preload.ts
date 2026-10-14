@@ -31,7 +31,7 @@ const api: API = {
   listCommits: source => call('listCommits', [source]),
   previewComparison: (profile, direction) => call('previewComparison', [profile, direction]),
   previewCode: (token, name) => call('previewCode', [token, name]),
-  analyze: (id, type, selection) => call('analyze', [id, type, selection]),
+  analyze: (id, type, selection, outgoing) => call('analyze', [id, type, selection, outgoing]),
   exportPackage: (token, keep, override) => call('exportPackage', [token, keep, override]),
   confirmTransfer: id => call('confirmTransfer', [id]),
   discardPending: id => call('discardPending', [id]),
@@ -42,6 +42,6 @@ const api: API = {
   prepareIncoming: (token, selectedPaths) => call('prepareIncoming', selectedPaths ? [token, selectedPaths] : [token]),
   openRepository: id => call('openRepository', [id]),
   preflight: (name, target, id) => call('preflight', [name, target, id]),
-  applyImport: token => call('applyImport', [token]),
+  applyImport: (token, overwrite) => call('applyImport', [token, overwrite]),
 };
 contextBridge.exposeInMainWorld('reposync', api);
