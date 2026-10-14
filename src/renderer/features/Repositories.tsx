@@ -11,7 +11,7 @@ export function repositoryStatus(profile: Profile): string {
   if (profile.commitRequired) return 'Нужен коммит';
   return 'Настроен';
 }
-export function RepositoryCard({ profile, gitSummary, refreshGit, busy, open, incoming, outgoing, importPackage }: { profile: Profile; gitSummary?: ProjectGitSummary; refreshGit: () => void; busy: boolean; open: () => void; incoming: () => void; outgoing: () => void; importPackage: () => void }): React.JSX.Element {
+export function RepositoryCard({ profile, gitSummary, refreshGit, busy, open, incoming, outgoing, importPackage, backups }: { profile: Profile; gitSummary?: ProjectGitSummary; refreshGit: () => void; busy: boolean; open: () => void; incoming: () => void; outgoing: () => void; importPackage: () => void; backups: () => void }): React.JSX.Element {
   const local = profile.sources.internal; const remote = profile.sources.global; const status = repositoryStatus(profile);
   const observed = gitSummary?.local;
   const changes = observed ? observed.workingChanges.staged + observed.workingChanges.unstaged + observed.workingChanges.untracked : 0;
@@ -27,7 +27,7 @@ export function RepositoryCard({ profile, gitSummary, refreshGit, busy, open, in
       {remote && <GitLine><strong>Внешний Git</strong><code>{remote.branch}</code><small>{gitSummary?.remote?.date ? syncDate(gitSummary.remote.date) : 'Не загружен'}</small>{update && <><strong style={{ color: 'var(--warning)', minWidth: 0 }}>{gitSummary?.remote?.availableHead ? 'Есть обновление' : 'Ветка отсутствует на сервере'}</strong>{gitSummary?.remote?.availableHead && <Button disabled={busy} onClick={refreshGit}>Обновить</Button>}</>}{gitSummary?.remote?.error && <span style={{ color: 'var(--warning)' }}>Не удалось проверить обновления</span>}</GitLine>}
       <small>{profile.lastAction ? <>{profile.lastAction.type} · {syncDate(profile.lastAction.at)}</> : profile.syncedAt ? <>Последний перенос · {syncDate(profile.syncedAt)}</> : 'Действий пока нет'}</small>
     </div>
-    <details style={{ marginTop: 12, fontSize: 12 }}><summary>Подробности проекта</summary><div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
+    <details style={{ marginTop: 12, fontSize: 12 }}><summary>Подробности проекта</summary><Button disabled={busy || !local} onClick={backups}>Резервные копии и восстановление</Button><div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
       <div>Локальный репозиторий: <code>{local?.location ?? 'Не настроен'}</code></div>
       {local && <div>Ветка для применения: <code>{local.branch}</code> · HEAD: <code>{observed?.head ?? 'Не проверен'}</code></div>}
       {remote && <><div>Внешний репозиторий: <code>{remote.location}</code></div><div>HEAD кэша: <code>{gitSummary?.remote?.head ?? 'Не загружен'}</code></div><div>{gitSummary?.remote?.error ? `Проверка не выполнена: ${gitSummary.remote.error}` : gitSummary?.remote?.checkedAt ? `Проверено: ${syncDate(gitSummary.remote.checkedAt)}` : 'Ожидает проверки обновлений'}</div></>}

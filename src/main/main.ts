@@ -49,6 +49,9 @@ async function start(): Promise<void> {
     try {
       let value: unknown;
       switch (command) {
+        case 'listBackups': value = await engine.listBackups(string(args[0], 36)); break;
+        case 'prepareRestore': value = await engine.prepareRestore(string(args[0], 36), string(args[1], 36)); break;
+        case 'applyRestore': value = await engine.applyRestore(string(args[0], 36)); break;
         case 'appUpdateInspect': value = await updater.inspect(); break;
         case 'appUpdate': await updater.update(string(args[0], 255)); value = undefined; break;
         case 'saveFilters': {
@@ -154,7 +157,7 @@ async function start(): Promise<void> {
       const message = error instanceof Error ? error.message : 'Операция не выполнена';
       // Системные ошибки могут включать содержимое JSON / Git: выводим только известные сообщения.
       const safe = error instanceof SyntaxError ? 'Не удалось прочитать JSON: пакет или настройки повреждены.' : message;
-      return { ok: false, error: safe };
+      return { ok: false, error: safe, path: error instanceof Error && 'syncPath' in error && typeof error.syncPath === 'string' ? error.syncPath : undefined };
     } finally { busy = false; }
   });
   const createWindow = (): void => {

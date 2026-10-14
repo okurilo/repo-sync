@@ -62,6 +62,7 @@ export interface Analysis {
   entries: { path: string; oldPath?: string; operation: Operation; size: number; ignoredBy?: number[]; excludedBy?: string }[];
 }
 export interface ImportPreview {
+  divergences?: { path: string; message: string }[];
   acceptedPaths?: string[];
   overwritePaths?: { path: string; staged: boolean }[];
   conflicts?: { path: string; operation: Operation; message: string }[];
@@ -73,9 +74,14 @@ export interface ImportPreview {
 }
 export interface ReplacementPreview { token: string; path: string; line: number; preview: string; replacement: string }
 export interface CodeComparison { unavailablePaths?: string[]; token: string; from: string | null; to: string; entries: Analysis['entries']; lineChanges?: { added: number; removed: number } }
-export interface CodePreview { before: string; after: string; message?: string }
+export interface CodePreview { before: string; after: string; message?: string; beforeLabel?: string; afterLabel?: string; details?: string; source?: CodePreview }
+export interface BackupSummary { id: string; at: string; files: number; action?: string; branch?: string; unavailable?: string; directory: string }
+export interface RestorePreview { token: string; entries: { path: string; action: string }[] }
 export interface AppUpdateState { installedVersion?: string; installedCommit?: string; installedBranch?: string; heads?: Record<string, string>; checkedAt?: string; root: string; branch: string; branches: string[]; phase: 'idle' | 'checking' | 'building' | 'restarting' | 'error'; message: string; command: string; error?: string }
 export interface API {
+  listBackups(profileId: string): Promise<BackupSummary[]>;
+  prepareRestore(profileId: string, backupId: string): Promise<RestorePreview>;
+  applyRestore(token: string): Promise<Settings>;
   appUpdateStatus(): Promise<AppUpdateState>;
   appUpdateInspect(): Promise<AppUpdateState>;
   appUpdate(branch: string): Promise<void>;
@@ -114,6 +120,6 @@ export interface API {
   applyImport(token: string, overwrite?: boolean): Promise<Settings>;
 }
 export type Command = keyof API;
-export type Reply<T> = { ok: true; value: T } | { ok: false; error: string };
+export type Reply<T> = { ok: true; value: T } | { ok: false; error: string; path?: string };
 
 export function appVersionLabel(state: AppUpdateState | null): string { return state?.installedVersion ? `v${state.installedVersion}${state.installedBranch && state.installedBranch !== 'main' ? ` · ${state.installedBranch}` : ''}` : 'Версия не определена'; }

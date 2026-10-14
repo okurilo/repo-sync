@@ -4,10 +4,10 @@ import { matchingComparisonFilters } from './comparison';
 import { chmod, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, rmdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { applyPatch, createTwoFilesPatch, diffLines, parsePatch } from 'diff';
-import type { Analysis, Baseline, CodeComparison, CodePreview, Direction, Environment, ExportReview, FileEntry, ImportPreview, IncomingSelection, OutgoingSelection, Operation, PackageType, Profile, RecordData, Settings, Transport } from '../shared/types';
-import { localState, requireLocalReady, git, readTree, readWorkingTree, workingPaths, refreshSource, resolveSource, safePath, scopeHash, sha256, validateSource, type ResolvedSource, type Tree } from './infra/git';
-import { atomicJSON, SettingsStore } from './infra/settings';
-import { decode, encode, exportArtifacts, loadTransport, MAX_BYTES, newPackageId, parseTransport, splitTransport } from './transport';
+import type { Analysis, BackupSummary, RestorePreview, Baseline, CodeComparison, CodePreview, Direction, Environment, ExportReview, FileEntry, ImportPreview, IncomingSelection, OutgoingSelection, Operation, PackageType, Profile, RecordData, Settings, Transport } from '../shared/types';
+import { localState, requireLocalReady, git, readTree, readWorkingTree, workingPaths, refreshSource, resolveSource, safePath, scopeHash, sha256, validatePath, validateSource, type ResolvedSource, type Tree } from './infra/git';
+import { atomicJSON, parseSettings, SettingsStore } from './infra/settings';
+import { decode, encode, exportArtifacts, loadTransport, MAX_BYTES, newPackageId, parseTransport, splitTransport, object, string, integer } from './transport';
 import { findingLocation, scan, type PrivateFinding } from './security';
 
 function scanOutgoing(records: RecordData[], local: boolean): PrivateFinding[] {
@@ -27,19 +27,22 @@ interface ExportSession {
 }
 interface PreparedFile { path: string; before: Buffer | null; after: Buffer | null; beforeMode: number | null; afterMode: number }
 interface ImportSession { acceptedPaths: string[]; dirtyStatus: string; overwritePaths: NonNullable<ImportPreview['overwritePaths']>; localHead: string; incoming?: ExportSession; token: string; environment: Environment; profileId: string; target: string; transport: Transport; records: RecordData[]; files: PreparedFile[]; baseline?: Baseline; updateCommon: boolean }
-interface BackupEntry { path: string; file: string | null; mode: number | null; beforeSha256: string | null; afterSha256: string | null; touched: boolean }
-interface Journal { target: string; entries: BackupEntry[]; createdDirectories: string[]; temporaryFiles: string[]; settingsBefore: Settings; committed: boolean }
-interface CodeSession { sourceToken?: string; token: string; from: string | null; to: string; entries: Analysis['entries']; before: Map<string, Buffer>; after: Map<string, Buffer> }
+interface BackupEntry { path: string; file: string | null; mode: number | null; afterMode?: number; beforeSha256: string | null; afterSha256: string | null; touched: boolean }
+interface Journal { action?: string; schemaVersion?: 2; profileId?: string; branch?: string; at?: string; target: string; entries: BackupEntry[]; createdDirectories: string[]; temporaryFiles: string[]; settingsBefore: Settings; committed: boolean }
+interface WriteSession { target: string; profileId: string; localHead: string; dirtyStatus: string }
+interface RestoreSession extends WriteSession { token: string; files: PreparedFile[] }
+interface CodeSession { localFiles?: Map<string, PreparedFile>; sourceToken?: string; token: string; from: string | null; to: string; entries: Analysis['entries']; before: Map<string, Buffer>; after: Map<string, Buffer> }
 export class Engine {
   readonly cache: string;
   private codeSession: CodeSession | null = null;
   private exportSession: ExportSession | null = null;
   private packageSession: { token: string; profileId: string; transport: Transport; target: string } | null = null;
   private importSession: ImportSession | null = null;
+  private restoreSession: RestoreSession | null = null;
   private replacement: { token: string; filename: string; root: string; path: string; branch: string; before: Buffer; after: Buffer } | null = null;
   private blocked = false;
   constructor(readonly store: SettingsStore) { this.cache = path.join(store.directory, 'git-cache'); }
-  invalidate(): void { this.packageSession = null; this.codeSession = null; this.exportSession = null; this.importSession = null; this.replacement = null; }
+  invalidate(): void { this.packageSession = null; this.codeSession = null; this.exportSession = null; this.importSession = null; this.restoreSession = null; this.replacement = null; }
   private context(id: string, mode: Environment = 'internal'): { settings: Settings; profile: Profile; mode: Environment } {
     if (this.blocked) throw new Error('Откат не завершён, дальнейшие операции заблокированы. Не изменяйте файлы репозитория. Перезапустите RepoSync для повторного восстановления.');
     const settings = this.store.get();
@@ -111,11 +114,13 @@ export class Engine {
     if (!session || (session.token !== token && session.sourceToken !== token)) throw new Error('Сравнение устарело. Запустите синхронизацию заново.');
     const entry = session.entries.find(item => item.path === name);
     if (!entry) throw new Error('Файл отсутствует в сравнении');
+    if (token === session.token && session.localFiles?.has(name)) {
+      const result = filePreview(session.localFiles.get(name)!, 'Локальная версия', 'Входящая версия');
+      if (entry.oldPath && session.localFiles.has(entry.oldPath)) result.source = filePreview(session.localFiles.get(entry.oldPath)!, `Исходный путь: ${entry.oldPath}`, 'После применения');
+      return result;
+    }
     const old = session.before.get(entry.oldPath ?? name); const next = session.after.get(name);
-    if ([old, next].some(file => file && file.length > 128 * 1024)) return { before: '', after: '', message: 'Файл больше 128 КБ. Просмотр кода недоступен.' };
-    const before = old ?? Buffer.alloc(0); const after = next ?? Buffer.alloc(0);
-    if ([before, after].some(bytes => bytes.includes(0) || !Buffer.from(bytes.toString('utf8')).equals(bytes))) return { before: '', after: '', message: 'Бинарный файл. Просмотр кода недоступен.' };
-    return { before: before.toString('utf8'), after: after.toString('utf8') };
+    return filePreview({ path: name, before: old ?? null, after: next ?? null, beforeMode: null, afterMode: 0 }, 'Исходная версия сравнения', 'Конечная версия сравнения');
   }
   async analyze(id: string, direction: Direction, selection?: IncomingSelection, outgoing?: OutgoingSelection): Promise<Analysis> {
     const incoming = direction === 'incoming' ? parseIncomingSelection(selection) : undefined;
@@ -490,7 +495,54 @@ export class Engine {
     const before = new Map(session.files.filter(file => file.before !== null).map(file => [file.path, file.before!]));
     const after = new Map(session.files.filter(file => file.after !== null).map(file => [file.path, file.after!]));
     this.codeFor(preview.token, { ...session.transport, records: session.records.filter(record => preview.entries.some(entry => entry.path === record.path)) }, before, after, new Map());
+    this.codeSession!.localFiles = new Map(session.files.map(file => [file.path, file]));
     return preview;
+  }
+  async listBackups(profileId: string): Promise<BackupSummary[]> {
+    const { profile } = this.context(profileId); if (!profile.sources.internal) throw new Error('Укажите локальный репозиторий в настройках.'); const root = await realpath(profile.sources.internal.location);
+    const base = path.join(this.store.directory, 'backups'); const result: BackupSummary[] = [];
+    const names = await readdir(base).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return []; throw error; });
+    for (const id of names.filter(name => /^[a-f0-9-]{36}$/.test(name))) {
+      const directory = await safePath(base, id);
+      try {
+        const journal = await readJournal(directory); if (!journal.committed || journal.target !== root || !journal.entries.length) continue;
+        result.push({ id, directory, action: journal.action, at: journal.at ?? (await lstat(directory)).mtime.toISOString(), files: journal.entries.length, branch: journal.branch,
+          unavailable: journal.schemaVersion !== 2 ? 'Старая копия не содержит ветку и итоговые права. Автоматическое восстановление недоступно; файлы сохранены по указанному пути.' : journal.profileId !== profileId ? 'Копия принадлежит другому профилю.' : undefined });
+      } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') result.push({ id, directory, at: '', files: 0, unavailable: `Журнал повреждён: ${error instanceof Error ? error.message : 'ошибка чтения'}` }); }
+    }
+    return result.sort((a, b) => b.at.localeCompare(a.at));
+  }
+  async prepareRestore(profileId: string, backupId: string): Promise<RestorePreview> {
+    this.invalidate(); const { profile } = this.context(profileId); const configured = profile.sources.internal;
+    if (!configured) throw new Error('Укажите локальный репозиторий в настройках. Восстановление не началось.');
+    if (profile.pending) throw new Error('Сначала завершите ожидание передачи пакета. Восстановление не началось.');
+    if (!/^[a-f0-9-]{36}$/.test(backupId)) throw new Error('Некорректный идентификатор копии.');
+    const directory = await safePath(path.join(this.store.directory, 'backups'), backupId); const journal = await readJournal(directory);
+    const target = await realpath(configured.location); const local = await requireLocalReady(configured);
+    if (journal.schemaVersion !== 2 || !journal.committed || journal.profileId !== profileId || journal.target !== target || journal.branch !== local.branch) throw new Error('Копия не соответствует текущему профилю, папке или ветке. Восстановление не началось. Выберите подходящую копию и ветку.');
+    const files: PreparedFile[] = []; const problems: string[] = []; let bytes = 0;
+    for (const entry of journal.entries) {
+      try {
+      const filename = await safePath(target, entry.path); const before = await optionalRead(filename); const mode = before === null ? null : (await lstat(filename)).mode & 0o777;
+      const after = entry.file === null ? null : await optionalRead(await safePath(directory, entry.file)); bytes += (before?.length ?? 0) + (after?.length ?? 0); if (bytes > MAX_BYTES * 2) throw new Error('Восстановление не началось: превышен лимит размера копии.');
+      if ((after === null ? null : sha256(after)) !== entry.beforeSha256) problems.push(`«${entry.path}»: резервная копия отсутствует или повреждена.`);
+      if ((before === null ? null : sha256(before)) !== entry.afterSha256 || (before !== null && process.platform !== 'win32' && mode !== entry.afterMode)) problems.push(`«${entry.path}»: файл или права изменены после операции.`);
+      files.push({ path: entry.path, before, after, beforeMode: mode, afterMode: entry.mode ?? 0o644 });
+      } catch (error) { throw new Error(`Проверка восстановления «${entry.path}» не выполнена: ${error instanceof Error ? error.message : 'ошибка чтения'}. Запись не началась. Устраните причину и выберите копию заново.`); }
+    }
+    if (problems.length) throw new Error(`Восстановление не началось:\n${problems.join('\n')} Сохраните последующие изменения отдельно и повторите проверку.`);
+    checkFilePaths(files); const dirty = await affectedWorkingPaths(target, files); const token = randomUUID();
+    this.restoreSession = { target, profileId, localHead: local.head!, dirtyStatus: dirty.status, files, token };
+    return { token, entries: files.map(file => ({ path: file.path, action: file.after === null ? 'Удалить созданный файл' : file.before === null ? 'Вернуть удалённый файл' : 'Вернуть предыдущую версию и права' })) };
+  }
+  async applyRestore(token: string): Promise<Settings> {
+    const session = this.restoreSession; this.restoreSession = null;
+    if (!session || session.token !== token) throw new Error('Просмотр восстановления устарел. Выберите копию заново.');
+    const { settings, profile } = this.context(session.profileId);
+    if (profile.pending || await realpath(profile.sources.internal!.location) !== session.target) throw new Error('Профиль изменился. Восстановление не началось. Повторите проверку.');
+    profile.baseline = undefined; profile.syncedAt = undefined; profile.commitRequired = false;
+    profile.lastAction = { type: 'Восстановление предыдущих файлов', at: new Date().toISOString() };
+    return this.writeFiles(session, session.files, settings);
   }
   private async prepareTransport(transport: Transport, target: string, profileId: string, incoming?: ExportSession, selectedRecords: RecordData[] = transport.records, acceptedPaths: string[] = []): Promise<ImportPreview> {
     this.importSession = null;
@@ -522,24 +574,20 @@ export class Engine {
     const previewTransport = { ...transport, records: applicableRecords.filter(record => changedPaths.has(record.path) || (record.oldPath && changedPaths.has(record.oldPath))) };
     const entries = previewTransport.records.map(record => ({ path: record.path, oldPath: record.oldPath, operation: record.operation, size: record.size }));
     if (this.codeSession) {
-      const code = this.codeSession; const localBefore = new Map(code.before); const localAfter = new Map(code.after);
-      const prepared = new Map(files.map(file => [file.path, file]));
+      const code = this.codeSession; const localFiles = new Map<string, PreparedFile>();
+      const snapshots = new Map(files.map(file => [file.path, file]));
       for (const record of selectedRecords) {
-        const name = record.oldPath ?? record.path;
-        const prior = prepared.has(name) ? prepared.get(name)!.before : await optionalRead(await safePath(root, name));
-        localBefore.delete(name); if (prior !== null) localBefore.set(name, prior);
-        if (record.operation === 'RENAME' && (conflictPaths.has(record.path) || acceptedNames.has(record.path))) {
-          const destination = prepared.has(record.path) ? prepared.get(record.path)!.before : await optionalRead(await safePath(root, record.path));
-          localBefore.delete(record.path); if (destination !== null) localBefore.set(record.path, destination);
+        for (const name of record.oldPath ? [record.oldPath, record.path] : [record.path]) {
+          const snapshot = snapshots.get(name); const prior = snapshot ? snapshot.before : await optionalRead(await safePath(root, name));
+          const mode = snapshot ? snapshot.beforeMode : prior === null ? null : (await lstat(await safePath(root, name))).mode & 0o777;
+          localFiles.set(name, snapshot ?? { path: name, before: prior, beforeMode: mode, after: conflictPaths.has(record.path) ? name === record.oldPath ? null : canonical.get(record.path) ?? null : prior, afterMode: conflictPaths.has(record.path) ? record.mode : mode ?? record.mode });
         }
-        localAfter.delete(record.path); const after = canonical.get(record.path); if (after) localAfter.set(record.path, after);
       }
-      const entries = code.entries.map(entry => entry.operation === 'RENAME' && (conflictPaths.has(entry.path) || acceptedNames.has(entry.path)) ? { ...entry, oldPath: undefined } : entry);
-      this.codeSession = { ...code, entries, sourceToken: code.sourceToken ?? code.token, token, before: localBefore, after: localAfter };
+      this.codeSession = { ...code, localFiles, sourceToken: code.sourceToken ?? code.token, token };
     }
     return { overwritePaths: dirty.paths, incomingMode: incoming?.incomingMode, token, workingChanges: await workingStatus(root), packageId: transport.packageId, sourceState: transport.sourceState, targetState: transport.targetState,
       packageType: transport.packageType, changes: counts(previewTransport.records), files: transport.files.length, lineChanges: textChanges(previewTransport, before),
-      entries, conflicts: prepared.conflicts, acceptedPaths };
+      entries, conflicts: prepared.conflicts, divergences: prepared.divergences, acceptedPaths: incoming ? [] : acceptedPaths };
   }
   async applyImport(token: string, overwrite = false): Promise<Settings> {
     try { return await this.applyPrepared(token, overwrite); }
@@ -564,27 +612,44 @@ export class Engine {
     const latest = await requireLocalReady(configured);
     if (latest.head !== session.localHead) throw new Error('Локальный HEAD изменился во время проверки. Проверьте применение заново.');
     if ((await affectedWorkingPaths(session.target, session.files)).status !== session.dirtyStatus) throw new Error('Git-статус выбранных файлов изменился. Проверьте применение заново.');
+    profile.lastAction = { type: session.incoming ? 'Получение изменений из Git' : 'Применение пакета', at: new Date().toISOString() };
+    if (session.updateCommon) profile.baseline = { state: session.transport.targetState, files: session.transport.files, scope: session.transport.scope };
+    profile.syncedAt = new Date().toISOString();
+    profile.commitRequired = false;
+    settings.lastRepositories = [session.target, ...settings.lastRepositories.filter(p => p !== session.target)].slice(0, 10);
+    return this.writeFiles(session, files, settings);
+  }
+  private async writeFiles(session: WriteSession, files: PreparedFile[], settings: Settings): Promise<Settings> {
+    const { profile } = this.context(session.profileId); const configured = profile.sources.internal!;
+    if (!files.length) { await this.store.save(settings); this.invalidate(); return this.store.get(); }
+    const ready = await requireLocalReady(configured); const problems: string[] = [];
+    if (await realpath(configured.location) !== session.target || ready.head !== session.localHead || (await affectedWorkingPaths(session.target, files)).status !== session.dirtyStatus) throw new Error('Папка, ветка, HEAD или Git-статус изменились. Запись не началась. Повторите проверку.');
+    for (const file of files) { try { const filename = await safePath(session.target, file.path); const bytes = await optionalRead(filename); if (!sameBuffer(bytes, file.before) || (bytes !== null && ((await lstat(filename)).mode & 0o777) !== file.beforeMode)) problems.push(file.path); } catch (error) { throw Object.assign(new Error(`Проверка «${file.path}» не выполнена: ${error instanceof Error ? error.message : 'ошибка чтения'}. Запись не началась. Повторите проверку.`), { syncPath: file.path }); } }
+    if (problems.length) throw new Error(`Файлы изменились после просмотра: ${problems.join(', ')}. Запись не началась. Повторите проверку.`);
     const directory = path.join(this.store.directory, 'backups', randomUUID());
     await mkdir(directory, { recursive: true, mode: 0o700 });
-    const journal: Journal = { target: session.target, entries: [], createdDirectories: [], temporaryFiles: [], settingsBefore: this.store.get(), committed: false };
-    for (const [index, file] of files.entries()) {
+    const journal: Journal = { action: settings.profiles.find(item => item.id === session.profileId)?.lastAction?.type ?? 'Применение изменений', schemaVersion: 2, profileId: session.profileId, branch: configured.branch, at: new Date().toISOString(), target: session.target, entries: [], createdDirectories: [], temporaryFiles: [], settingsBefore: this.store.get(), committed: false };
+    try { for (const [index, file] of files.entries()) {
       const backup = file.before === null ? null : `${index}.bin`;
       if (backup) await writeFile(path.join(directory, backup), file.before!, { mode: 0o600, flag: 'wx' });
-      journal.entries.push({ path: file.path, file: backup, mode: file.beforeMode,
+      journal.entries.push({ path: file.path, file: backup, mode: file.beforeMode, afterMode: file.afterMode,
         beforeSha256: file.before === null ? null : sha256(file.before), afterSha256: file.after === null ? null : sha256(file.after), touched: false });
-    }
+    } } catch (error) { throw new Error(`Не удалось сохранить резервную копию: ${error instanceof Error ? error.message : 'ошибка записи'}. Файлы репозитория не изменены. Проверьте свободное место и права, затем повторите проверку.`); }
     const journalPath = path.join(directory, 'journal.json');
     await atomicJSON(journalPath, journal);
-    try {
+    let writingPath = ''; try {
       const beforeWrite = await requireLocalReady(configured);
       if (beforeWrite.head !== session.localHead) throw new Error('Локальный HEAD изменился перед записью. Проверьте применение заново.');
-      if ((await affectedWorkingPaths(session.target, session.files)).status !== session.dirtyStatus) throw new Error('Git-статус выбранных файлов изменился. Проверьте применение заново.');
-      const checkedStatuses = JSON.parse(session.dirtyStatus) as [string, string][];
+      if ((await affectedWorkingPaths(session.target, files)).status !== session.dirtyStatus) throw new Error('Git-статус выбранных файлов изменился. Проверьте применение заново.');
+      const checkedStatuses = JSON.parse(session.dirtyStatus) as [string, string, string][];
+      const indexIdentity = (status: string): string => JSON.stringify((JSON.parse(status) as [string, string, string][]).map(([name, , index]) => [name, index]));
       for (const [index, file] of files.entries()) {
-        if ((await affectedWorkingPaths(session.target, files.slice(index))).status !== JSON.stringify(checkedStatuses.slice(index))) throw new Error('Git-статус выбранных файлов изменился во время применения. Проверьте применение заново.');
+        writingPath = file.path;
+        if (indexIdentity((await affectedWorkingPaths(session.target, files.slice(index))).status) !== indexIdentity(JSON.stringify(checkedStatuses.slice(index)))) throw new Error('Git-статус выбранных файлов изменился во время применения. Проверьте применение заново.');
+        if ((await requireLocalReady(configured)).head !== session.localHead) throw new Error('Ветка или HEAD изменились во время записи.');
         const filename = await safePath(session.target, file.path);
         const observed = await optionalRead(filename);
-        if (!sameBuffer(observed, file.before) || (observed !== null && (await lstat(filename)).mode % 512 !== file.beforeMode)) throw new Error('Локальные файлы изменены другим процессом во время применения. Операция остановлена.');
+        if (!sameBuffer(observed, file.before) || (observed !== null && (await lstat(filename)).mode % 512 !== file.beforeMode)) throw new Error(`«${file.path}»: файл изменён другим процессом во время записи.`);
         journal.entries[index]!.touched = true;
         await atomicJSON(journalPath, journal);
         if (file.after === null) await rm(filename);
@@ -613,11 +678,7 @@ export class Engine {
         const filename = await safePath(session.target, file.path);
         if (!sameBuffer(await optionalRead(filename), file.after) || (file.after !== null && process.platform !== 'win32' && ((await lstat(filename)).mode & 0o777) !== file.afterMode)) throw new Error('Результат записи не прошёл проверку. Операция остановлена.');
       }
-      profile.lastAction = { type: 'Применение пакета', at: new Date().toISOString() };
-      if (session.updateCommon) profile.baseline = { state: session.transport.targetState, files: session.transport.files, scope: session.transport.scope };
-      profile.syncedAt = new Date().toISOString();
-      profile.commitRequired = false;
-      settings.lastRepositories = [session.target, ...settings.lastRepositories.filter(p => p !== session.target)].slice(0, 10);
+      if ((await requireLocalReady(configured)).head !== session.localHead || indexIdentity((await affectedWorkingPaths(session.target, files)).status) !== indexIdentity(session.dirtyStatus)) throw new Error('HEAD или индекс изменились во время записи.');
       await this.store.save(settings);
       journal.committed = true;
       await atomicJSON(journalPath, journal);
@@ -630,7 +691,7 @@ export class Engine {
         await rm(journalPath);
       } catch { this.blocked = true; this.invalidate(); throw new Error(`Откат не завершён. Резервная копия сохранена в ${directory}. Не изменяйте файлы репозитория до восстановления.`); }
       this.invalidate();
-      throw error;
+      throw new Error(`Запись${writingPath ? ` «${writingPath}»` : ''} не выполнена: ${error instanceof Error ? error.message : 'ошибка записи'}. Изменения полностью отменены; повторите проверку.`);
     }
   }
   async recover(): Promise<void> {
@@ -640,7 +701,7 @@ export class Engine {
     for (const name of names) {
       const folder = path.join(directory, name);
       let journal: Journal;
-      try { journal = JSON.parse(await readFile(path.join(folder, 'journal.json'), 'utf8')) as Journal; }
+      try { journal = await readJournal(folder); }
       catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw new Error(`Журнал восстановления повреждён: ${folder}. Сохраните журнал и резервные копии для ручного восстановления.`); }
       if (!journal.committed) {
         await restore(folder, journal);
@@ -785,7 +846,7 @@ function materialize(transport: Transport, before: Map<string, Buffer>): Map<str
   if (result.size !== transport.files.length || transport.files.some(file => { const bytes = result.get(file.path); return !bytes || bytes.length !== file.size || sha256(bytes) !== file.sha256; })) throw new Error('Состав файлов не соответствует результату пакета. Получите исходный пакет заново.');
   return result;
 }
-async function prepare(root: string, transport: Transport, baseline: Baseline | undefined, before: Map<string, Buffer>, records: RecordData[] = transport.records, overwriteReplacement = false, acceptedPaths: ReadonlySet<string> = new Set()): Promise<{ files: PreparedFile[]; conflicts: NonNullable<ImportPreview['conflicts']> }> {
+async function prepare(root: string, transport: Transport, baseline: Baseline | undefined, before: Map<string, Buffer>, records: RecordData[] = transport.records, overwriteReplacement = false, acceptedPaths: ReadonlySet<string> = new Set()): Promise<{ files: PreparedFile[]; conflicts: NonNullable<ImportPreview['conflicts']>; divergences: NonNullable<ImportPreview['divergences']> }> {
   if (transport.protocolVersion < 4 && transport.packageType === 'diff' && (!baseline || baseline.state !== transport.sourceState || baseline.scope !== transport.scope)) throw new Error('Общее состояние не соответствует пакету. Проверьте порядок применения пакетов и выбранный профиль.');
   const canonical = materialize(transport, before);
   if (baseline) {
@@ -795,7 +856,7 @@ async function prepare(root: string, transport: Transport, baseline: Baseline | 
   }
   const inventory = new Map(baseline?.files.map(file => [file.path, file]) ?? []);
   const prepared: PreparedFile[] = [];
-  const conflicts: NonNullable<ImportPreview['conflicts']> = [];
+  const conflicts: NonNullable<ImportPreview['conflicts']> = []; const divergences: NonNullable<ImportPreview['divergences']> = [];
   for (const record of records) {
     try {
     const name = record.oldPath ?? record.path; const filename = await safePath(root, name);
@@ -807,16 +868,25 @@ async function prepare(root: string, transport: Transport, baseline: Baseline | 
     let afterMode = record.mode;
     const operationName: Record<Operation, string> = { ADD: 'добавление', MODIFY: 'изменение', DELETE: 'удаление', RENAME: 'переименование', REPLACE: 'замена файла' };
     const conflict = (reason: string): never => { throw new Error(`Конфликт: ${operationName[record.operation]} «${name}». ${reason} Эта операция пропущена, файл не изменён.`); };
-    if (acceptedPaths.has(record.path)) {
+    if (overwriteReplacement || acceptedPaths.has(record.path)) {
       if (record.operation !== 'DELETE' && after === null) throw new Error(`Входящая версия «${record.path}» недоступна. Получите исходные данные заново.`);
+      const start = prepared.length;
       if (record.operation === 'RENAME') {
         const destination = await safePath(root, record.path);
         const existing = await optionalRead(destination);
         const destinationMode = existing === null ? null : (await lstat(destination)).mode & 0o777;
         if (old !== null) prepared.push({ path: name, before: old, after: null, beforeMode: mode, afterMode });
-        if (!sameBuffer(existing, after) || destinationMode !== afterMode) prepared.push({ path: record.path, before: existing, after, beforeMode: destinationMode, afterMode });
-      } else if (!sameBuffer(old, after) || (old !== null && after !== null && mode !== afterMode)) {
+        if (!sameBuffer(existing, after) || (existing !== null && process.platform !== 'win32' && Boolean(destinationMode! & 0o111) !== Boolean(afterMode & 0o111))) prepared.push({ path: record.path, before: existing, after, beforeMode: destinationMode, afterMode });
+      } else if (!sameBuffer(old, after) || (old !== null && after !== null && process.platform !== 'win32' && Boolean(mode! & 0o111) !== Boolean(afterMode & 0o111))) {
         prepared.push({ path: record.path, before: old, after, beforeMode: mode, afterMode });
+      }
+      if (overwriteReplacement && prepared.length > start) {
+        const reasons: string[] = [];
+        if (record.operation === 'ADD' ? old !== null : old === null) reasons.push(old === null ? 'Исходный файл отсутствует локально.' : 'По этому пути уже есть другой файл.');
+        else if (old !== null && !contentMatches) reasons.push('Локальное содержимое отличается от исходной версии входящего изменения.');
+        if (old !== null && record.operation !== 'ADD' && !modeMatches) reasons.push('Права на выполнение отличаются от исходной версии.');
+        if (record.oldPath && prepared.slice(start).some(file => file.path === record.path && file.before !== null)) reasons.push(`Назначение «${record.path}» занято другой версией.`);
+        if (reasons.length) divergences.push({ path: record.path, message: reasons.join(' ') });
       }
       continue;
     }
@@ -853,12 +923,46 @@ async function prepare(root: string, transport: Transport, baseline: Baseline | 
     }
     if (record.operation === 'RENAME' || !sameBuffer(old, after) || mode !== afterMode) prepared.push({ path: record.path, before: record.operation === 'RENAME' ? null : old, after, beforeMode: record.operation === 'RENAME' ? null : mode, afterMode });
     } catch (error) {
-      if (!(error instanceof Error) || !error.message.startsWith('Конфликт: ')) throw error;
+      if (!(error instanceof Error) || !error.message.startsWith('Конфликт: ')) throw Object.assign(new Error(`Подготовка ${record.operation} «${record.path}» не выполнена: ${error instanceof Error ? error.message : 'ошибка чтения'}. Применение не началось. Устраните причину и повторите проверку.`), { syncPath: record.path });
       conflicts.push({ path: record.path, operation: record.operation, message: error.message });
     }
   }
   if (prepared.reduce((sum, file) => sum + (file.before?.length ?? 0) + (file.after?.length ?? 0), 0) > MAX_BYTES * 2) throw new Error('Подготовленные файлы превышают защитный лимит');
-  return { files: prepared, conflicts };
+  checkFilePaths(prepared);
+  return { files: prepared, conflicts, divergences };
+}
+function filePreview(file: PreparedFile, beforeLabel: string, afterLabel: string): CodePreview {
+  const describe = (bytes: Buffer | null, mode: number | null): string => bytes === null ? 'нет файла' : `${bytes.length} байт${mode ? `, права ${mode.toString(8)}` : ''}${bytes.subarray(0, 3).equals(Buffer.from([239, 187, 191])) ? ', BOM' : ''}${bytes.length <= 128 * 1024 && bytes.includes(13) ? ', содержит CR' : ''}${bytes.length && bytes.at(-1) !== 10 ? ', без завершающего LF' : ''}`;
+  const result: CodePreview = { before: '', after: '', beforeLabel, afterLabel, details: `${file.path}: ${beforeLabel} — ${describe(file.before, file.beforeMode)} → ${afterLabel} — ${describe(file.after, file.afterMode)}. ${sameBuffer(file.before, file.after) && (file.beforeMode === null || file.beforeMode === file.afterMode) ? 'Изменение не требуется.' : file.after === null ? 'Результат операции: удалить файл.' : file.before === null ? 'Результат операции: создать файл.' : 'Результат операции: версия справа.'}` };
+  const bytes = [file.before, file.after].filter((value): value is Buffer => value !== null);
+  if (bytes.some(value => value.length > 128 * 1024)) result.message = 'Файл больше 128 КБ. Построчный просмотр недоступен; применение сохраняет полные байты.';
+  else if (bytes.some(value => value.includes(0) || !Buffer.from(value.toString('utf8')).equals(value))) result.message = 'Бинарный файл. Построчный просмотр недоступен; применение сохраняет полные байты.';
+  else { result.before = file.before?.toString('utf8') ?? ''; result.after = file.after?.toString('utf8') ?? ''; }
+  return result;
+}
+function checkFilePaths(files: readonly { path: string }[]): void {
+  const names = new Set<string>();
+  for (const file of files) { const name = file.path.toLowerCase(); if (names.has(name)) throw new Error(`Операции пересекаются на пути «${file.path}». Запись не началась. Уточните выбор.`); names.add(name); }
+  for (const name of names) { let parent = path.posix.dirname(name); while (parent !== '.') { if (names.has(parent)) throw new Error(`Конфликт файла и каталога: «${name}». Запись не началась. Уточните выбор.`); parent = path.posix.dirname(parent); } }
+}
+async function readJournal(directory: string): Promise<Journal> {
+  const filename = await safePath(directory, 'journal.json'); const bytes = await optionalRead(filename);
+  if (bytes === null) throw Object.assign(new Error('Журнал отсутствует.'), { code: 'ENOENT' });
+  const raw = object(JSON.parse(bytes.toString('utf8')) as unknown);
+  if ((raw.schemaVersion !== undefined && raw.schemaVersion !== 2) || typeof raw.committed !== 'boolean' || !Array.isArray(raw.entries) || raw.entries.length > 100_000) throw new Error('Неподдерживаемая версия или повреждённый журнал.');
+  const paths = (value: unknown): string[] => { if (!Array.isArray(value) || value.length > 100_000) throw new Error('Повреждён список путей.'); return value.map((item: unknown) => { const name = string(item); validatePath(name); return name; }); };
+  const hash = (value: unknown): string | null => { if (value === null) return null; const result = string(value, 64); if (!/^[a-f0-9]{64}$/.test(result)) throw new Error('Повреждена контрольная сумма.'); return result; };
+  const entries = raw.entries.map((value: unknown): BackupEntry => {
+    const item = object(value); const name = string(item.path); validatePath(name); const file = item.file === null ? null : string(item.file);
+    if ((file !== null && !/^\d+\.bin$/.test(file)) || typeof item.touched !== 'boolean') throw new Error('Повреждена запись резервной копии.');
+    const beforeSha256 = hash(item.beforeSha256); const afterSha256 = hash(item.afterSha256); const mode = item.mode === null ? null : integer(item.mode, 0, 0o777);
+    if ((file === null) !== (beforeSha256 === null) || (mode === null) !== (beforeSha256 === null)) throw new Error('Неполная запись резервной копии.');
+    return { path: name, file, mode, beforeSha256, afterSha256, touched: item.touched, afterMode: raw.schemaVersion === 2 ? integer(item.afterMode, 0, 0o777) : undefined };
+  });
+  checkFilePaths(entries); const target = string(raw.target); if (!path.isAbsolute(target)) throw new Error('Некорректная папка восстановления.');
+  const journal: Journal = { target, entries, settingsBefore: parseSettings(object(raw.settingsBefore)), committed: raw.committed, createdDirectories: paths(raw.createdDirectories), temporaryFiles: paths(raw.temporaryFiles) };
+  if (raw.schemaVersion === 2) { journal.schemaVersion = 2; journal.action = string(raw.action, 100); journal.profileId = string(raw.profileId, 36); journal.branch = string(raw.branch, 255); journal.at = string(raw.at, 40); if (!Number.isFinite(Date.parse(journal.at))) throw new Error('Повреждена дата копии.'); }
+  return journal;
 }
 async function restore(directory: string, journal: Journal): Promise<void> {
   for (const entry of [...journal.entries].reverse().filter(entry => entry.touched)) {
@@ -870,7 +974,8 @@ async function restore(directory: string, journal: Journal): Promise<void> {
     if (entry.file === null) await rm(filename, { force: true });
     else {
       await mkdir(path.dirname(filename), { recursive: true });
-      const bytes = await readFile(path.join(directory, entry.file));
+      const bytes = await readFile(await safePath(directory, entry.file));
+      if (sha256(bytes) !== entry.beforeSha256) throw new Error(`Резервная копия «${entry.path}» повреждена.`);
       await writeFile(filename, bytes, { mode: entry.mode ?? 0o644 });
       await chmod(filename, entry.mode ?? 0o644);
       if (sha256(await readFile(filename)) !== sha256(bytes)) throw new Error('Восстановленный файл не прошёл проверку целостности.');
@@ -887,8 +992,8 @@ async function affectedWorkingPaths(root: string, files: PreparedFile[]): Promis
   const dirty = await workingPaths(root); const paths: NonNullable<ImportPreview['overwritePaths']> = [];
   const statuses = files.map(file => {
     const match = dirty.get(file.path) ?? [...dirty].find(([name, value]) => value.status.startsWith('!!') && file.path.startsWith(name.endsWith('/') ? name : name + '/'))?.[1];
-    if (match) paths.push({ path: file.path, staged: match.staged });
-    return [file.path, match?.status ?? ''];
+    if (match?.status) paths.push({ path: file.path, staged: match.staged });
+    return [file.path, match?.status ?? '', match?.index ?? ''];
   });
   return { status: JSON.stringify(statuses), paths };
 }

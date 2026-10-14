@@ -87,7 +87,7 @@ function parseBaseline(value: unknown): Baseline {
   }
   return result;
 }
-function parseSettings(raw: Record<string, unknown>): Settings {
+export function parseSettings(raw: Record<string, unknown>): Settings {
       if ((raw.schemaVersion !== 1 && raw.schemaVersion !== 2 && raw.schemaVersion !== 3 && raw.schemaVersion !== 4 && raw.schemaVersion !== 5 && raw.schemaVersion !== 6) || !Array.isArray(raw.profiles) || raw.profiles.length > 100) throw new Error('Настройки повреждены или версия не поддерживается');
       const profiles = raw.profiles.map((value: unknown): Profile => {
         const saved = object(value);

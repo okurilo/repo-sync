@@ -3,10 +3,13 @@ import type { API, Command, Reply } from './shared/types';
 
 async function call<T>(command: Command, args: unknown[] = []): Promise<T> {
   const result = await ipcRenderer.invoke('reposync', command, args) as Reply<T>;
-  if (!result.ok) throw new Error(result.error);
+  if (!result.ok) throw Object.assign(new Error(result.error), { syncPath: result.path });
   return result.value;
 }
 const api: API = {
+  listBackups: id => call('listBackups', [id]),
+  prepareRestore: (id, backup) => call('prepareRestore', [id, backup]),
+  applyRestore: token => call('applyRestore', [token]),
   appUpdateStatus: () => call('appUpdateStatus'),
   appUpdateInspect: () => call('appUpdateInspect'),
   appUpdate: branch => call('appUpdate', [branch]),

@@ -355,15 +355,15 @@ export async function readWorkingTree(root: string, profile: Profile): Promise<T
 }
 
 // Include ignored files and both names of a rename; keep index identity for stale checks.
-export async function workingPaths(root: string): Promise<Map<string, { status: string; staged: boolean }>> {
+export async function workingPaths(root: string): Promise<Map<string, { status: string; staged: boolean; index?: string }>> {
   const entries = (await git(root, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored', '--ignore-submodules=none'])).toString('utf8').split('\0');
-  const result = new Map<string, { status: string; staged: boolean }>();
+  const result = new Map<string, { status: string; staged: boolean; index?: string }>();
   for (let i = 0; i < entries.length; i++) {
     const row = entries[i]; if (!row) continue; const code = row.slice(0, 2);
     const value = { status: code, staged: ![' ', '?', '!'].includes(code[0]!) };
     for (const name of [row.slice(3), ...(/[RC]/.test(code) ? [entries[++i]!] : [])]) { const previous = result.get(name); result.set(name, previous ? { status: previous.status + '|' + code, staged: previous.staged || value.staged } : { ...value }); }
   }
   const index = (await git(root, ['ls-files', '--stage', '-z'])).toString('utf8').split('\0');
-  for (const row of index) { const tab = row.indexOf('\t'); const value = result.get(row.slice(tab + 1)); if (tab >= 0 && value) value.status += ':' + row.slice(0, tab); }
+  for (const row of index) { const tab = row.indexOf('\t'); if (tab < 0) continue; const name = row.slice(tab + 1); const value = result.get(name) ?? { status: '', staged: false }; value.index = row.slice(0, tab); result.set(name, value); }
   return result;
 }
