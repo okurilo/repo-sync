@@ -341,3 +341,10 @@ Renderer визуально проверен в локальном in-app browse
 | 1000 | 71.654 → 6.163 | 71.319 → 5.928 | 13067 → 81 | 13039 → 53 |
 
 При1000 файлах journal/progress записи уменьшены с около682MB до0.75MB. Есть43 сценария writer safety: обе операции, сохранность байтов/прав/index, внешние изменения и rollback, реальные SIGKILL/restart, cleanup, старые журналы и v3 с оборванным/повреждённым/отсутствующим log, split-index/worktree и manual v2 restore. Remote I/O mocked. Native Windows, live remote и реальное отключение питания не проверены.
+
+
+## 2026-10-14 — этапы получения и выгрузки
+
+- `npm run build`, `node scripts/check-sync-workflow.cjs`, `node scripts/check-image-selection.cjs`, `node scripts/check-branch-comparison.cjs`, `node scripts/check-working-tree.cjs`, `node scripts/check-conflict-resolution.cjs`, `node scripts/check-transport-v6.cjs`, version/diff checks прошли. Backend регрессии используют temporary Git/mock remote; UI fixtures исполняют реальные App/SyncWorkflow/IncomingSource и проверяют отсутствие автоматического analyze, invalid source, single-flight, back/selection/consent, fatal scan invalidation, no-op, создание и отказ/отмену/retry загрузки пакета.
+- Actual Renderer через временный Vite с synthetic IPC, light1440×900/dark900×700: source→compare→prepare/consent→Apply/done и source→compare→scan/keep/override→export/done. После keep без override экспорт недоступен. Границы веток и состояние видны, normal Git details свернуты; новые primary/secondary actions не перекрывают ленту. scrollWidth1432/892 при viewport1440/900, console errors отсутствуют. Финальные screenshot artifacts сохранены отдельно в локальном каталоге визуализаций чата.
+- Однократный detector: advisory прежнего overlay #00000070; literal не добавлен этой задачей. Проверка/исправления/подтверждение выполнены в двух ограниченных сериях. Tab закрыт, viewport reset, QA server остановлен. Реальные native dialogs/Electron GUI/Windows и Git network в UI fixture не проверялись.

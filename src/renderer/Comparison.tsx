@@ -7,7 +7,7 @@ import type { CodeComparison, CodePreview, ImportPreview } from '../shared/types
 import { Button } from './ui/components';
 
 const emptyIssues: never[] = [];
-const Panel = styled('section')({ '&:has(> div > details[open])': { height: 'auto', '& > div:last-child': { minHeight: 360, flex: 'none' } }, minWidth: 0, display: 'flex', flexDirection: 'column', height: 'max(460px, calc(100dvh - 225px))', borderTop: '1px solid var(--line)', borderRadius: 0, overflow: 'hidden', background: 'var(--surface)' });
+const Panel = styled('section')({ '&:has(> div > details[open])': { height: 'auto', '& > div:last-child': { minHeight: 360, flex: 'none' } }, minWidth: 0, display: 'flex', flexDirection: 'column', height: 'max(420px, calc(100dvh - 400px))', borderTop: '1px solid var(--line)', borderRadius: 0, overflow: 'hidden', background: 'var(--surface)' });
 const Bar = styled('div')({ padding: '12px 14px', borderBottom: '1px solid var(--line)', flexShrink: 0, '& p': { margin: '5px 0', fontSize: 12 }, '& h3': { margin: 0 }, background: 'var(--raised)' });
 const Workspace = styled('div')({ display: 'grid', gridTemplateColumns: 'auto minmax(0, 1fr)', flex: 1, minHeight: 0, '@media (max-width: 700px)': { gridTemplateColumns: 'minmax(0, 1fr)' } });
 const Tree = styled('nav')({ overflow: 'auto', width: 250, minWidth: 190, maxWidth: 380, resize: 'horizontal', '@media(max-width: 700px)': { width: '100%', maxWidth: 'none', maxHeight: 180, resize: 'none' }, borderRight: '1px solid var(--line)', padding: 12, background: 'var(--raised)', fontSize: 12, '& summary': { padding: '5px 0', overflowWrap: 'anywhere' }, '& details > div': { paddingLeft: 12 } });

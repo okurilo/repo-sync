@@ -15,8 +15,9 @@ const props = () => find(render(), 'SyncWorkflow').props;
 const tick = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
 async function finish(name, value) { await tick(); const q = queue.shift(); assert.equal(q?.name, name); q.resolve(value); await tick(); return q; }
 const entries = [{ path: 'code.ts', operation: 'REPLACE' }, { path: 'a.PNG', operation: 'ADD' }, { path: 'b.svg', operation: 'ADD' }, { path: 'old.png', operation: 'DELETE' }, { path: 'renamed.ts', oldPath: 'renamed.png', operation: 'RENAME' }, { path: 'blocked.png', operation: 'ADD', excludedBy: '*.png' }];
-const analysis = { token: 't', entries, changes: { DELETE: 1 }, findings: [], lineChanges: {}, estimatedBytes: 1000, parts: 1 };
-async function begin() { find(render(), 'AppShell').props.outgoing(); await finish('localState', {}); await finish('listCommits', []); await finish('analyze', analysis); await finish('settings', settings); }
+const analysis = { token: 't', state: 'head', entries, changes: { DELETE: 1 }, findings: [], lineChanges: {}, estimatedBytes: 1000, parts: 1 };
+function findAction(node, label) { if (!node || typeof node !== 'object') return null; if (node.type?.displayName === 'Button' && node.props.children === label) return node; for (const child of Array.isArray(node.props?.children) ? node.props.children : [node.props?.children]) { const result = findAction(child, label); if (result) return result; } return null; }
+async function begin() { find(render(), 'AppShell').props.outgoing(); await finish('localState', {}); await finish('listCommits', []); assert.equal(props().step, 'source'); assert.equal(queue.length, 0, 'source does not analyze automatically'); findAction(props().sourceControls, 'Показать изменения').props.onClick(); await finish('analyze', analysis); await finish('settings', settings); }
 (async () => {
   await begin(); assert.equal(props().includeImages, true); assert.deepEqual(Array.from(props().selectedIncomingPaths), ['code.ts', 'a.PNG', 'b.svg', 'renamed.ts']);
   const stable = props().comparison.entries; assert.equal(props().comparison.entries, stable, 'unrelated render does not restart preview');

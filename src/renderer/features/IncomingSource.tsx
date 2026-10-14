@@ -1,23 +1,34 @@
 import { useState } from 'react';
 import type { BranchContext, CommitOption, IncomingSelection } from '../../shared/types';
-import { Button, Muted, Row, Surface } from '../ui/components';
+import { Button, Muted, Row, SourceForm, WorkflowActions } from '../ui/components';
 
 export function IncomingSource({ branch, context, selection, commits, busy, change, compare, reload }: { branch: string; context: BranchContext; selection: IncomingSelection; commits: CommitOption[]; busy: boolean; change: (selection: IncomingSelection) => void; compare: (selection: IncomingSelection) => void; reload: () => void }): React.JSX.Element {
-  const [query, setQuery] = useState(''); const [editingBase, setEditingBase] = useState(false);
+  const [query, setQuery] = useState('');
   const { mode, baseBranch, from } = selection;
   const selected = selection.commit || commits[0]?.sha || '';
   const choices = commits.filter(item => item.sha === selected || item.sha === from || `${item.sha} ${item.subject ?? ''} ${item.date}`.toLowerCase().includes(query.toLowerCase()));
   const items = choices.map(item => <option key={item.sha} value={item.sha}>{item.date} · {item.sha.slice(0, 10)} · {item.subject ?? ''}</option>);
-  return <Surface style={{ marginBottom: 0, padding: 0, background: 'transparent' }}><Row style={{ justifyContent: 'space-between' }}><strong>{mode === 'branches' ? `${baseBranch || 'не выбрана'} → ${selection.branch ?? branch}` : `Ветка: ${selection.branch ?? branch}`}{mode === 'branch' && ` · Основа: ${baseBranch || 'не выбрана'}`}</strong><Button disabled={busy} onClick={reload}>Обновить источник</Button></Row>
-    <details open={mode !== 'branch' || !baseBranch || baseBranch === (selection.branch ?? branch)}><summary>Другой способ / настройка ветки</summary><fieldset disabled={busy} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 220px), 1fr))', gap: 16, marginTop: 16 }}>
-      {mode === 'branches' && <label>Исходная ветка A<select value={baseBranch ?? ''} onChange={event => change({ ...selection, baseBranch: event.target.value || undefined })}><option value="">Выберите исходную ветку</option>{context.branches.map(name => <option key={name}>{name}</option>)}</select></label>}
-      <label>{mode === 'branches' ? 'Конечная ветка B' : 'Внешняя ветка'}<select value={selection.branch ?? branch} onChange={event => change({ mode, branch: event.target.value, baseBranch })}>{context.branches.map(name => <option key={name}>{name}</option>)}</select></label>
-      <label>Способ сравнения<select value={mode} onChange={event => change({ mode: event.target.value as IncomingSelection['mode'], branch: selection.branch ?? branch, baseBranch })}><option value="branch">Изменения ветки</option><option value="branches">Сравнение веток</option><option value="commit">По коммиту</option><option value="range">Между двумя коммитами</option><option value="repositories">Сравнить репозитории целиком</option><option value="zero">От нулевого состояния</option></select></label>
-      {mode === 'branch' && <div style={{ gridColumn: '1 / -1' }}><Row><strong>Изменения {selection.branch ?? branch} относительно {baseBranch || 'невыбранной основы'}</strong><Button onClick={() => setEditingBase(value => !value)}>Сменить основу</Button></Row>{(!baseBranch || editingBase) && <label style={{ marginTop: 12 }}>Основная ветка<select value={baseBranch ?? ''} onChange={event => { change({ ...selection, baseBranch: event.target.value || undefined }); setEditingBase(false); }}><option value="">Выберите основу</option>{[...context.branches].sort((a, b) => Number(['main', 'master', 'develop'].includes(b)) - Number(['main', 'master', 'develop'].includes(a))).map(name => <option key={name}>{name}</option>)}</select></label>}<Muted style={{ marginBottom: 0 }}>{baseBranch === (selection.branch ?? branch) ? 'Выбрана сама основная ветка. Смените внешнюю ветку или способ сравнения.' : 'Берём изменения от общего предка до вершины выбранной ветки. Новые коммиты основы не переносятся обратно.'}</Muted></div>}
-      {(mode === 'commit' || mode === 'range') && <><input aria-label="Поиск коммита" placeholder="Найти по SHA, названию или дате…" value={query} onChange={event => setQuery(event.target.value)} />{mode === 'range' && <label>Исходное состояние A<select value={from ?? ''} onChange={event => change({ ...selection, from: event.target.value || undefined })}><option value="">Выберите начальный коммит</option>{items}</select></label>}<label>{mode === 'commit' ? 'Коммит' : 'Конечное состояние B'}<select value={selected} onChange={event => change({ ...selection, commit: event.target.value })}>{!commits.length && <option value="">История не загружена</option>}{items}</select></label><small>{mode === 'commit' ? 'Изменения коммита относительно первого родителя.' : 'Точный diff A → B независимо от родства и порядка коммитов.'}</small></>}
-      {mode === 'branches' && <small style={{ gridColumn: '1 / -1' }}>Точный diff вершины A → вершина B в этом внешнем репозитории. Общий предок не используется; незакоммиченные изменения не учитываются.</small>}
-      {mode === 'repositories' && <small>Полное сравнение локальной и внешней веток, включая удаления локальных файлов, отсутствующих снаружи.</small>}
-      {mode === 'zero' && <small>Внешние файлы добавляются; отличающиеся существующие файлы вызовут конфликт.</small>}
-    </fieldset><Row style={{ justifyContent: 'flex-end', marginTop: 16 }}><Button $primary disabled={busy || ((mode === 'branch' || mode === 'branches') && (!baseBranch || baseBranch === (selection.branch ?? branch))) || ((mode === 'commit' || mode === 'range') && !selected) || (mode === 'range' && !from)} onClick={() => compare({ ...selection, ...(mode === 'commit' || mode === 'range' ? { commit: selected } : {}) })}>Показать изменения</Button></Row>
-  </details></Surface>;
+  const invalidBase = (mode === 'branch' || mode === 'branches') && (!baseBranch || baseBranch === (selection.branch ?? branch));
+  const explanation = {
+    branch: 'Изменения от общего предка основной и выбранной веток. Новые коммиты основной ветки не переносятся обратно.',
+    branches: 'Различия между вершинами двух внешних веток: A → B. Общий предок и незакоммиченные изменения не учитываются.',
+    commit: 'Изменения одного коммита относительно его первого родителя.',
+    range: 'Различия между двумя коммитами: A → B, независимо от их родства и порядка.',
+    repositories: 'Полное сравнение локальной и внешней веток. Локальные файлы, которых нет снаружи, будут предложены к удалению.',
+    zero: 'Все внешние файлы предлагаются к добавлению. Выбранные существующие файлы получат входящую версию после проверки.',
+  }[mode];
+  return <SourceForm aria-label="Источник изменений">
+    <Row style={{ justifyContent: 'space-between', marginBottom: 24 }}><strong>Внешний Git</strong><Button disabled={busy} onClick={reload}>Обновить ветки</Button></Row>
+    <fieldset disabled={busy}>
+      <label style={{ gridColumn: '1 / -1' }}>Что сравнить<select value={mode} onChange={event => change({ mode: event.target.value as IncomingSelection['mode'], branch: selection.branch ?? branch, baseBranch })}><optgroup label="Обычные способы"><option value="branch">Изменения ветки</option><option value="branches">Две ветки</option><option value="commit">Один коммит</option></optgroup><optgroup label="Дополнительные способы"><option value="range">Два коммита</option><option value="repositories">Репозитории целиком</option><option value="zero">Все внешние файлы</option></optgroup></select><small>{explanation}</small></label>
+      {(mode === 'branch' || mode === 'branches') && <label>{mode === 'branches' ? 'Исходная ветка A' : 'Основная ветка'}<select value={baseBranch ?? ''} onChange={event => change({ ...selection, baseBranch: event.target.value || undefined })}><option value="">Выберите ветку</option>{context.branches.map(name => <option key={name}>{name}</option>)}</select></label>}
+      <label>{mode === 'branches' ? 'Конечная ветка B' : 'Внешняя ветка'}<select value={selection.branch ?? branch} onChange={event => { setQuery(''); change({ mode, branch: event.target.value, baseBranch }); }}>{context.branches.map(name => <option key={name}>{name}</option>)}</select></label>
+      {(mode === 'commit' || mode === 'range') && <>
+        <label style={{ gridColumn: '1 / -1' }}>Поиск коммита<input type="search" placeholder="SHA, название или дата" value={query} onChange={event => setQuery(event.target.value)} /></label>
+        {mode === 'range' && <label>Исходный коммит A<select value={from ?? ''} onChange={event => change({ ...selection, from: event.target.value || undefined })}><option value="">Выберите коммит</option>{items}</select></label>}
+        <label>{mode === 'commit' ? 'Коммит' : 'Конечный коммит B'}<select value={selected} onChange={event => change({ ...selection, commit: event.target.value })}>{!commits.length && <option value="">В этой ветке нет доступных коммитов</option>}{items}</select></label>
+      </>}
+    </fieldset>
+    <WorkflowActions><Muted style={{ margin: 0, maxWidth: 440, fontSize: 13 }}>{invalidBase ? !baseBranch ? 'Выберите основную или исходную ветку.' : 'Выберите две разные ветки.' : 'Далее — выбор файлов и просмотр отличий.'}</Muted><Button $primary disabled={busy || !context.branches.includes(selection.branch ?? branch) || invalidBase || ((mode === 'commit' || mode === 'range') && !selected) || (mode === 'range' && !from)} onClick={() => compare({ ...selection, ...(mode === 'commit' || mode === 'range' ? { commit: selected } : {}) })}>Показать изменения</Button></WorkflowActions>
+  </SourceForm>;
 }
