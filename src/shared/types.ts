@@ -63,6 +63,7 @@ export interface Analysis {
 }
 export interface ImportPreview {
   overwritePaths?: { path: string; staged: boolean }[];
+  conflicts?: { path: string; operation: Operation; message: string }[];
   incomingMode?: IncomingSelection['mode'];
   workingChanges: Analysis['workingChanges'];
   token: string; packageId: string; sourceState: string | null; targetState: string;

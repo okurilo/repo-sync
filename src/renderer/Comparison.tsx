@@ -3,7 +3,7 @@ import { Icon } from './Appearance';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { diffLines, diffWordsWithSpace } from 'diff';
 import styled from 'styled-components';
-import type { CodeComparison, CodePreview } from '../shared/types';
+import type { CodeComparison, CodePreview, ImportPreview } from '../shared/types';
 import { Button } from './ui/components';
 
 const Panel = styled('section')({ '&:has(> div > details[open])': { height: 'auto', '& > div:last-child': { minHeight: 360, flex: 'none' } }, minWidth: 0, display: 'flex', flexDirection: 'column', height: 'max(460px, calc(100dvh - 225px))', borderTop: '1px solid var(--line)', borderRadius: 0, overflow: 'hidden', background: 'var(--surface)' });
@@ -55,7 +55,7 @@ function paired(rows: ReturnType<typeof lines>): { left?: ReturnType<typeof line
   }
   return result;
 }
-export function Comparison({ comparison, busy, onBusy, request, selectable = false, selectedPaths = [], alreadyAppliedPaths = [], fileFilters, onSelectedPathsChange }: { comparison: CodeComparison; busy: boolean; onBusy: (value: boolean) => void; request: React.MutableRefObject<Promise<void> | null>; fileFilters?: ReactNode; selectable?: boolean; selectedPaths?: string[]; alreadyAppliedPaths?: string[]; onSelectedPathsChange?: (paths: string[]) => void }): React.JSX.Element {
+export function Comparison({ comparison, busy, onBusy, request, selectable = false, selectedPaths = [], alreadyAppliedPaths = [], conflicts = [], fileFilters, onSelectedPathsChange }: { comparison: CodeComparison; busy: boolean; onBusy: (value: boolean) => void; request: React.MutableRefObject<Promise<void> | null>; fileFilters?: ReactNode; selectable?: boolean; selectedPaths?: string[]; alreadyAppliedPaths?: string[]; conflicts?: ImportPreview['conflicts']; onSelectedPathsChange?: (paths: string[]) => void }): React.JSX.Element {
   const pending = request;
   const generation = useRef(0);
   const [sideBySide, setSideBySide] = useState(true);
@@ -97,6 +97,7 @@ export function Comparison({ comparison, busy, onBusy, request, selectable = fal
   const listedPaths = useMemo(() => new Set(entries.map(entry => entry.path)), [entries]);
   const shownPaths = useMemo(() => new Set(entries.slice(0, 1000).map(entry => entry.path)), [entries]);
   const alreadyAppliedSet = new Set(alreadyAppliedPaths);
+  const conflictByPath = new Map(conflicts.map(conflict => [conflict.path, conflict.message]));
   const folderEntries = useMemo(() => {
     const result = new Map<string, string[]>();
     for (const entry of entries.slice(0, 1000).filter(entry => !entry.excludedBy)) { const parts = entry.path.split('/'); parts.pop(); let prefix = ''; for (const part of parts) { prefix += `${part}/`; const paths = result.get(prefix) ?? []; paths.push(entry.path); result.set(prefix, paths); } }
@@ -133,7 +134,7 @@ export function Comparison({ comparison, busy, onBusy, request, selectable = fal
       const descendants = folderEntries.get(folderPath) ?? [];
       const count = folderCounts.get(folderPath) ?? 0;
       return <details key={folder} open><summary>{selectable && <input type="checkbox" aria-label={`Выбрать папку: ${folderPath}`} checked={descendants.length > 0 && count === descendants.length} ref={element => { if (element) element.indeterminate = count > 0 && count < descendants.length; }} disabled={busy || loading || descendants.length === 0} onClick={event => event.stopPropagation()} onChange={event => { const paths = new Set(selectedPaths); for (const path of descendants) { if (event.target.checked) paths.add(path); else paths.delete(path); } onSelectedPathsChange?.([...paths]); }} />} {folder}/ <small>{count}/{descendants.length}</small></summary><div>{tree(folderPath)}</div></details>;
-    }), ...files.map(entry => <div key={entry.path} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>{selectable && <input style={{ flexShrink: 0 }} type="checkbox" aria-label={`Включить файл: ${entry.path}`} checked={selectedSet.has(entry.path)} disabled={loading || busy || !!entry.excludedBy} onChange={() => togglePath(entry.path)} />}<File aria-pressed={entry.path === selected} style={{ flex: 1, minWidth: 0, color: entry.excludedBy ? 'var(--muted)' : undefined }} $selected={entry.path === selected} disabled={loading || busy || !!entry.excludedBy} title={entry.excludedBy ? `Исключено: ${entry.excludedBy}` : entry.oldPath ? `${entry.oldPath} → ${entry.path}` : entry.path} onClick={() => void open(entry.path)}><span style={{ color: entry.operation === 'DELETE' ? 'var(--danger)' : entry.operation === 'ADD' ? 'var(--success)' : 'var(--accent)' }}>{entry.operation === 'ADD' ? '+' : entry.operation === 'DELETE' ? '−' : entry.operation === 'RENAME' ? '↪' : '~'}</span> {entry.oldPath ? `${entry.oldPath} → ${entry.path.slice(prefix.length)}` : entry.path.slice(prefix.length)}{entry.excludedBy && <small style={{ display: 'block' }}>Исключено: {entry.excludedBy}</small>}{alreadyAppliedSet.has(entry.path) && <small style={{ display: 'block', color: 'var(--success)' }}>Уже применено</small>}</File></div>)];
+    }), ...files.map(entry => <div key={entry.path} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>{selectable && <input style={{ flexShrink: 0 }} type="checkbox" aria-label={`Включить файл: ${entry.path}`} checked={selectedSet.has(entry.path)} disabled={loading || busy || !!entry.excludedBy} onChange={() => togglePath(entry.path)} />}<File aria-pressed={entry.path === selected} style={{ flex: 1, minWidth: 0, color: entry.excludedBy ? 'var(--muted)' : undefined }} $selected={entry.path === selected} disabled={loading || busy || !!entry.excludedBy} title={entry.excludedBy ? `Исключено: ${entry.excludedBy}` : entry.oldPath ? `${entry.oldPath} → ${entry.path}` : entry.path} onClick={() => void open(entry.path)}><span style={{ color: entry.operation === 'DELETE' ? 'var(--danger)' : entry.operation === 'ADD' ? 'var(--success)' : 'var(--accent)' }}>{entry.operation === 'ADD' ? '+' : entry.operation === 'DELETE' ? '−' : entry.operation === 'RENAME' ? '↪' : '~'}</span> {entry.oldPath ? `${entry.oldPath} → ${entry.path.slice(prefix.length)}` : entry.path.slice(prefix.length)}{entry.excludedBy && <small style={{ display: 'block' }}>Исключено: {entry.excludedBy}</small>}{conflictByPath.has(entry.path) && <small style={{ display: 'block', color: 'var(--danger)' }}>Не применён: конфликт. См. причину справа.</small>}{alreadyAppliedSet.has(entry.path) && <small style={{ display: 'block', color: 'var(--success)' }}>Уже применено</small>}</File></div>)];
   }
   const rows = useMemo(() => preview && !preview.message ? lines(preview) : [], [preview]);
   const codeTable = useMemo(() => {

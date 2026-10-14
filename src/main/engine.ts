@@ -506,20 +506,23 @@ export class Engine {
     const before = incoming?.sourceBytes ?? (baseline ? await this.baselineContent(baseline) : new Map<string, Buffer>());
     if (baseline) await this.saveBaseline(before);
     this.permitted(profileId, selectedRecords);
-    const files = await prepare(root, transport, baseline, before, selectedRecords, Boolean(incoming));
+    const prepared = await prepare(root, transport, baseline, before, selectedRecords, Boolean(incoming));
+    const files = prepared.files;
+    const conflictPaths = new Set(prepared.conflicts.map(conflict => conflict.path));
+    const applicableRecords = selectedRecords.filter(record => !conflictPaths.has(record.path));
     const canonical = materialize(transport, before);
     await this.saveBaseline(canonical);
     const token = randomUUID();
-    const completeSelection = selectedRecords.length === transport.records.length && !incoming?.tree.excluded?.length;
+    const completeSelection = selectedRecords.length === transport.records.length && !incoming?.tree.excluded?.length && prepared.conflicts.length === 0;
     const dirty = await affectedWorkingPaths(root, files);
-    this.importSession = { dirtyStatus: dirty.status, overwritePaths: dirty.paths, localHead: local.head!, incoming, token, profileId, environment: 'internal', target: root, transport, records: selectedRecords, files, baseline, updateCommon: transport.protocolVersion < 4 && completeSelection && !transport.targetState.startsWith('content:partial:') && (!incoming || incoming.incomingMode === 'repositories' || incoming.incomingMode === 'zero') };
+    this.importSession = { dirtyStatus: dirty.status, overwritePaths: dirty.paths, localHead: local.head!, incoming, token, profileId, environment: 'internal', target: root, transport, records: applicableRecords, files, baseline, updateCommon: transport.protocolVersion < 4 && completeSelection && !transport.targetState.startsWith('content:partial:') && (!incoming || incoming.incomingMode === 'repositories' || incoming.incomingMode === 'zero') };
     const changedPaths = new Set(files.map(file => file.path));
-    const previewTransport = { ...transport, records: selectedRecords.filter(record => changedPaths.has(record.path)) };
+    const previewTransport = { ...transport, records: applicableRecords.filter(record => changedPaths.has(record.path)) };
     const entries = previewTransport.records.map(record => ({ path: record.path, oldPath: record.oldPath, operation: record.operation, size: record.size }));
     if (this.codeSession) {
       const code = this.codeSession; const localBefore = new Map(code.before); const localAfter = new Map(code.after);
       const prepared = new Map(files.map(file => [file.path, file]));
-      for (const record of selectedRecords) {
+      for (const record of applicableRecords) {
         const name = record.oldPath ?? record.path;
         const prior = prepared.has(name) ? prepared.get(name)!.before : await optionalRead(await safePath(root, name));
         localBefore.delete(name); if (prior !== null) localBefore.set(name, prior);
@@ -529,7 +532,7 @@ export class Engine {
     }
     return { overwritePaths: dirty.paths, incomingMode: incoming?.incomingMode, token, workingChanges: await workingStatus(root), packageId: transport.packageId, sourceState: transport.sourceState, targetState: transport.targetState,
       packageType: transport.packageType, changes: counts(previewTransport.records), files: transport.files.length, lineChanges: textChanges(previewTransport, before),
-      entries };
+      entries, conflicts: prepared.conflicts };
   }
   async applyImport(token: string, overwrite = false): Promise<Settings> {
     try { return await this.applyPrepared(token, overwrite); }
@@ -547,7 +550,9 @@ export class Engine {
     if (session.incoming) await this.checkIncoming(session.incoming);
     const baseline = session.baseline;
     this.permitted(session.profileId, session.records);
-    const files = await prepare(session.target, session.transport, baseline, baseline ? await this.baselineContent(baseline) : new Map(), session.records, Boolean(session.incoming));
+    const prepared = await prepare(session.target, session.transport, baseline, baseline ? await this.baselineContent(baseline) : new Map(), session.records, Boolean(session.incoming));
+    if (prepared.conflicts.length) throw new Error(`После проверки обнаружены конфликты:\n${prepared.conflicts.map(conflict => conflict.message).join('\n')}`);
+    const files = prepared.files;
     if (files.length !== session.files.length || files.some((file, i) => file.path !== session.files[i]?.path || !sameBuffer(file.before, session.files[i]?.before ?? null) || file.beforeMode !== session.files[i]?.beforeMode)) throw new Error('Локальные файлы изменились после просмотра. Запустите синхронизацию заново.');
     const latest = await requireLocalReady(configured);
     if (latest.head !== session.localHead) throw new Error('Локальный HEAD изменился во время проверки. Проверьте применение заново.');
@@ -773,7 +778,7 @@ function materialize(transport: Transport, before: Map<string, Buffer>): Map<str
   if (result.size !== transport.files.length || transport.files.some(file => { const bytes = result.get(file.path); return !bytes || bytes.length !== file.size || sha256(bytes) !== file.sha256; })) throw new Error('Состав файлов не соответствует результату пакета. Получите исходный пакет заново.');
   return result;
 }
-async function prepare(root: string, transport: Transport, baseline: Baseline | undefined, before: Map<string, Buffer>, records: RecordData[] = transport.records, overwriteReplacement = false): Promise<PreparedFile[]> {
+async function prepare(root: string, transport: Transport, baseline: Baseline | undefined, before: Map<string, Buffer>, records: RecordData[] = transport.records, overwriteReplacement = false): Promise<{ files: PreparedFile[]; conflicts: NonNullable<ImportPreview['conflicts']> }> {
   if (transport.protocolVersion < 4 && transport.packageType === 'diff' && (!baseline || baseline.state !== transport.sourceState || baseline.scope !== transport.scope)) throw new Error('Общее состояние не соответствует пакету. Проверьте порядок применения пакетов и выбранный профиль.');
   const canonical = materialize(transport, before);
   if (baseline) {
@@ -783,7 +788,9 @@ async function prepare(root: string, transport: Transport, baseline: Baseline | 
   }
   const inventory = new Map(baseline?.files.map(file => [file.path, file]) ?? []);
   const prepared: PreparedFile[] = [];
+  const conflicts: NonNullable<ImportPreview['conflicts']> = [];
   for (const record of records) {
+    try {
     const name = record.oldPath ?? record.path; const filename = await safePath(root, name);
     const old = await optionalRead(filename); const mode = old === null ? null : (await lstat(filename)).mode & 0o777;
     const prior = inventory.get(name);
@@ -792,7 +799,7 @@ async function prepare(root: string, transport: Transport, baseline: Baseline | 
     let after = canonical.get(record.path) ?? null;
     let afterMode = record.mode;
     const operationName: Record<Operation, string> = { ADD: 'добавление', MODIFY: 'изменение', DELETE: 'удаление', RENAME: 'переименование', REPLACE: 'замена файла' };
-    const conflict = (reason: string): never => { throw new Error(`Не удалось проверить применение: ${operationName[record.operation]} «${name}». ${reason} Репозиторий не изменён.`); };
+    const conflict = (reason: string): never => { throw new Error(`Конфликт: ${operationName[record.operation]} «${name}». ${reason} Эта операция пропущена, файл не изменён.`); };
     // A patch describes a transition, not a requirement to recreate its old state.
     if (record.operation === 'DELETE' && old === null) continue;
     if (record.operation === 'RENAME' && old === null) {
@@ -805,7 +812,7 @@ async function prepare(root: string, transport: Transport, baseline: Baseline | 
     }
     if (record.operation !== 'DELETE' && record.operation !== 'RENAME' && old !== null && sha256(old) === record.afterSha256
       && (process.platform === 'win32' || Boolean(mode! & 0o111) === Boolean(record.mode & 0o111) || (record.operation === 'MODIFY' && prior?.mode === record.mode))) continue;
-    if (record.operation === 'ADD') { if (old !== null && (sha256(old) !== record.afterSha256 || (process.platform !== 'win32' && Boolean(mode! & 0o111) !== Boolean(record.mode & 0o111)))) conflict(`Путь «${record.path}» уже существует, и его содержимое или права отличаются от входящего файла.`); }
+    if (record.operation === 'ADD') { if (old !== null && (sha256(old) !== record.afterSha256 || (process.platform !== 'win32' && Boolean(mode! & 0o111) !== Boolean(record.mode & 0o111)))) conflict(`Файл уже существует, но его содержимое или права отличаются от входящего. Сверьте версии; чтобы принять входящую, сохраните локальную копию отдельно и повторите сравнение.`); }
     else if (old === null && (record.operation === 'MODIFY' || record.operation === 'REPLACE')) {
       // The verified canonical tree already contains the complete final bytes.
       // If the receiving path is absent, materialize them as a new file.
@@ -825,9 +832,13 @@ async function prepare(root: string, transport: Transport, baseline: Baseline | 
       prepared.push({ path: name, before: old, after: null, beforeMode: mode, afterMode });
     }
     if (record.operation === 'RENAME' || !sameBuffer(old, after) || mode !== afterMode) prepared.push({ path: record.path, before: record.operation === 'RENAME' ? null : old, after, beforeMode: record.operation === 'RENAME' ? null : mode, afterMode });
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.startsWith('Конфликт: ')) throw error;
+      conflicts.push({ path: record.path, operation: record.operation, message: error.message });
+    }
   }
   if (prepared.reduce((sum, file) => sum + (file.before?.length ?? 0) + (file.after?.length ?? 0), 0) > MAX_BYTES * 2) throw new Error('Подготовленные файлы превышают защитный лимит');
-  return prepared;
+  return { files: prepared, conflicts };
 }
 async function restore(directory: string, journal: Journal): Promise<void> {
   for (const entry of [...journal.entries].reverse().filter(entry => entry.touched)) {
