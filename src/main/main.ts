@@ -140,8 +140,8 @@ async function start(): Promise<void> {
           if (paths !== undefined && (!Array.isArray(paths) || paths.length > 100_000)) throw new Error('Не удалось прочитать выбранные файлы. Обновите сравнение.');
           const selected = paths === undefined ? undefined : paths.map(item => string(item));
           if (args[2] !== undefined && (!Array.isArray(args[2]) || args[2].length > 10_000)) throw new Error('Некорректные решения проверки.');
-          const redacted = args[2] === undefined ? [] : (args[2] as unknown[]).map(item => string(item, 20));
-          value = command === 'selectExport' ? await engine.selectExport(string(args[0], 36), selected, redacted) : command === 'preparePackage' ? await engine.preparePackage(string(args[0], 36), selected) : await engine.prepareIncoming(string(args[0], 36), selected);
+          const redacted = args[2] === undefined ? [] : (args[2] as unknown[]).map(item => string(item, command === 'selectExport' ? 20 : 4096));
+          value = command === 'selectExport' ? await engine.selectExport(string(args[0], 36), selected, redacted) : command === 'preparePackage' ? await engine.preparePackage(string(args[0], 36), selected, redacted) : await engine.prepareIncoming(string(args[0], 36), selected, redacted);
           break;
         }
         case 'openRepository': { const profile = store.get().profiles.find(p => p.id === string(args[0], 36)); if (!profile?.sources.internal) throw new Error('Укажите локальный репозиторий в настройках.'); const error = await shell.openPath(await realpath(profile.sources.internal.location)); if (error) throw new Error('Не удалось открыть папку репозитория. Проверьте путь в настройках.'); value = undefined; break; }

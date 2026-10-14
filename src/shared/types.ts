@@ -62,6 +62,7 @@ export interface Analysis {
   entries: { path: string; oldPath?: string; operation: Operation; size: number; ignoredBy?: number[]; excludedBy?: string }[];
 }
 export interface ImportPreview {
+  acceptedPaths?: string[];
   overwritePaths?: { path: string; staged: boolean }[];
   conflicts?: { path: string; operation: Operation; message: string }[];
   incomingMode?: IncomingSelection['mode'];
@@ -99,7 +100,7 @@ export interface API {
   analyze(id: string, direction: Direction, selection?: IncomingSelection, outgoing?: OutgoingSelection): Promise<Analysis>;
   selectExport(token: string, selectedPaths: string[], redactedIds?: string[]): Promise<ExportReview>;
   loadPackage(path: string | string[], profileId: string): Promise<CodeComparison>;
-  preparePackage(token: string, selectedPaths: string[]): Promise<ImportPreview>;
+  preparePackage(token: string, selectedPaths: string[], acceptedPaths?: string[]): Promise<ImportPreview>;
   exportPackage(token: string, keep: string[], override: boolean): Promise<string[]>;
   confirmTransfer(id: string): Promise<Settings>;
   discardPending(id: string): Promise<Settings>;
@@ -107,7 +108,7 @@ export interface API {
   openFinding(token: string, findingId: string): Promise<void>;
   previewReplacement(token: string, findingId: string): Promise<ReplacementPreview>;
   applyReplacement(token: string): Promise<void>;
-  prepareIncoming(token: string, selectedPaths?: string[]): Promise<ImportPreview>;
+  prepareIncoming(token: string, selectedPaths?: string[], acceptedPaths?: string[]): Promise<ImportPreview>;
   openRepository(id: string): Promise<void>;
   preflight(path: string, target: string, profileId: string): Promise<ImportPreview>;
   applyImport(token: string, overwrite?: boolean): Promise<Settings>;
