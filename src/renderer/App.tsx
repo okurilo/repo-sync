@@ -153,11 +153,14 @@ export function App(): React.JSX.Element {
       if (currentSelection.current === key) { setImportPreview(result); setStep('apply'); }
     } else { const result = await api.selectExport(comparison.token, selectedIncomingPaths, redactedIds); if (currentSelection.current === key) { setExportReview(result); setSettings(await api.settings()); } }
   }
-  async function resolveConflict(name: string, accept: boolean): Promise<void> {
-    if (!profile || !importPreview?.conflicts?.some(conflict => conflict.path === name)) return;
-    const paths = accept ? selectedIncomingPaths : selectedIncomingPaths.filter(path => path !== name);
+  async function resolveConflicts(names: string[], accept: boolean): Promise<void> {
+    if (!profile || !importPreview?.conflicts?.length) return;
+    const conflicts = new Set(importPreview.conflicts.map(conflict => conflict.path));
+    const chosen = new Set(names.filter(name => conflicts.has(name)));
+    if (!chosen.size) return;
+    const paths = accept ? selectedIncomingPaths : selectedIncomingPaths.filter(path => !chosen.has(path));
     const selectedPaths = new Set(paths);
-    const accepted = [...new Set([...(importPreview.acceptedPaths ?? []).filter(path => selectedPaths.has(path)), ...(accept ? [name] : [])])];
+    const accepted = [...new Set([...(importPreview.acceptedPaths ?? []).filter(path => selectedPaths.has(path)), ...(accept ? [...chosen] : [])])];
     setOverwriteToken('');
     if (!paths.length && comparison?.entries.length) { setSelectedIncomingPaths(paths); setImportPreview(null); setStep('compare'); return; }
     setOperationLabel(accept ? 'Подготовка входящей версии…' : 'Сохранение локальной версии…');
@@ -210,7 +213,7 @@ export function App(): React.JSX.Element {
       </> : <>
 
         <SyncWorkflow workingSource={outgoingSelection.mode === 'working'} overwriteConfirmed={overwriteToken === importPreview?.token} confirmOverwrite={checked => setOverwriteToken(checked ? importPreview?.token ?? '' : '')} fileFilters={fileFilters} redactedIds={redactedIds} redact={redact} reviewFindings={exportReview?.originalFindings} localStatus={localStatus} sourceControls={sourceControls} profile={profile} settings={settings} direction={direction} step={step} analysis={analysis && exportReview ? { ...analysis, ...exportReview } : analysis} importPreview={importPreview} comparison={comparison} kept={kept} override={override} exported={exported} busy={busy} locked={locked} error={error} retryComparison={() => void run(() => profile.role === 'external' ? importPackage() : direction === 'incoming' ? compareIncoming(incomingSelection) : begin(direction, profile, outgoingSelection))} pending={pending} setPreviewBusy={setPreviewBusy} setStep={setStep} setOverride={setOverride} close={() => { reset(); void run(() => readLocal(profile)); }} keep={(ids, retained) => setKept(previous => retained ? [...new Set([...previous, ...ids])] : previous.filter(id => !ids.includes(id)))} exclude={exclude} showFinding={showFinding} selectedIncomingPaths={selectedIncomingPaths} onSelectedIncomingPathsChange={changePaths} checkSelection={() => void run(checkSelection)}
-          resolveConflict={(name, accept) => void run(() => resolveConflict(name, accept))} exportReady={!!exportReview} completeReview={() => { if (exportReview?.findings.length) setStep('security'); }}
+          resolveConflict={(name, accept) => void run(() => resolveConflicts([name], accept))} acceptAllConflicts={() => void run(() => resolveConflicts(importPreview?.conflicts?.map(conflict => conflict.path) ?? [], true))} exportReady={!!exportReview} completeReview={() => { if (exportReview?.findings.length) setStep('security'); }}
           chooseOutput={() => void run(async () => { const directory = await api.chooseDirectory(); if (directory) setSettings(await api.setOutputDirectory(directory)); })}
           exportPackage={() => { if (analysis) void run(async () => { setOperationLabel('Запись частей пакета…'); setExported(await api.exportPackage(analysis.token, kept.filter(id => exportReview?.findings.some(finding => finding.id === id)), override)); setSettings(await api.settings()); setStep('done'); }); }}
           apply={() => { if (importPreview) void run(async () => { setOperationLabel('Резервное копирование и применение…'); try { setSettings(await api.applyImport(importPreview.token, overwriteToken === importPreview.token)); } catch (cause) { setOverwriteToken(''); setImportPreview(null); setStep('compare'); throw cause; } await readLocal(profile); setStep('done'); setAnalysis(null); }); }}

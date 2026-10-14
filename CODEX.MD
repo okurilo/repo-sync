@@ -1,5 +1,10 @@
 # Инженерный контекст RepoSync
 
+## 2026-10-14 — принять все текущие конфликты
+
+- Минимальный механизм: общий Renderer resolveConflicts принимает список путей, проверяет принадлежность текущим conflicts, объединяет с ранее acceptedPaths и вызывает existing prepare один раз. Кнопка массового принятия locked вместе с отдельными решениями. Выбор файлов не расширяется, backend/session/guards/backup/recovery прежние; новых persisted/config/IPC контрактов нет. IPC limit acceptedPaths согласован с прежним пределом выбранного набора100000 (redactions остаются10000). Оценка2 runtime/<20 строк, фактически3 runtime/<20 строк с устранением меньшего лимита решений.
+- Проверяется full chain выбора/готовности/preview/prepare/Apply, повторные token/bytes/status/HEAD guards и rollback остаются existing. Build, version/diff checks и conflict regression; component harness для bulk callback и единичного prepare. Native GUI другого Mac не проверен. Patch1.0.10, commit и macOS arm64 артефакты без push.
+
 ## 2026-10-14 — явное принятие входящей версии при конфликте
 
 - Минимальный механизм: acceptedPaths только IPC/RAM и ImportSession token, без persisted/schema/config изменений. Keep снимает операцию с выбора; accept повторяет prepare с allowlisted путём и canonical checksum-verified bytes. Для ADD — замена существующего файла, DELETE — удаление с backup, RENAME — удаление источника и замена назначения с backup обеих локальных версий. Принятие не пишет репозиторий до Apply; изменение выбора сбрасывает решения. Прежние dirty consent, bytes/modes/status/HEAD/source checks и backup/journal/rollback/recovery сохраняются.
