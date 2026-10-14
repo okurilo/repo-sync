@@ -280,3 +280,8 @@
 - Фактический runtime scope: 8 файлов, 108 добавленных / 37 удалённых строк, меньше оценки 10/<300. Permanent working-tree fixture: реальные temporary Git, mock remote I/O; commit/working/CRLF/binary/deletion/exclusions/ignored, selected stale guards, consent, staged identity, backup/no-op/unrelated edits, rollback и interrupted journal recovery, symlink/rename/merge/branch guards. Existing branch-comparison checks и npm run build прошли. UI с mock IPC в Chrome: source switch и consent→Apply, 900/1440 без горизонтального overflow, console errors []; detector [] один проход. Native Electron/Windows и live remote не проверены. Commit/push/package не выполнялись.
 
 - Публикация: patch повышен ровно один раз до 1.0.4 в package.json/package-lock.json; зависимости/overrides неизменны. Используется существующая рабочая ветка codex/operate-mineral-atlas с открытым PR №7. Русский Conventional Commit и push выполняются обычным git; упаковка не входит в публикацию исходников.
+
+
+## 2026-10-14 — единый регламент публикации
+
+- По выбору пользователя commit/push включает свежие локальные macOS .app/DMG/ZIP после окончательного коммита. Краткий обязательный порядок — в CODEX-RULES.MD, раздел «Коммиты и релизы»; исторические исключения его не отменяют. Публикация регламента: patch 1.0.5 синхронизирован с lock; runtime и зависимости не изменены. Финальная упаковка выполняется после коммита по новому порядку.
