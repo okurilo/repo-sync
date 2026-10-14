@@ -1,5 +1,16 @@
 # Инженерный контекст RepoSync
 
+## 2026-10-14 — IPC анализа Git
+
+- Причина отказа в 1.0.6: preload всегда передаёт analyze четыре аргумента, включая undefined; общий IPC guard разрешал только три. Минимальное исправление: максимум четыре только для analyze, для остальных команд прежние три. Один runtime-файл, одна заменённая строка; без новых состояний, конфигурации и зависимостей.
+- IPC harness исполняет существующий handler: incoming branch, outgoing commit/working и legacy три аргумента доходят до Engine без потери параметров; пять аргументов, не-массив, четыре для других команд и чужой sender отклоняются, busy guard сохранён. Strict build, branch-comparison и working-tree regressions прошли (remote I/O mocked). Проверены entry/validation, Git timeout/cancellation, side effects, persistence/recovery и совместимость: изменение только в раннем guard; Engine и Apply прежние. GUI другого Mac не проверен. Commit/push/упаковка не выполнялись.
+
+## 2026-10-14 — быстрый выбор файлов и папок
+
+- Минимальный механизм: changePaths только RAM; checkSelection по явной кнопке в incoming/outgoing. Initial branch comparison сохранён; после выбора сбрасываются import/export readiness, решения и overwriteToken. Existing run/pending/token guards, Engine checks/Apply/backup/recovery и IPC/settings/transport прежние. Проверка данных внутри SecurityReview по явному решению пользователя сохраняется.
+- Allowlist Set вместо paths×entries.find; shown removal через Set; memoized prefix groups/folder counts и JSX diff table. При prepared token сохраняется доступный текущий preview path. Без deps, новых schema/config/background/retries/metrics. Оценка3–4 runtime/<250; фактически3,+41/-22 строки.
+- Temporary component harness: 1000/10000 paths с прежним отображением1000, checkbox/folder limits, exclusions/unknown/duplicates, readiness/overwrite reset, explicit incoming/outgoing check и empty selection. Synthetic component execution с500 изменёнными строками: до16–19ms, после2.6–3.4ms; не browser paint/INP. Strict production build, branch comparison/selected Apply и working-tree regressions; detector[] один проход. Live GUI/native Windows не проверены. Commit/push/release не запрашивались.
+
 ## 2026-10-14 — Electron после npm ci
 
 - Фото с другого Mac: installed1.0.3, source65e8926, отказ «Сборка новой версии… код1». Шаг npm ci пройден. В закреплённом пакете electron44.4.5 нет install/postinstall hook; обычный build не импортирует electron runtime. Поэтому forced electronDist=node_modules/electron/dist после свежего ci указывает на отсутствующий бинарный каталог. Проблема подтверждена контрактом пакета/порядком вызовов; точный stdout другой машины старый updater отбрасывал.
@@ -293,3 +304,5 @@
 ## 2026-10-14 — единый регламент публикации
 
 - По выбору пользователя commit/push включает свежие локальные macOS .app/DMG/ZIP после окончательного коммита. Краткий обязательный порядок — в CODEX-RULES.MD, раздел «Коммиты и релизы»; исторические исключения его не отменяют. Публикация регламента: patch 1.0.5 синхронизирован с lock; runtime и зависимости не изменены. Финальная упаковка выполняется после коммита по новому порядку.
+
+- Публикация исправления IPC и ранее подготовленного быстрого выбора: patch1.0.7 синхронизирован с lock; 4 runtime-файла, +42/−23 строки. Ветка codex/operate-mineral-atlas с открытым PR №7 сохранена. Проверки перед публикацией; после окончательного commit/push — свежая macOS arm64 упаковка и проверка identity/bytes/ZIP/DMG.

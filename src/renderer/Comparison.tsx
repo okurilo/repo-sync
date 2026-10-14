@@ -68,8 +68,9 @@ export function Comparison({ comparison, busy, onBusy, request, selectable = fal
   const [loading, setLoading] = useState(false);
   useEffect(() => {
     const current = ++generation.current; let active = true;
-    setPreview(null); setError(''); setSelected(visibleEntries.find(entry => !entry.excludedBy)?.path ?? '');
-    const first = visibleEntries.find(entry => !entry.excludedBy);
+    setPreview(null); setError('');
+    const first = visibleEntries.find(entry => entry.path === selected && !entry.excludedBy) ?? visibleEntries.find(entry => !entry.excludedBy);
+    setSelected(first?.path ?? '');
     if (!first) { setLoading(false); onBusy(false); return; }
     onBusy(true); setLoading(true);
     const previous = pending.current;
@@ -92,8 +93,9 @@ export function Comparison({ comparison, busy, onBusy, request, selectable = fal
     })();
     pending.current = task; await task;
   }
-  const entries = visibleEntries.filter(entry => `${entry.oldPath ?? ''} ${entry.path}`.toLowerCase().includes(query.trim().toLowerCase())) ?? [];
-  const listedPaths = new Set(entries.map(entry => entry.path));
+  const entries = visibleEntries;
+  const listedPaths = useMemo(() => new Set(entries.map(entry => entry.path)), [entries]);
+  const shownPaths = useMemo(() => new Set(entries.slice(0, 1000).map(entry => entry.path)), [entries]);
   const alreadyAppliedSet = new Set(alreadyAppliedPaths);
   const folderEntries = useMemo(() => {
     const result = new Map<string, string[]>();
@@ -105,20 +107,39 @@ export function Comparison({ comparison, busy, onBusy, request, selectable = fal
     if (!onSelectedPathsChange) return;
     onSelectedPathsChange(selectedSet.has(name) ? selectedPaths.filter(item => item !== name) : [...selectedPaths, name]);
   }
-  function tree(items: CodeComparison['entries'], prefix = ''): React.JSX.Element[] {
-    const folders = new Map<string, CodeComparison['entries']>(); const files: CodeComparison['entries'] = [];
-    for (const item of items) { const tail = item.path.slice(prefix.length); const slash = tail.indexOf('/');
-      if (slash < 0) files.push(item); else { const folder = tail.slice(0, slash); folders.set(folder, [...(folders.get(folder) ?? []), item]); }
+  const grouped = useMemo(() => {
+    const groups = new Map<string, { folders: Set<string>; files: CodeComparison['entries'] }>();
+    const groupFor = (prefix: string): { folders: Set<string>; files: CodeComparison['entries'] } => {
+      let group = groups.get(prefix);
+      if (!group) { group = { folders: new Set(), files: [] }; groups.set(prefix, group); }
+      return group;
+    };
+    for (const entry of entries.slice(0, 1000)) {
+      const parts = entry.path.split('/'); parts.pop(); let prefix = '';
+      for (const folder of parts) { groupFor(prefix).folders.add(folder); prefix += `${folder}/`; }
+      groupFor(prefix).files.push(entry);
     }
-    return [...[...folders].map(([folder, nested]) => {
+    return groups;
+  }, [entries]);
+  const folderCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const [folder, paths] of folderEntries) counts.set(folder, paths.reduce((sum, path) => sum + Number(selectedSet.has(path)), 0));
+    return counts;
+  }, [folderEntries, selectedSet]);
+  function tree(prefix = ''): React.JSX.Element[] {
+    const { folders, files } = grouped.get(prefix) ?? { folders: new Set<string>(), files: [] };
+    return [...[...folders].map(folder => {
       const folderPath = `${prefix}${folder}/`;
       const descendants = folderEntries.get(folderPath) ?? [];
-      const count = descendants.filter(path => selectedSet.has(path)).length;
-      return <details key={folder} open><summary>{selectable && <input type="checkbox" aria-label={`Выбрать папку: ${folderPath}`} checked={descendants.length > 0 && count === descendants.length} ref={element => { if (element) element.indeterminate = count > 0 && count < descendants.length; }} disabled={busy || loading || descendants.length === 0} onClick={event => event.stopPropagation()} onChange={event => { const paths = new Set(selectedPaths); for (const path of descendants) { if (event.target.checked) paths.add(path); else paths.delete(path); } onSelectedPathsChange?.([...paths]); }} />} {folder}/ <small>{count}/{descendants.length}</small></summary><div>{tree(nested, folderPath)}</div></details>;
+      const count = folderCounts.get(folderPath) ?? 0;
+      return <details key={folder} open><summary>{selectable && <input type="checkbox" aria-label={`Выбрать папку: ${folderPath}`} checked={descendants.length > 0 && count === descendants.length} ref={element => { if (element) element.indeterminate = count > 0 && count < descendants.length; }} disabled={busy || loading || descendants.length === 0} onClick={event => event.stopPropagation()} onChange={event => { const paths = new Set(selectedPaths); for (const path of descendants) { if (event.target.checked) paths.add(path); else paths.delete(path); } onSelectedPathsChange?.([...paths]); }} />} {folder}/ <small>{count}/{descendants.length}</small></summary><div>{tree(folderPath)}</div></details>;
     }), ...files.map(entry => <div key={entry.path} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>{selectable && <input style={{ flexShrink: 0 }} type="checkbox" aria-label={`Включить файл: ${entry.path}`} checked={selectedSet.has(entry.path)} disabled={loading || busy || !!entry.excludedBy} onChange={() => togglePath(entry.path)} />}<File aria-pressed={entry.path === selected} style={{ flex: 1, minWidth: 0, color: entry.excludedBy ? 'var(--muted)' : undefined }} $selected={entry.path === selected} disabled={loading || busy || !!entry.excludedBy} title={entry.excludedBy ? `Исключено: ${entry.excludedBy}` : entry.oldPath ? `${entry.oldPath} → ${entry.path}` : entry.path} onClick={() => void open(entry.path)}><span style={{ color: entry.operation === 'DELETE' ? 'var(--danger)' : entry.operation === 'ADD' ? 'var(--success)' : 'var(--accent)' }}>{entry.operation === 'ADD' ? '+' : entry.operation === 'DELETE' ? '−' : entry.operation === 'RENAME' ? '↪' : '~'}</span> {entry.oldPath ? `${entry.oldPath} → ${entry.path.slice(prefix.length)}` : entry.path.slice(prefix.length)}{entry.excludedBy && <small style={{ display: 'block' }}>Исключено: {entry.excludedBy}</small>}{alreadyAppliedSet.has(entry.path) && <small style={{ display: 'block', color: 'var(--success)' }}>Уже применено</small>}</File></div>)];
   }
   const rows = useMemo(() => preview && !preview.message ? lines(preview) : [], [preview]);
-  const highlightDeadline = performance.now() + 40;
+  const codeTable = useMemo(() => {
+    const highlightDeadline = performance.now() + 40;
+    return preview?.message ? <Bar>{preview.message}</Bar> : sideBySide ? <table className="split" aria-label="Сравнение рядом"><thead><tr><th scope="colgroup" colSpan={2}>До</th><th scope="colgroup" colSpan={2}>После</th></tr></thead><tbody>{paired(rows).map((row, index) => <tr key={index}><td style={{ background: !row.left ? 'var(--raised)' : row.left.kind === '-' ? 'var(--removed)' : undefined }}>{row.left?.kind === '-' && <span aria-label="Удалённая строка">− </span>}{row.left?.old}</td><td style={{ background: !row.left ? 'var(--raised)' : row.left.kind === '-' ? 'var(--removed)' : undefined }}>{fragments(row.left?.text ?? '', row.right?.text, 'left', row.left?.kind === '-', highlightDeadline)}</td><td style={{ background: !row.right ? 'var(--raised)' : row.right.kind === '+' ? 'var(--added)' : undefined }}>{row.right?.kind === '+' && <span aria-label="Добавленная строка">+ </span>}{row.right?.next}</td><td style={{ background: !row.right ? 'var(--raised)' : row.right.kind === '+' ? 'var(--added)' : undefined }}>{fragments(row.right?.text ?? '', row.left?.text, 'right', row.right?.kind === '+', highlightDeadline)}</td></tr>)}</tbody></table> : <table aria-label="Построчное сравнение"><tbody>{rows.map((row, i) => <Line key={i} $kind={row.kind}><td>{row.old}</td><td>{row.next}</td><td>{row.kind}</td><td>{syntax(row.text || ' ')}</td></Line>)}</tbody></table>;
+  }, [preview, rows, sideBySide]);
   return <Panel aria-label="Просмотр изменений"><Bar>
     <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap', justifyContent: 'space-between' }}><h3>Изменения файлов</h3><span style={{ color: 'var(--muted)', fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>Показано: {entries.length} из {comparison.entries.length}{comparison.lineChanges && <> · <span style={{ color: 'var(--success)' }}>+{comparison.lineChanges.added}</span> <span style={{ color: 'var(--danger)' }}>−{comparison.lineChanges.removed}</span> строк</>}</span></div>
     <details style={{ marginTop: 10 }}><summary>Настройки просмотра{filters ? ` · активны: ${options.filter(option => filters & option.bit).length}` : ''}</summary>
@@ -130,6 +151,6 @@ export function Comparison({ comparison, busy, onBusy, request, selectable = fal
     {(filters !== 0 || query) && <p role="status">Скрыто просмотром: {comparison.entries.length - entries.length}. Выбор файлов сохранён.</p>}
   </Bar>
     {error && <Bar role="alert">{error}</Bar>}
-    <Workspace><Tree>{selectable && <div style={{ display: 'grid', gap: 6, marginBottom: 10 }}><small>Выбрано: {selectedPaths.length} из {comparison.entries.length}</small><div style={{ display: 'flex', gap: 6 }}><Button disabled={busy || loading} onClick={() => onSelectedPathsChange?.([...new Set([...selectedPaths, ...entries.slice(0, 1000).filter(entry => !entry.excludedBy).map(entry => entry.path)])])}>Выбрать показанные</Button><Button disabled={busy || loading} onClick={() => onSelectedPathsChange?.(selectedPaths.filter(path => !entries.slice(0, 1000).some(entry => entry.path === path)))}>Снять показанные</Button></div><small>Выбрано вне списка: {selectedPaths.filter(path => !listedPaths.has(path)).length}. Галочка папки включает только показанные доступные файлы.</small></div>}<input aria-label="Поиск файла в изменениях" placeholder="Найти файл…" value={query} onChange={event => setQuery(event.target.value)} />{tree(entries.slice(0, 1000))}{entries.length === 0 && comparison.entries.length > 0 && <p>Файлы не найдены. Измените поиск или настройки просмотра. Выбранные файлы сохраняются.</p>}{entries.length > 1000 && <p>Показаны первые 1000 файлов. Уточните поиск.</p>}</Tree><Code><Bar style={{ position: 'sticky', top: 0, zIndex: 1 }}><div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}><Icon name="file" /><span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>{selected || (visibleEntries.length === 0 ? filters && comparison.entries.length ? 'Все различия скрыты фильтром' : 'Изменений нет' : 'Выберите файл')}</span><Switch aria-pressed={!sideBySide} $active={!sideBySide} onClick={() => setSideBySide(false)}>В одном списке</Switch><Switch aria-pressed={sideBySide} $active={sideBySide} onClick={() => setSideBySide(true)}>Рядом</Switch></div>{loading && <div className="reposync-skeleton" role="status" aria-label="Загрузка содержимого файла" style={{ height: 36, marginTop: 8 }} />}</Bar>{preview?.message ? <Bar>{preview.message}</Bar> : sideBySide ? <table className="split" aria-label="Сравнение рядом"><thead><tr><th scope="colgroup" colSpan={2}>До</th><th scope="colgroup" colSpan={2}>После</th></tr></thead><tbody>{paired(rows).map((row, index) => <tr key={index}><td style={{ background: !row.left ? 'var(--raised)' : row.left.kind === '-' ? 'var(--removed)' : undefined }}>{row.left?.kind === '-' && <span aria-label="Удалённая строка">− </span>}{row.left?.old}</td><td style={{ background: !row.left ? 'var(--raised)' : row.left.kind === '-' ? 'var(--removed)' : undefined }}>{fragments(row.left?.text ?? '', row.right?.text, 'left', row.left?.kind === '-', highlightDeadline)}</td><td style={{ background: !row.right ? 'var(--raised)' : row.right.kind === '+' ? 'var(--added)' : undefined }}>{row.right?.kind === '+' && <span aria-label="Добавленная строка">+ </span>}{row.right?.next}</td><td style={{ background: !row.right ? 'var(--raised)' : row.right.kind === '+' ? 'var(--added)' : undefined }}>{fragments(row.right?.text ?? '', row.left?.text, 'right', row.right?.kind === '+', highlightDeadline)}</td></tr>)}</tbody></table> : <table aria-label="Построчное сравнение"><tbody>{rows.map((row, i) => <Line key={i} $kind={row.kind}><td>{row.old}</td><td>{row.next}</td><td>{row.kind}</td><td>{syntax(row.text || ' ')}</td></Line>)}</tbody></table>}</Code></Workspace>
+    <Workspace><Tree>{selectable && <div style={{ display: 'grid', gap: 6, marginBottom: 10 }}><small>Выбрано: {selectedPaths.length} из {comparison.entries.length}</small><div style={{ display: 'flex', gap: 6 }}><Button disabled={busy || loading} onClick={() => onSelectedPathsChange?.([...new Set([...selectedPaths, ...entries.slice(0, 1000).filter(entry => !entry.excludedBy).map(entry => entry.path)])])}>Выбрать показанные</Button><Button disabled={busy || loading} onClick={() => onSelectedPathsChange?.(selectedPaths.filter(path => !shownPaths.has(path)))}>Снять показанные</Button></div><small>Выбрано вне списка: {selectedPaths.filter(path => !listedPaths.has(path)).length}. Галочка папки включает только показанные доступные файлы.</small></div>}<input aria-label="Поиск файла в изменениях" placeholder="Найти файл…" value={query} onChange={event => setQuery(event.target.value)} />{tree()}{entries.length === 0 && comparison.entries.length > 0 && <p>Файлы не найдены. Измените поиск или настройки просмотра. Выбранные файлы сохраняются.</p>}{entries.length > 1000 && <p>Показаны первые 1000 файлов. Уточните поиск.</p>}</Tree><Code><Bar style={{ position: 'sticky', top: 0, zIndex: 1 }}><div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}><Icon name="file" /><span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>{selected || (visibleEntries.length === 0 ? filters && comparison.entries.length ? 'Все различия скрыты фильтром' : 'Изменений нет' : 'Выберите файл')}</span><Switch aria-pressed={!sideBySide} $active={!sideBySide} onClick={() => setSideBySide(false)}>В одном списке</Switch><Switch aria-pressed={sideBySide} $active={sideBySide} onClick={() => setSideBySide(true)}>Рядом</Switch></div>{loading && <div className="reposync-skeleton" role="status" aria-label="Загрузка содержимого файла" style={{ height: 36, marginTop: 8 }} />}</Bar>{codeTable}</Code></Workspace>
   </Panel>;
 }

@@ -26,7 +26,7 @@ async function start(): Promise<void> {
   app.on('before-quit', () => updater.cancel());
   ipcMain.handle('reposync', async (event, command: unknown, incoming: unknown): Promise<Reply<unknown>> => {
     if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) return { ok: false, error: 'Запрос поступил из недопустимого источника.' };
-    if (!Array.isArray(incoming) || incoming.length > 3) return { ok: false, error: 'Некорректный запрос к приложению.' };
+    if (!Array.isArray(incoming) || incoming.length > (command === 'analyze' ? 4 : 3)) return { ok: false, error: 'Некорректный запрос к приложению.' };
     if (command === 'appUpdateStatus') return { ok: true, value: updater.status() };
     if (command === 'cancelAppUpdate') { updater.cancel(); return { ok: true, value: undefined }; }
     if (updater.status().phase === 'building' || updater.status().phase === 'restarting') return { ok: false, error: 'Дождитесь завершения обновления приложения.' };
