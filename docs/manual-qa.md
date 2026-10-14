@@ -326,3 +326,18 @@ Renderer визуально проверен в локальном in-app browse
 - `node scripts/check-app-version.mjs`: main, рабочая ветка, detached, archive, сохранность package.json и точные зависимости/overrides lock-файла.
 - `node scripts/check-app-update.cjs`: schemaVersion1/2, fallback из installed manifest, неизвестный/повреждённый формат, offline и неизменная installed identity; прежние отмена, Windows пути, backup/rollback.
 - После коммита проверить app-revision.json против HEAD и package.json внутри .app/дистрибутива; Windows native запуск проверяется на Windows.
+
+
+### Общий writer: ускорение и recovery v3 (2026-10-14)
+
+Постоянные проверки: `npm run test:writer`. Полный замер: `node scripts/check-writer-performance.cjs --assert`; для сравнения с сохранённым JSONL замером добавьте `--baseline=/absolute/path/baseline.jsonl`. Без baseline тест не проверяет тайминги, только число Git-команд и линейный объём журнала.
+
+Реальные временные Git-репозитории, 2000 ignored files, небольшие modified-файлы; измеряется только Apply/Restore после подготовки. Source baseline: 0e84c49. Замеры на одной машине, параллельно выполнялись проверки безопасности; это лабораторный замер, а не обещание одинакового времени на другом Mac.
+
+| Файлов | Apply до → после, с | Restore до → после, с | Git Apply до → после | Git Restore до → после |
+|---|---|---|---|---|
+| 100 | 6.633 → 0.928 | 6.284 → 0.823 | 1367 → 81 | 1339 → 53 |
+| 200 | 12.496 → 1.399 | 12.988 → 1.205 | 2667 → 81 | 2639 → 53 |
+| 1000 | 71.654 → 6.163 | 71.319 → 5.928 | 13067 → 81 | 13039 → 53 |
+
+При1000 файлах journal/progress записи уменьшены с около682MB до0.75MB. Есть43 сценария writer safety: обе операции, сохранность байтов/прав/index, внешние изменения и rollback, реальные SIGKILL/restart, cleanup, старые журналы и v3 с оборванным/повреждённым/отсутствующим log, split-index/worktree и manual v2 restore. Remote I/O mocked. Native Windows, live remote и реальное отключение питания не проверены.

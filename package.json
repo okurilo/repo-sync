@@ -1,6 +1,6 @@
 {
   "name": "reposync",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "private": true,
   "description": "Локальный перенос Git-репозиториев через Markdown-пакеты",
   "author": "RepoSync",
@@ -13,7 +13,8 @@
     "build": "npm run typecheck && npm run build:renderer && npm run build:electron",
     "dist:mac": "npm run build && electron-builder --mac --publish never",
     "dist:win": "npm run build && electron-builder --win --publish never",
-    "start": "electron ."
+    "start": "electron .",
+    "test:writer": "npm run build && node scripts/check-writer-safety.cjs --v3 && node scripts/check-writer-performance.cjs --quick --assert"
   },
   "dependencies": {
     "diff": "8.0.2",

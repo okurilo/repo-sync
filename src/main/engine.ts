@@ -5,7 +5,7 @@ import { chmod, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, rmd
 import path from 'node:path';
 import { applyPatch, createTwoFilesPatch, diffLines, parsePatch } from 'diff';
 import type { Analysis, BackupSummary, RestorePreview, Baseline, CodeComparison, CodePreview, Direction, Environment, ExportReview, FileEntry, ImportPreview, IncomingSelection, OutgoingSelection, Operation, PackageType, Profile, RecordData, Settings, Transport } from '../shared/types';
-import { localState, requireLocalReady, git, readTree, readWorkingTree, workingPaths, refreshSource, resolveSource, safePath, scopeHash, sha256, validatePath, validateSource, type ResolvedSource, type Tree } from './infra/git';
+import { localState, requireLocalReady, git, readTree, readWorkingTree, workingPaths, writeGitGuard, refreshSource, resolveSource, safePath, scopeHash, sha256, validatePath, validateSource, type ResolvedSource, type Tree } from './infra/git';
 import { atomicJSON, parseSettings, SettingsStore } from './infra/settings';
 import { decode, encode, exportArtifacts, loadTransport, MAX_BYTES, newPackageId, parseTransport, splitTransport, object, string, integer } from './transport';
 import { findingLocation, scan, type PrivateFinding } from './security';
@@ -28,7 +28,7 @@ interface ExportSession {
 interface PreparedFile { path: string; before: Buffer | null; after: Buffer | null; beforeMode: number | null; afterMode: number }
 interface ImportSession { acceptedPaths: string[]; dirtyStatus: string; overwritePaths: NonNullable<ImportPreview['overwritePaths']>; localHead: string; incoming?: ExportSession; token: string; environment: Environment; profileId: string; target: string; transport: Transport; records: RecordData[]; files: PreparedFile[]; baseline?: Baseline; updateCommon: boolean }
 interface BackupEntry { path: string; file: string | null; mode: number | null; afterMode?: number; beforeSha256: string | null; afterSha256: string | null; touched: boolean }
-interface Journal { action?: string; schemaVersion?: 2; profileId?: string; branch?: string; at?: string; target: string; entries: BackupEntry[]; createdDirectories: string[]; temporaryFiles: string[]; settingsBefore: Settings; committed: boolean }
+interface Journal { action?: string; schemaVersion?: 2 | 3; profileId?: string; branch?: string; at?: string; target: string; entries: BackupEntry[]; createdDirectories: string[]; temporaryFiles: string[]; settingsBefore: Settings; committed: boolean }
 interface WriteSession { target: string; profileId: string; localHead: string; dirtyStatus: string }
 interface RestoreSession extends WriteSession { token: string; files: PreparedFile[] }
 interface CodeSession { localFiles?: Map<string, PreparedFile>; sourceToken?: string; token: string; from: string | null; to: string; entries: Analysis['entries']; before: Map<string, Buffer>; after: Map<string, Buffer> }
@@ -507,7 +507,7 @@ export class Engine {
       try {
         const journal = await readJournal(directory); if (!journal.committed || journal.target !== root || !journal.entries.length) continue;
         result.push({ id, directory, action: journal.action, at: journal.at ?? (await lstat(directory)).mtime.toISOString(), files: journal.entries.length, branch: journal.branch,
-          unavailable: journal.schemaVersion !== 2 ? 'Старая копия не содержит ветку и итоговые права. Автоматическое восстановление недоступно; файлы сохранены по указанному пути.' : journal.profileId !== profileId ? 'Копия принадлежит другому профилю.' : undefined });
+          unavailable: journal.schemaVersion === undefined ? 'Старая копия не содержит ветку и итоговые права. Автоматическое восстановление недоступно; файлы сохранены по указанному пути.' : journal.profileId !== profileId ? 'Копия принадлежит другому профилю.' : undefined });
       } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') result.push({ id, directory, at: '', files: 0, unavailable: `Журнал повреждён: ${error instanceof Error ? error.message : 'ошибка чтения'}` }); }
     }
     return result.sort((a, b) => b.at.localeCompare(a.at));
@@ -519,7 +519,7 @@ export class Engine {
     if (!/^[a-f0-9-]{36}$/.test(backupId)) throw new Error('Некорректный идентификатор копии.');
     const directory = await safePath(path.join(this.store.directory, 'backups'), backupId); const journal = await readJournal(directory);
     const target = await realpath(configured.location); const local = await requireLocalReady(configured);
-    if (journal.schemaVersion !== 2 || !journal.committed || journal.profileId !== profileId || journal.target !== target || journal.branch !== local.branch) throw new Error('Копия не соответствует текущему профилю, папке или ветке. Восстановление не началось. Выберите подходящую копию и ветку.');
+    if (journal.schemaVersion === undefined || !journal.committed || journal.profileId !== profileId || journal.target !== target || journal.branch !== local.branch) throw new Error('Копия не соответствует текущему профилю, папке или ветке. Восстановление не началось. Выберите подходящую копию и ветку.');
     const files: PreparedFile[] = []; const problems: string[] = []; let bytes = 0;
     for (const entry of journal.entries) {
       try {
@@ -628,7 +628,7 @@ export class Engine {
     if (problems.length) throw new Error(`Файлы изменились после просмотра: ${problems.join(', ')}. Запись не началась. Повторите проверку.`);
     const directory = path.join(this.store.directory, 'backups', randomUUID());
     await mkdir(directory, { recursive: true, mode: 0o700 });
-    const journal: Journal = { action: settings.profiles.find(item => item.id === session.profileId)?.lastAction?.type ?? 'Применение изменений', schemaVersion: 2, profileId: session.profileId, branch: configured.branch, at: new Date().toISOString(), target: session.target, entries: [], createdDirectories: [], temporaryFiles: [], settingsBefore: this.store.get(), committed: false };
+    const journal: Journal = { action: settings.profiles.find(item => item.id === session.profileId)?.lastAction?.type ?? 'Применение изменений', schemaVersion: 3, profileId: session.profileId, branch: configured.branch, at: new Date().toISOString(), target: session.target, entries: [], createdDirectories: [], temporaryFiles: [], settingsBefore: this.store.get(), committed: false };
     try { for (const [index, file] of files.entries()) {
       const backup = file.before === null ? null : `${index}.bin`;
       if (backup) await writeFile(path.join(directory, backup), file.before!, { mode: 0o600, flag: 'wx' });
@@ -636,22 +636,25 @@ export class Engine {
         beforeSha256: file.before === null ? null : sha256(file.before), afterSha256: file.after === null ? null : sha256(file.after), touched: false });
     } } catch (error) { throw new Error(`Не удалось сохранить резервную копию: ${error instanceof Error ? error.message : 'ошибка записи'}. Файлы репозитория не изменены. Проверьте свободное место и права, затем повторите проверку.`); }
     const journalPath = path.join(directory, 'journal.json');
-    await atomicJSON(journalPath, journal);
+    const temporaries = files.map(file => file.after === null ? null : path.join(path.dirname(path.join(session.target, file.path)), `.reposync-${randomUUID()}.tmp`));
+    journal.temporaryFiles = temporaries.filter((name): name is string => name !== null).map(name => path.relative(session.target, name).split(path.sep).join('/'));
+    const progress = await open(path.join(directory, 'progress.log'), 'ax', 0o600);
+    const append = async (event: ['t', number] | ['d', string]): Promise<void> => { await progress.writeFile(`${JSON.stringify(event)}\n`); await progress.sync(); };
     let writingPath = ''; try {
+    await progress.writeFile('{"schemaVersion":1}\n'); await progress.sync();
+    await atomicJSON(journalPath, journal);
+    try {
       const beforeWrite = await requireLocalReady(configured);
       if (beforeWrite.head !== session.localHead) throw new Error('Локальный HEAD изменился перед записью. Проверьте применение заново.');
       if ((await affectedWorkingPaths(session.target, files)).status !== session.dirtyStatus) throw new Error('Git-статус выбранных файлов изменился. Проверьте применение заново.');
-      const checkedStatuses = JSON.parse(session.dirtyStatus) as [string, string, string][];
-      const indexIdentity = (status: string): string => JSON.stringify((JSON.parse(status) as [string, string, string][]).map(([name, , index]) => [name, index]));
+      const checkGit = await writeGitGuard(configured, session.localHead, session.dirtyStatus);
       for (const [index, file] of files.entries()) {
         writingPath = file.path;
-        if (indexIdentity((await affectedWorkingPaths(session.target, files.slice(index))).status) !== indexIdentity(JSON.stringify(checkedStatuses.slice(index)))) throw new Error('Git-статус выбранных файлов изменился во время применения. Проверьте применение заново.');
-        if ((await requireLocalReady(configured)).head !== session.localHead) throw new Error('Ветка или HEAD изменились во время записи.');
+        await checkGit();
         const filename = await safePath(session.target, file.path);
         const observed = await optionalRead(filename);
         if (!sameBuffer(observed, file.before) || (observed !== null && (await lstat(filename)).mode % 512 !== file.beforeMode)) throw new Error(`«${file.path}»: файл изменён другим процессом во время записи.`);
-        journal.entries[index]!.touched = true;
-        await atomicJSON(journalPath, journal);
+        await append(['t', index]); journal.entries[index]!.touched = true;
         if (file.after === null) await rm(filename);
         else {
           const relativeDirectory = path.posix.dirname(file.path);
@@ -661,14 +664,11 @@ export class Engine {
             const next = await safePath(session.target, partial);
             try { await lstat(next); } catch (error) {
               if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-              journal.createdDirectories.push(partial);
-              await atomicJSON(journalPath, journal);
+              await append(['d', partial]); journal.createdDirectories.push(partial);
               await mkdir(next);
             }
           }
-          const temporary = path.join(path.dirname(filename), `.reposync-${randomUUID()}.tmp`);
-          journal.temporaryFiles.push(path.relative(session.target, temporary).split(path.sep).join('/'));
-          await atomicJSON(journalPath, journal);
+          const temporary = temporaries[index]!;
           try { await writeFile(temporary, file.after, { flag: 'wx', mode: file.afterMode }); await rename(temporary, filename); }
           finally { await rm(temporary, { force: true }); }
           await chmod(filename, file.afterMode);
@@ -678,7 +678,8 @@ export class Engine {
         const filename = await safePath(session.target, file.path);
         if (!sameBuffer(await optionalRead(filename), file.after) || (file.after !== null && process.platform !== 'win32' && ((await lstat(filename)).mode & 0o777) !== file.afterMode)) throw new Error('Результат записи не прошёл проверку. Операция остановлена.');
       }
-      if ((await requireLocalReady(configured)).head !== session.localHead || indexIdentity((await affectedWorkingPaths(session.target, files)).status) !== indexIdentity(session.dirtyStatus)) throw new Error('HEAD или индекс изменились во время записи.');
+      await checkGit(true);
+      await progress.close();
       await this.store.save(settings);
       journal.committed = true;
       await atomicJSON(journalPath, journal);
@@ -693,6 +694,7 @@ export class Engine {
       this.invalidate();
       throw new Error(`Запись${writingPath ? ` «${writingPath}»` : ''} не выполнена: ${error instanceof Error ? error.message : 'ошибка записи'}. Изменения полностью отменены; повторите проверку.`);
     }
+    } finally { await progress.close().catch(() => { /* cleanup after a failed transaction */ }); }
   }
   async recover(): Promise<void> {
     const directory = path.join(this.store.directory, 'backups');
@@ -949,7 +951,7 @@ async function readJournal(directory: string): Promise<Journal> {
   const filename = await safePath(directory, 'journal.json'); const bytes = await optionalRead(filename);
   if (bytes === null) throw Object.assign(new Error('Журнал отсутствует.'), { code: 'ENOENT' });
   const raw = object(JSON.parse(bytes.toString('utf8')) as unknown);
-  if ((raw.schemaVersion !== undefined && raw.schemaVersion !== 2) || typeof raw.committed !== 'boolean' || !Array.isArray(raw.entries) || raw.entries.length > 100_000) throw new Error('Неподдерживаемая версия или повреждённый журнал.');
+  if ((raw.schemaVersion !== undefined && raw.schemaVersion !== 2 && raw.schemaVersion !== 3) || typeof raw.committed !== 'boolean' || !Array.isArray(raw.entries) || raw.entries.length > 100_000) throw new Error('Неподдерживаемая версия или повреждённый журнал.');
   const paths = (value: unknown): string[] => { if (!Array.isArray(value) || value.length > 100_000) throw new Error('Повреждён список путей.'); return value.map((item: unknown) => { const name = string(item); validatePath(name); return name; }); };
   const hash = (value: unknown): string | null => { if (value === null) return null; const result = string(value, 64); if (!/^[a-f0-9]{64}$/.test(result)) throw new Error('Повреждена контрольная сумма.'); return result; };
   const entries = raw.entries.map((value: unknown): BackupEntry => {
@@ -957,11 +959,24 @@ async function readJournal(directory: string): Promise<Journal> {
     if ((file !== null && !/^\d+\.bin$/.test(file)) || typeof item.touched !== 'boolean') throw new Error('Повреждена запись резервной копии.');
     const beforeSha256 = hash(item.beforeSha256); const afterSha256 = hash(item.afterSha256); const mode = item.mode === null ? null : integer(item.mode, 0, 0o777);
     if ((file === null) !== (beforeSha256 === null) || (mode === null) !== (beforeSha256 === null)) throw new Error('Неполная запись резервной копии.');
-    return { path: name, file, mode, beforeSha256, afterSha256, touched: item.touched, afterMode: raw.schemaVersion === 2 ? integer(item.afterMode, 0, 0o777) : undefined };
+    return { path: name, file, mode, beforeSha256, afterSha256, touched: item.touched, afterMode: raw.schemaVersion !== undefined ? integer(item.afterMode, 0, 0o777) : undefined };
   });
   checkFilePaths(entries); const target = string(raw.target); if (!path.isAbsolute(target)) throw new Error('Некорректная папка восстановления.');
   const journal: Journal = { target, entries, settingsBefore: parseSettings(object(raw.settingsBefore)), committed: raw.committed, createdDirectories: paths(raw.createdDirectories), temporaryFiles: paths(raw.temporaryFiles) };
-  if (raw.schemaVersion === 2) { journal.schemaVersion = 2; journal.action = string(raw.action, 100); journal.profileId = string(raw.profileId, 36); journal.branch = string(raw.branch, 255); journal.at = string(raw.at, 40); if (!Number.isFinite(Date.parse(journal.at))) throw new Error('Повреждена дата копии.'); }
+  if (raw.schemaVersion === 2 || raw.schemaVersion === 3) { journal.schemaVersion = raw.schemaVersion; journal.action = string(raw.action, 100); journal.profileId = string(raw.profileId, 36); journal.branch = string(raw.branch, 255); journal.at = string(raw.at, 40); if (!Number.isFinite(Date.parse(journal.at))) throw new Error('Повреждена дата копии.'); }
+  if (journal.schemaVersion === 3 && !journal.committed) {
+    const log = await optionalRead(await safePath(directory, 'progress.log')); if (!log) throw new Error('Журнал событий отсутствует.');
+    const end = log.lastIndexOf(10); if (end < 0) throw new Error('Заголовок журнала событий повреждён.');
+    const lines = log.subarray(0, end).toString('utf8').split('\n');
+    const header = object(JSON.parse(lines.shift()!) as unknown); if (header.schemaVersion !== 1) throw new Error('Неподдерживаемый журнал событий.');
+    for (const line of lines) {
+      const event: unknown = JSON.parse(line);
+      if (!Array.isArray(event) || event.length !== 2) throw new Error('Повреждено событие восстановления.');
+      if (event[0] === 't') journal.entries[integer(event[1], 0, journal.entries.length - 1)]!.touched = true;
+      else if (event[0] === 'd') { const name = string(event[1]); validatePath(name); if (!journal.entries.some(entry => entry.path.startsWith(name + '/'))) throw new Error('Каталог вне операции восстановления.'); if (!journal.createdDirectories.includes(name)) journal.createdDirectories.push(name); }
+      else throw new Error('Неизвестное событие восстановления.');
+    }
+  }
   return journal;
 }
 async function restore(directory: string, journal: Journal): Promise<void> {
@@ -991,7 +1006,8 @@ async function restore(directory: string, journal: Journal): Promise<void> {
 async function affectedWorkingPaths(root: string, files: PreparedFile[]): Promise<{ status: string; paths: NonNullable<ImportPreview['overwritePaths']> }> {
   const dirty = await workingPaths(root); const paths: NonNullable<ImportPreview['overwritePaths']> = [];
   const statuses = files.map(file => {
-    const match = dirty.get(file.path) ?? [...dirty].find(([name, value]) => value.status.startsWith('!!') && file.path.startsWith(name.endsWith('/') ? name : name + '/'))?.[1];
+    let match = dirty.get(file.path);
+    for (let parent = path.posix.dirname(file.path); !match && parent !== '.'; parent = path.posix.dirname(parent)) { const candidate = dirty.get(parent + '/') ?? dirty.get(parent); if (candidate?.status.startsWith('!!')) match = candidate; }
     if (match?.status) paths.push({ path: file.path, staged: match.staged });
     return [file.path, match?.status ?? '', match?.index ?? ''];
   });

@@ -356,14 +356,44 @@ export async function readWorkingTree(root: string, profile: Profile): Promise<T
 
 // Include ignored files and both names of a rename; keep index identity for stale checks.
 export async function workingPaths(root: string): Promise<Map<string, { status: string; staged: boolean; index?: string }>> {
-  const entries = (await git(root, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored', '--ignore-submodules=none'])).toString('utf8').split('\0');
+  const entries = (await git(root, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored=matching', '--ignore-submodules=none'])).toString('utf8').split('\0');
   const result = new Map<string, { status: string; staged: boolean; index?: string }>();
   for (let i = 0; i < entries.length; i++) {
     const row = entries[i]; if (!row) continue; const code = row.slice(0, 2);
     const value = { status: code, staged: ![' ', '?', '!'].includes(code[0]!) };
     for (const name of [row.slice(3), ...(/[RC]/.test(code) ? [entries[++i]!] : [])]) { const previous = result.get(name); result.set(name, previous ? { status: previous.status + '|' + code, staged: previous.staged || value.staged } : { ...value }); }
   }
-  const index = (await git(root, ['ls-files', '--stage', '-z'])).toString('utf8').split('\0');
-  for (const row of index) { const tab = row.indexOf('\t'); if (tab < 0) continue; const name = row.slice(tab + 1); const value = result.get(name) ?? { status: '', staged: false }; value.index = row.slice(0, tab); result.set(name, value); }
+  for (const [name, index] of await indexEntries(root)) { const value = result.get(name) ?? { status: '', staged: false }; value.index = index; result.set(name, value); }
   return result;
+}
+
+export async function indexEntries(root: string): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  for (const row of (await git(root, ['ls-files', '--stage', '-z'])).toString('utf8').split('\0')) {
+    const tab = row.indexOf('\t'); if (tab < 0) continue; const name = row.slice(tab + 1); const entry = row.slice(0, tab);
+    result.set(name, result.has(name) ? `${result.get(name)}|${entry}` : entry);
+  }
+  return result;
+}
+
+// Metadata only triggers revalidation; Git verifies selected entries again at commit.
+export async function writeGitGuard(source: Source, head: string, status: string): Promise<(force?: boolean) => Promise<void>> {
+  const root = source.location;
+  const names = ['index', 'HEAD', `refs/heads/${source.branch}`, 'packed-refs', 'MERGE_HEAD', 'rebase-merge', 'rebase-apply', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'sequencer'];
+  const paths = (await git(root, ['rev-parse', '--path-format=absolute', ...names.flatMap(name => ['--git-path', name])])).toString().trim().split('\n');
+  if (paths.length !== names.length || paths.some(name => !path.isAbsolute(name))) throw new Error('Не удалось определить служебные пути Git. Запись не началась.');
+  const expected = (JSON.parse(status) as [string, string, string][]).map(([name, , index]) => [name, index] as const);
+  let shared = ''; let previous = '';
+  const fingerprint = async (): Promise<string> => JSON.stringify(await Promise.all([...paths, ...(shared ? [shared] : [])].map(async name => {
+    try { const stat = await lstat(name, { bigint: true }); return [name, stat.dev, stat.ino, stat.size, stat.mode, ...(name === shared ? [] : [stat.mtimeNs, stat.ctimeNs])].map(String); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [name, 'absent']; throw error; }
+  })));
+  const check = async (force = false): Promise<void> => {
+    if (!force && await fingerprint() === previous) return;
+    shared = (await git(root, ['rev-parse', '--shared-index-path'])).toString().trim(); if (shared && !path.isAbsolute(shared)) shared = path.resolve(root, shared);
+    const before = await fingerprint(); const ready = await requireLocalReady(source); const index = await indexEntries(root);
+    if (ready.head !== head || expected.some(([name, value]) => (index.get(name) ?? '') !== value)) throw new Error('HEAD, ветка или индекс выбранных файлов изменились во время записи.');
+    previous = await fingerprint(); if (before !== previous) throw new Error('Git изменяется во время проверки. Повторите операцию после завершения внешней команды.');
+  };
+  await check(true); return check;
 }
