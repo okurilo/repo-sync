@@ -63,6 +63,17 @@ async function checkToolDiscovery() {
   assert(!windows.calls.some(call => call.shell));
 }
 
+async function checkCommandOutput(directory) {
+  const updater = new AppUpdater(directory, directory, 'unused-target', () => assert.fail('Unexpected quit'));
+  updater.root = directory;
+  await assert.rejects(updater.command(process.execPath, ['-e', "process.stdout.write('x'.repeat(10000));process.stderr.write('bootstrap missing marker');process.exitCode=1"], process.env, 'Fixture'), error => error.message.includes('bootstrap missing marker') && error.message.length < 4200);
+  await assert.rejects(updater.command(process.execPath, ['-e', 'setInterval(()=>{},1000)'], process.env, 'Fixture', 100), /превышено время/);
+  updater.state.phase = 'building';
+  const pending = updater.command(process.execPath, ['-e', 'setInterval(()=>{},1000)'], process.env, 'Fixture');
+  const rejected = assert.rejects(pending, /отменено/);
+  updater.cancel(); await rejected;
+}
+
 async function checkInstaller(failInstall) {
   const folders = new Map([['target', 'old'], ['incoming', 'new']]);
   const launched = [];
@@ -218,6 +229,7 @@ async function checkScopedCancellation(directory) {
     assert.equal(appVersionLabel(null), 'Версия не определена');
     await checkRevisionDetection(root);
     await checkScopedCancellation(root);
+    await checkCommandOutput(root);
     await fs.writeFile(path.join(root, 'package.json'), JSON.stringify({ ...manifest, name: 'other' }));
     await assert.rejects(updateManifest(root, 'win32'), /исходников RepoSync/);
     await checkInstaller(false);

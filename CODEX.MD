@@ -1,5 +1,13 @@
 # Инженерный контекст RepoSync
 
+## 2026-10-14 — Electron после npm ci
+
+- Фото с другого Mac: installed1.0.3, source65e8926, отказ «Сборка новой версии… код1». Шаг npm ci пройден. В закреплённом пакете electron44.4.5 нет install/postinstall hook; обычный build не импортирует electron runtime. Поэтому forced electronDist=node_modules/electron/dist после свежего ci указывает на отсутствующий бинарный каталог. Проблема подтверждена контрактом пакета/порядком вызовов; точный stdout другой машины старый updater отбрасывал.
+- Минимальный механизм: existing command(Node,electron/install.js) после ci и перед dist; cache/checksum/version/arch — штатный installer закреплённого пакета, TLS/CA/зависимости не меняются. При отказе install приложение не заменяется. Текущие Git dirty/HEAD, timeout/cancel/group kill, backup/rollback/relaunch и persistence сохранены.
+- Stdout/stderr command читаются UTF8, общий tail ограничен4000 символами и добавляется к ошибке; успех/отмена не выводят хвост. Нет нового файла логов, состояния/API или telemetry. React выводит текст ошибки, не исполняет содержимое.
+- Полный проход input/tools→ci/bootstrap/dist→timeout/cancel/process I/O→failure/backup/install→persistence/config/security/compatibility выполнен. Добавление pipe не убирает существующий timeout/group kill. Permanent fixture: real child bounded tail/error/timeout/cancel; 32 lifecycle checks real temporary Git/mock npm/bootstrap с отсутствующим dist и обязательной подготовкой, success/build failure/cancel/divergence/Windows helper rollback. Strict build/diffcheck прошли. Другой Mac/native Windows не проверены.
+- Публикация запрошена пользователем: patch1.0.6 синхронизирован с lock, dependencies/overrides прежние; один runtime-файл,+6/-2. После commit/push выполняется macOS arm64 упаковка и проверка artifact identity/bytes/ZIP/DMG по регламенту.
+
 ## 2026-10-13 — Node.js в Applications и .bash_profile
 
 - Фото с другого Mac уточнило реальную конфигурацию: PATH содержит /Applications/Node.js/ARM/node-v22.16.0-darwin-arm64/bin в .bash_profile; NODE_EXTRA_CA_CERTS задан там же. Данные фото — основание для поддержки сценария, не доказательство исполнения на другом Mac.

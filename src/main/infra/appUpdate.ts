@@ -102,13 +102,16 @@ export class AppUpdater {
   private async command(file: string, args: string[], env: NodeJS.ProcessEnv, label: string, timeout = 1_800_000): Promise<void> {
     this.check(); this.state.message = label;
     await new Promise<void>((resolve, reject) => {
-      const child = spawn(file, args, { cwd: this.root, env, shell: false, detached: true, stdio: 'ignore' });
+      const child = spawn(file, args, { cwd: this.root, env, shell: false, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      let tail = '';
+      const output = (chunk: string): void => { tail = (tail + chunk).slice(-4000); };
+      child.stdout?.setEncoding('utf8').on('data', output); child.stderr?.setEncoding('utf8').on('data', output);
       let reason = '';
       const stop = (): void => { if (child.pid) { if (process.platform === 'win32') { const killer = spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { stdio: 'ignore' }); killer.on('error', () => child.kill('SIGKILL')); } else { try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); } } } };
       this.stopProcess = stop;
       const timer = setTimeout(() => { reason = `${label}: превышено время ожидания. Повторите обновление.`; stop(); }, timeout);
       child.on('error', () => { clearTimeout(timer); this.stopProcess = undefined; reject(new Error(`${label}: не удалось запустить процесс.`)); });
-      child.on('close', code => { clearTimeout(timer); this.stopProcess = undefined; code === 0 && !this.stopping ? resolve() : reject(new Error(this.stopping ? 'Обновление отменено. Текущая версия продолжает работать.' : reason || `${label}: процесс завершился с кодом ${code}. Текущая версия сохранена; повторите обновление после проверки подключения и инструментов сборки.`)); });
+      child.on('close', code => { clearTimeout(timer); this.stopProcess = undefined; code === 0 && !this.stopping ? resolve() : reject(new Error(this.stopping ? 'Обновление отменено. Текущая версия продолжает работать.' : reason || `${label}: процесс завершился с кодом ${code}. Текущая версия сохранена.${tail.trim() ? `\n${tail.trim()}` : ''}`)); });
     });
   }
   private async candidate(directory: string): Promise<string | undefined> {
@@ -182,6 +185,7 @@ export class AppUpdater {
       const output = path.join(this.data, `app-build-${randomUUID()}`); await mkdir(output, { recursive: true });
       this.state.command = `npm run ${manifest.script}`;
       await this.command(tools.node, [tools.npm, 'ci'], tools.env, 'Установка зависимостей…');
+      await this.command(tools.node, [path.join(this.root, 'node_modules/electron/install.js')], tools.env, 'Подготовка Electron…');
       await this.command(tools.node, [tools.npm, 'run', manifest.script, '--', process.platform === 'win32' ? '--win' : '--mac', `--${process.arch}`, `--config.directories.output=${output}`, `--config.electronDist=${path.join(this.root, 'node_modules/electron/dist')}`], tools.env, 'Сборка новой версии…');
       this.check();
       const built = process.platform === 'win32' ? path.join(output, process.arch === 'x64' ? 'win-unpacked' : `win-${process.arch}-unpacked`) : path.join(output, `mac${process.arch === 'arm64' ? '-arm64' : ''}`, 'RepoSync.app');
