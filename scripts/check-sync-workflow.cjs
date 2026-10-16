@@ -40,9 +40,12 @@ async function compare() { props().sourceControls.props.compare({mode:'branch',b
   props().checkSelection(); await finish('localState',local); await finish('prepareIncoming',{token:'next',entries:[entries[0]],conflicts:[],overwritePaths:[{path:'code.ts'}]});
   props().confirmOverwrite(true); props().apply(); const applied=await finish('applyImport',settings); assert.equal(applied.args[1],true); await finish('localState',local); assert.equal(props().step,'done');
   await begin(); props().checkSelection(); await finish('selectExport',{findings:[{id:'f',path:'code.ts',severity:'block'}],originalFindings:[{id:'f',path:'code.ts',severity:'block'}],parts:1,estimatedBytes:20}); await finish('settings',settings);
-  assert.equal(props().step,'security'); assert(props().exportReady);
-  props().redact(['f'],true); await tick(); assert(!props().exportReady,'recalculation invalidates export readiness');
-  const failed=queue.shift(); assert.equal(failed.name,'selectExport'); failed.reject(new Error('Scan failed')); await tick(); assert(!props().exportReady); assert.equal(props().error,'Scan failed');
+  assert.equal(props().step,'security'); assert(props().reviewReady);
+  const reviewSnapshot=props().reviewFindings;props().decide(['f'],'keep');await tick();assert.equal(queue.length,0,'accepting without a mask does not rescan');assert(props().reviewReady);assert.equal(props().reviewFindings,reviewSnapshot,'review data remains mounted after a local decision');
+  props().decide(['f'],'mask'); await tick(); assert(!props().reviewReady,'recalculation invalidates export readiness');
+  assert.equal(props().step,'security');assert.equal(props().reviewFindings,reviewSnapshot,'pending recalculation retains the current findings');
+  const failed=queue.shift(); assert.equal(failed.name,'selectExport'); failed.reject(new Error('Scan failed')); await tick(); assert(!props().reviewReady); assert.equal(props().error,'Scan failed');
+  assert.equal(props().step,'security');assert.equal(props().reviewFindings,reviewSnapshot,'failed recalculation keeps the review visible');
   props().setStep('compare'); props().checkSelection(); await finish('selectExport',{findings:[],originalFindings:[],parts:1,estimatedBytes:20}); await finish('settings',settings); assert.equal(props().step,'apply','no findings still has explicit review stage');
   props().exportPackage(); await finish('exportPackage',['part.md']); await finish('settings',settings); assert.equal(props().step,'done');
   await incoming(); props().sourceControls.props.compare({mode:'branch',branch:'feature',baseBranch:'main'}); await tick(); queue.shift().reject(new Error('Git unavailable')); await tick(); assert.equal(props().step,'source'); assert.equal(props().error,'Git unavailable'); assert.equal(props().analysis,null);
@@ -60,9 +63,9 @@ async function compare() { props().sourceControls.props.compare({mode:'branch',b
   const view=overrides=>workflow.exports.SyncWorkflow({...props(),...overrides});
   function text(node){if(typeof node==='string'||typeof node==='number')return String(node);if(Array.isArray(node))return node.map(text).join('');return text(node?.props?.children??[]);}
   function button(node,label){if(!node||typeof node!=='object')return null;if(node.type?.displayName==='Button'&&text(node).trim()===label)return node;for(const child of Array.isArray(node.props?.children)?node.props.children:[node.props?.children]){const found=button(child,label);if(found)return found;}return null;}
-  const exportProps={step:'apply',direction:'outgoing',settings:{...settings,outputDirectory:'/out'},analysis:{...analysis,findings:[]},reviewFindings:[],exportReady:true,selectedIncomingPaths:['code.ts'],busy:false,locked:false,error:''};
+  const exportProps={step:'apply',direction:'outgoing',settings:{...settings,outputDirectory:'/out'},analysis:{...analysis,findings:[]},reviewFindings:[],reviewReady:true,selectedIncomingPaths:['code.ts'],busy:false,locked:false,error:''};
   assert(!button(view(exportProps),'Создать пакет').props.disabled);
-  for(const change of [{exportReady:false},{settings},{selectedIncomingPaths:[]},{locked:true},{error:'failed'},{reviewFindings:[{id:'f',path:'code.ts'}]}])assert(button(view({...exportProps,...change}),'Создать пакет').props.disabled,'unsafe export is disabled');
+  for(const change of [{reviewReady:false},{settings},{selectedIncomingPaths:[]},{locked:true},{error:'failed'},{reviewFindings:[{id:'f',path:'code.ts'}]}])assert(button(view({...exportProps,...change}),'Создать пакет').props.disabled,'unsafe export is disabled');
   const secret={id:'f',path:'code.ts',severity:'block'};
   assert(button(view({...exportProps,analysis:{...analysis,findings:[secret]},reviewFindings:[secret],kept:['f'],override:false}),'Создать пакет').props.disabled,'keeping secret still needs explicit override');
   const incomingProps={step:'apply',direction:'incoming',importPreview:{token:'p',entries:[entries[0]],overwritePaths:[{path:'code.ts'}]},overwriteConfirmed:false,locked:false,busy:false,error:''};
