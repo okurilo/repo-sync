@@ -13,6 +13,8 @@ let window: BrowserWindow | null = null;
 let busy = false;
 const isDev = !app.isPackaged && process.env.REPOSYNC_DEV_URL === 'http://127.0.0.1:5173';
 const rendererFile = path.join(__dirname, '../../renderer/index.html');
+const MAX_FINDING_ID_LENGTH = 25;
+function findingId(value: unknown): string { return string(value, MAX_FINDING_ID_LENGTH); }
 
 function argsMode(value: unknown): 'internal' | 'global' { return value && typeof value === 'object' && 'kind' in value && value.kind === 'remote' ? 'global' : 'internal'; }
 function direction(value: unknown): 'incoming' | 'outgoing' { if (value !== 'incoming' && value !== 'outgoing') throw new Error('Неизвестное направление'); return value; }
@@ -116,21 +118,21 @@ async function start(): Promise<void> {
         }
         case 'exportPackage': {
           if (!Array.isArray(args[1]) || args[1].length > 10_000 || typeof args[2] !== 'boolean') throw new Error('Не удалось прочитать решения проверки данных. Повторите проверку.');
-          value = await engine.exportPackage(string(args[0], 36), args[1].map((v: unknown) => string(v, 20)), args[2]); break;
+          value = await engine.exportPackage(string(args[0], 36), args[1].map(findingId), args[2]); break;
         }
         case 'confirmTransfer': value = await engine.confirmTransfer(string(args[0], 36)); break;
         case 'discardPending': value = await engine.discardPending(string(args[0], 36)); break;
-        case 'excludeFinding': value = await engine.excludeFinding(string(args[0], 36), string(args[1], 20)); break;
+        case 'excludeFinding': value = await engine.excludeFinding(string(args[0], 36), findingId(args[1])); break;
         case 'openFinding': {
-          const { session, finding } = engine.finding(string(args[0], 36), string(args[1], 20));
+          const { session, finding } = engine.finding(string(args[0], 36), findingId(args[1]));
           if (session.resolved.source.kind === 'local') {
             shell.showItemInFolder(await safePath(session.resolved.root, finding.public.path));
           } else {
-            await shell.openExternal(engine.findingURL(string(args[0], 36), string(args[1], 20)));
+            await shell.openExternal(engine.findingURL(string(args[0], 36), findingId(args[1])));
           }
           value = undefined; break;
         }
-        case 'previewReplacement': value = await engine.previewReplacement(string(args[0], 36), string(args[1], 20)); break;
+        case 'previewReplacement': value = await engine.previewReplacement(string(args[0], 36), findingId(args[1])); break;
         case 'applyReplacement': await engine.applyReplacement(string(args[0], 36)); value = undefined; break;
         case 'loadPackage': {
           const files = args[0];
@@ -143,7 +145,7 @@ async function start(): Promise<void> {
           if (paths !== undefined && (!Array.isArray(paths) || paths.length > 100_000)) throw new Error('Не удалось прочитать выбранные файлы. Обновите сравнение.');
           const selected = paths === undefined ? undefined : paths.map(item => string(item));
           if (args[2] !== undefined && (!Array.isArray(args[2]) || args[2].length > (command === 'selectExport' ? 10_000 : 100_000))) throw new Error('Некорректные решения проверки.');
-          const redacted = args[2] === undefined ? [] : (args[2] as unknown[]).map(item => string(item, command === 'selectExport' ? 25 : 4096));
+          const redacted = args[2] === undefined ? [] : (args[2] as unknown[]).map(item => command === 'selectExport' ? findingId(item) : string(item, 4096));
           value = command === 'selectExport' ? await engine.selectExport(string(args[0], 36), selected, redacted) : command === 'preparePackage' ? await engine.preparePackage(string(args[0], 36), selected, redacted) : await engine.prepareIncoming(string(args[0], 36), selected, redacted);
           break;
         }
