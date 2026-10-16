@@ -48,9 +48,6 @@ export function SecurityReview({ analysis, kept, decide, selectedPaths, togglePa
   const unresolved = selectedFindings.filter(item => !keptSet.has(item.id) && !maskedSet.has(item.id));
   const replaceable = unresolved.filter(item => item.canReplace);
   const totalUndecided = analysis.findings.filter(item => selected.has(item.path) && !keptSet.has(item.id) && !maskedSet.has(item.id)).length;
-  const includedFindingCount = analysis.findings.filter(item => selected.has(item.path)).length;
-  const excludedCount = analysis.entries.filter(entry => !selected.has(entry.path)).length;
-  const maskedCount = analysis.findings.filter(item => selected.has(item.path) && maskedSet.has(item.id)).length;
 
   const tree = useMemo(() => {
     const root: FileNode = { folders: new Map(), paths: [] };
@@ -132,8 +129,5 @@ export function SecurityReview({ analysis, kept, decide, selectedPaths, togglePa
         </>}
       </Details>
     </Workspace>
-    <div role="status" style={{ position: 'sticky', bottom: 0, background: 'var(--raised)', padding: '12px 16px', borderTop: '1px solid var(--line)', fontVariantNumeric: 'tabular-nums', zIndex: 2 }}>
-      <Row><strong>Файлов в пакете: {selectedPaths.length}</strong><span>Исключено: {excludedCount}</span><span>Совпадений в пакете: {includedFindingCount}</span><span>Заменено: {maskedCount}</span><strong style={{ color: totalUndecided ? 'var(--warning)' : 'var(--text)' }}>Не решено: {totalUndecided}</strong></Row>
-    </div>
   </div>;
 }

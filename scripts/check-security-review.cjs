@@ -1,5 +1,8 @@
 // Exercise the per-file security review with real component output and controlled state.
 const fs = require('node:fs'); const vm = require('node:vm'); const assert = require('node:assert/strict'); const ts = require('typescript'); const React = require('react');
+const securityReviewSource = fs.readFileSync('src/renderer/features/SecurityReview.tsx', 'utf8'); const workflowSource = fs.readFileSync('src/renderer/features/SyncWorkflow.tsx', 'utf8');
+assert(!/position:\s*['"]sticky['"]/.test(securityReviewSource), 'review summary must not create a second sticky footer inside its bounded workspace');
+assert(workflowSource.includes('ReviewActionBar') && workflowSource.includes('Файлов в пакете:'), 'package summary belongs in the shared lower action bar');
 const states = []; let stateIndex = 0;
 const react = { ...React, useState(initial) { const index = stateIndex++; if (!(index in states)) states[index] = typeof initial === 'function' ? initial() : initial; return [states[index], next => states[index] = typeof next === 'function' ? next(states[index]) : next]; }, useMemo: fn => fn() };
 const components = new Map(); const component = name => { if (!components.has(name)) components.set(name, Object.assign(() => null, { displayName: name })); return components.get(name); };
