@@ -8,7 +8,9 @@ export type Encoding = 'RAW' | 'BASE64' | 'BROTLI_BASE64';
 export interface GitRevision { branch: string; commit?: string }
 export interface Source { kind: 'local' | 'remote'; location: string; branch: string; commit?: string; base?: GitRevision }
 export interface CommitOption { sha: string; date: string; subject?: string }
-export interface OutgoingSelection { mode: 'commit' | 'working'; commit?: string }
+export interface CompareSelection { mode: 'compare'; fromBranch: string; fromCommit?: string; toBranch: string; toCommit?: string; toWorking?: boolean }
+export type OutgoingSelection = { mode: 'commit'; commit?: string } | { mode: 'working' } | CompareSelection;
+export interface MergeBasePayload { size: number; sha256: string; mode: number; encoding: 'RAW' | 'BASE64'; payload: string }
 export interface IncomingSelection { mode: 'branch' | 'branches' | 'commit' | 'range' | 'repositories' | 'zero'; commit?: string; from?: string; baseBranch?: string; branch?: string }
 export interface ProjectFilters { extra: string[]; disabled: string[] }
 export interface LastAction { type: string; at: string }
@@ -38,10 +40,11 @@ export interface Settings {
 export interface RecordData {
   path: string; oldPath?: string; operation: Operation; size: number; mode: number;
   beforeMode?: number; beforeSha256?: string; afterSha256?: string; encoding: Encoding; payload: string;
+  mergeBase?: MergeBasePayload;
 }
 export interface Transport {
   unavailablePaths?: string[];
-  protocolVersion: 1 | 2 | 3 | 4 | 5 | 6; schemaVersion: 1 | 2 | 3 | 4 | 5 | 6; packageId: string; packageType: PackageType;
+  protocolVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7; schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7; packageId: string; packageType: PackageType;
   sourceState: string | null; targetState: string; scope: string;
   files: FileEntry[]; records: RecordData[];
 }
@@ -74,7 +77,7 @@ export interface ImportPreview {
 }
 export interface ReplacementPreview { token: string; path: string; line: number; preview: string; replacement: string }
 export interface CodeComparison { unavailablePaths?: string[]; token: string; from: string | null; to: string; entries: Analysis['entries']; lineChanges?: { added: number; removed: number } }
-export interface CodePreview { before: string; after: string; message?: string; beforeLabel?: string; afterLabel?: string; details?: string; source?: CodePreview }
+export interface CodePreview { before: string; after: string; message?: string; beforeLabel?: string; afterLabel?: string; details?: string; sourceLabel?: string; source?: CodePreview }
 export interface BackupSummary { id: string; at: string; files: number; action?: string; branch?: string; unavailable?: string; directory: string }
 export interface RestorePreview { token: string; entries: { path: string; action: string }[] }
 export interface AppUpdateState { installedVersion?: string; installedCommit?: string; installedBranch?: string; heads?: Record<string, string>; checkedAt?: string; root: string; branch: string; branches: string[]; phase: 'idle' | 'checking' | 'building' | 'restarting' | 'error'; message: string; command: string; error?: string }
@@ -103,7 +106,7 @@ export interface API {
   listCommits(source: Source): Promise<CommitOption[]>;
   previewComparison(profile: Profile, direction: Direction): Promise<CodeComparison>;
   previewCode(token: string, path: string): Promise<CodePreview>;
-  analyze(id: string, direction: Direction, selection?: IncomingSelection, outgoing?: OutgoingSelection): Promise<Analysis>;
+  analyze(id: string, direction: Direction, selection?: IncomingSelection, outgoing?: OutgoingSelection | CompareSelection): Promise<Analysis>;
   selectExport(token: string, selectedPaths: string[], redactedIds?: string[]): Promise<ExportReview>;
   loadPackage(path: string | string[], profileId: string): Promise<CodeComparison>;
   preparePackage(token: string, selectedPaths: string[], acceptedPaths?: string[]): Promise<ImportPreview>;
