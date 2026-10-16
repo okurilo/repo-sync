@@ -1,50 +1,139 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
+import styled from 'styled-components';
 import type { Analysis, Finding } from '../../shared/types';
-import { Button, EmptyState, Muted, Row, Status } from '../ui/components';
+import { Button, Muted, Row } from '../ui/components';
+
 interface Props {
-  analysis: Analysis; kept: string[]; keep: (ids: string[], retained: boolean) => void;
-  selectedPaths: string[]; redactedIds: string[]; redact: (ids: string[], enabled: boolean) => void;
-  exclude: (finding: Finding) => void; open: (finding: Finding) => void; busy: boolean; fileFilters?: ReactNode;
+  analysis: Analysis; kept: string[]; decide: (ids: string[], choice: 'keep' | 'mask' | 'undecided') => void;
+  selectedPaths: string[]; togglePath: (path: string, included: boolean) => void;
+  redactedIds: string[]; open: (finding: Finding) => void; busy: boolean;
 }
-export function SecurityReview({ analysis, kept, keep, selectedPaths, redactedIds, redact, exclude, open, busy, fileFilters }: Props): React.JSX.Element {
-  const [query, setQuery] = useState(''); const [limit, setLimit] = useState(20); const sentinel = useRef<HTMLDivElement>(null);
-  const selectedSet = new Set(selectedPaths); const keptSet = new Set(kept); const maskedSet = new Set(redactedIds); const entryRules = new Map(analysis.entries.map(entry => [entry.path, entry.excludedBy]));
-  const findings = analysis.findings; const groups = new Map<string, Finding[]>(); const term = query.trim().toLocaleLowerCase();
-  for (const finding of findings) {
-    if (term && !`${finding.path} ${finding.reason} ${finding.preview} ${finding.context?.before ?? ''} ${finding.context?.after ?? ''}`.toLocaleLowerCase().includes(term)) continue;
-    const group = groups.get(finding.path) ?? []; group.push(finding); groups.set(finding.path, group);
+interface FileNode { folders: Map<string, FileNode>; paths: string[] }
+
+const Workspace = styled('div')({ display: 'grid', gridTemplateColumns: 'minmax(220px, 280px) minmax(0, 1fr)', minHeight: 480, maxHeight: 'min(72vh, 820px)', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)', background: 'var(--surface)', '@media(max-width: 700px)': { gridTemplateColumns: 'minmax(0, 1fr)', maxHeight: 'none' } });
+const Navigation = styled('nav')({ minHeight: 0, overflowY: 'auto', padding: 14, background: 'var(--raised)', borderRight: '1px solid var(--line)', '@media(max-width: 700px)': { maxHeight: 300, borderRight: 0, borderBottom: '1px solid var(--line)' } });
+const Details = styled('section')({ minWidth: 0, minHeight: 0, overflowY: 'auto', padding: '20px 24px', '@media(max-width: 700px)': { minHeight: 360 } });
+const PathButton = styled('button')<{ $active: boolean }>(({ $active }) => ({ flex: 1, minWidth: 0, overflowWrap: 'anywhere', textAlign: 'left', border: 0, borderRadius: 4, padding: '6px 8px', background: $active ? 'var(--tint)' : 'transparent', color: $active ? 'var(--text)' : 'var(--muted)', fontSize: 12 }));
+const Finding = styled('article')({ padding: '14px 0', borderTop: '1px solid var(--line)', '& pre': { padding: 12, background: 'var(--input)', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', lineHeight: 1.6, margin: '10px 0' } });
+
+export function SecurityReview({ analysis, kept, decide, selectedPaths, togglePath, redactedIds, open, busy }: Props): React.JSX.Element {
+  const [query, setQuery] = useState('');
+  const [onlyUndecided, setOnlyUndecided] = useState(false);
+  const [selectedPath, setSelectedPath] = useState(() => analysis.findings.find(item => selectedPaths.includes(item.path))?.path ?? selectedPaths[0] ?? analysis.entries[0]?.path ?? '');
+  const [limit, setLimit] = useState(1000);
+  const selected = new Set(selectedPaths); const keptSet = new Set(kept); const maskedSet = new Set(redactedIds);
+  const findingsByPath = useMemo(() => {
+    const map = new Map<string, Finding[]>();
+    for (const finding of analysis.findings) { const group = map.get(finding.path) ?? []; group.push(finding); map.set(finding.path, group); }
+    for (const group of map.values()) group.sort((a, b) => a.line - b.line || a.reason.localeCompare(b.reason));
+    return map;
+  }, [analysis.findings]);
+  const entryByPath = useMemo(() => new Map(analysis.entries.map(entry => [entry.path, entry])), [analysis.entries]);
+  const unresolvedByPath = new Map<string, number>();
+  for (const [path, items] of findingsByPath) unresolvedByPath.set(path, items.filter(item => !keptSet.has(item.id) && !maskedSet.has(item.id)).length);
+  const term = query.trim().toLocaleLowerCase();
+  const visibleEntries = analysis.entries.filter(entry => {
+    const items = findingsByPath.get(entry.path) ?? [];
+    const matches = !term || `${entry.path} ${items.map(item => `${item.reason} ${item.preview} ${item.context?.before ?? ''} ${item.context?.after ?? ''}`).join(' ')}`.toLocaleLowerCase().includes(term);
+    return matches && (!onlyUndecided || (unresolvedByPath.get(entry.path) ?? 0) > 0 || entry.path === selectedPath);
+  });
+  const treeEntries = visibleEntries.slice(0, limit);
+  if (visibleEntries.slice(limit).some(entry => entry.path === selectedPath)) {
+    const current = visibleEntries.find(entry => entry.path === selectedPath);
+    if (current) treeEntries.push(current);
   }
-  for (const group of groups.values()) group.sort((a, b) => a.line - b.line || a.reason.localeCompare(b.reason));
-  const paths = [...groups.keys()]; const active = findings.filter(f => selectedSet.has(f.path));
-  const undecided = active.filter(f => !keptSet.has(f.id) && !maskedSet.has(f.id)).length;
-  const excluded = analysis.entries.filter(entry => !selectedSet.has(entry.path));
-  const shownActive = [...groups.values()].flat().filter(f => selectedSet.has(f.path));
-  useEffect(() => { setLimit(20); }, [query]);
-  useEffect(() => { const node = sentinel.current; if (!node || typeof IntersectionObserver === 'undefined') return; const observer = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) setLimit(previous => previous + 20); }, { rootMargin: '600px' }); observer.observe(node); return () => observer.disconnect(); }, [limit, paths.length]);
-  if (!findings.length) return <EmptyState title="Совпадений не найдено"><Muted>Автоматическая проверка может пропустить чувствительные данные. Просмотрите изменения перед созданием пакета.</Muted>{fileFilters}</EmptyState>;
+  const selectedEntry = analysis.entries.find(entry => entry.path === selectedPath);
+  const selectedFindings = findingsByPath.get(selectedPath) ?? [];
+  const isIncluded = selected.has(selectedPath) && !selectedEntry?.excludedBy;
+  const unresolved = selectedFindings.filter(item => !keptSet.has(item.id) && !maskedSet.has(item.id));
+  const replaceable = unresolved.filter(item => item.canReplace);
+  const totalUndecided = analysis.findings.filter(item => selected.has(item.path) && !keptSet.has(item.id) && !maskedSet.has(item.id)).length;
+  const includedFindingCount = analysis.findings.filter(item => selected.has(item.path)).length;
+  const excludedCount = analysis.entries.filter(entry => !selected.has(entry.path)).length;
+  const maskedCount = analysis.findings.filter(item => selected.has(item.path) && maskedSet.has(item.id)).length;
+
+  const tree = useMemo(() => {
+    const root: FileNode = { folders: new Map(), paths: [] };
+    for (const entry of visibleEntries) {
+      const parts = entry.path.split('/'); let node = root;
+      for (const folder of parts.slice(0, -1)) { let next = node.folders.get(folder); if (!next) { next = { folders: new Map(), paths: [] }; node.folders.set(folder, next); } node = next; }
+      node.paths.push(entry.path);
+    }
+    return root;
+  }, [treeEntries]);
+
+  function renderTree(node: FileNode, prefix = ''): ReactNode {
+    const folders = [...node.folders].sort(([a], [b]) => a.localeCompare(b));
+    const files = [...node.paths].sort((a, b) => a.localeCompare(b));
+    return <>
+      {folders.map(([folder, child]) => <details key={`${prefix}${folder}`} open>
+        <summary style={{ padding: '5px 0', overflowWrap: 'anywhere' }}>{folder}/</summary>
+        <div style={{ paddingLeft: 10 }}>{renderTree(child, `${prefix}${folder}/`)}</div>
+      </details>)}
+      {files.map(path => {
+        const entry = entryByPath.get(path)!; const items = findingsByPath.get(path) ?? [];
+        const pending = unresolvedByPath.get(path) ?? 0; const included = selected.has(path) && !entry.excludedBy;
+        const status = entry.excludedBy ? `Исключено правилом ${entry.excludedBy}` : !included ? 'Исключён' : pending ? `Нужно решение · ${pending}` : items.length ? 'Проверен' : 'Без совпадений';
+        return <Row key={path} style={{ gap: 4, flexWrap: 'nowrap', alignItems: 'start' }}>
+          <input aria-label={`${included ? 'Исключить' : 'Включить'} файл ${path}`} type="checkbox" checked={included} disabled={busy || !!entry.excludedBy} onChange={event => togglePath(path, event.target.checked)} style={{ marginTop: 9 }} />
+          <div style={{ minWidth: 0, flex: 1 }}>
+          <PathButton type="button" $active={path === selectedPath} aria-current={path === selectedPath ? 'page' : undefined} onClick={() => setSelectedPath(path)}>{path.split('/').at(-1)}</PathButton>
+            <small style={{ display: 'block', padding: '0 8px 5px', overflowWrap: 'anywhere' }}>{status}</small>
+          </div>
+        </Row>;
+      })}
+    </>;
+  }
+
+  function decideFile(choice: 'keep' | 'mask'): void {
+    const ids = (choice === 'keep' ? unresolved : replaceable).map(item => item.id);
+    if (ids.length) decide(ids, choice);
+  }
+  function nextUndecided(): void {
+    const paths = analysis.entries.filter(entry => selected.has(entry.path) && !entry.excludedBy && (unresolvedByPath.get(entry.path) ?? 0) > 0).map(entry => entry.path);
+    if (!paths.length) return;
+    const index = paths.indexOf(selectedPath); setSelectedPath(paths[(index + 1 + paths.length) % paths.length]!);
+  }
+
   return <div style={{ marginTop: 24, minWidth: 0 }}>
-    <h2>Проверка данных</h2><Muted>Просмотрите найденные значения. Решения меняют только выгрузку; исходные файлы сохраняются.</Muted>
-    <details><summary>Фильтры переноса</summary>{fileFilters}</details>
-    <Row style={{ margin: '16px 0', alignItems: 'end' }}><label style={{ flex: '1 1 280px' }}>Поиск по папке, файлу или данным<input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="Путь, причина или найденное значение…" /></label><Button disabled={busy || !shownActive.length} onClick={() => { redact(shownActive.map(f => f.id), false); keep(shownActive.map(f => f.id), true); }}>Оставить {query ? 'найденные' : 'все'}</Button><Button disabled={busy || !shownActive.some(f => f.canReplace)} onClick={() => redact(shownActive.filter(f => f.canReplace).map(f => f.id), true)}>Заменить {query ? 'найденные' : 'все'} на *</Button></Row>
-    {!paths.length && <Status>Совпадений не найдено по запросу. Измените поиск; принятые решения сохранены.</Status>}
-    {paths.slice(0, limit).map(name => {
-      const items = groups.get(name)!; const included = selectedSet.has(name); const rule = entryRules.get(name);
-      return <section key={name} style={{ borderTop: '1px solid var(--line)', padding: '20px 0', contentVisibility: 'auto', containIntrinsicSize: 'auto 320px' }}>
-        <Row style={{ justifyContent: 'space-between', marginBottom: 12 }}><div style={{ minWidth: 0 }}><code style={{ overflowWrap: 'anywhere', color: included ? 'var(--text)' : 'var(--muted)' }}>{name}</code><small style={{ display: 'block' }}>Совпадений: {items.length} · {rule ? `Исключено правилом ${rule}` : included ? 'Входит в выгрузку' : 'Исключён из выгрузки'}</small></div><Row><Button disabled={busy || !!rule} onClick={() => exclude(items[0]!)}>{included ? 'Исключить файл' : 'Вернуть файл'}</Button><Button disabled={busy} onClick={() => open(items[0]!)}>Показать файл</Button></Row></Row>
-        <div style={{ color: included ? 'var(--text)' : 'var(--muted)' }}>
-          {items.map(finding => {
-            const masked = maskedSet.has(finding.id); const retained = keptSet.has(finding.id); const ctx = finding.context;
-            return <div key={finding.id} style={{ padding: '12px 0', borderTop: '1px solid var(--line)' }}>
-              <Row style={{ justifyContent: 'space-between' }}><div><strong>{finding.reason}</strong><small style={{ display: 'block' }}>Строка {finding.line} · {finding.severity === 'block' ? 'Данные доступа' : 'Персональные данные'}</small></div><label>В выгрузке<select aria-label={`Решение: ${name}, строка ${finding.line}, ${finding.reason}`} disabled={busy || !included} value={masked ? 'mask' : retained ? 'keep' : 'undecided'} onChange={event => { const choice = event.target.value; keep([finding.id], choice === 'keep'); redact([finding.id], choice === 'mask'); }}><option value="undecided">Не решено</option><option value="keep">Оставить значение</option>{finding.canReplace && <option value="mask">Заменить на *</option>}</select></label></Row>
-              <pre style={{ padding: 12, background: 'var(--input)', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', lineHeight: 1.6, margin: '10px 0' }}><code>{ctx ? <>{ctx.before}<mark style={{ color: included ? 'var(--warning)' : 'var(--muted)', background: 'var(--raised)' }}>{ctx.match}</mark>{ctx.after}</> : finding.preview}</code></pre>
-              {masked && <small>В выгрузке: <code>{(ctx?.match ?? finding.preview).replace(/[^\r\n]/gu, '*')}</code> · исходник без изменений</small>}
-              {!included && <small>Файл пропущен. Решение сохранено и восстановится при возврате файла.</small>}
-            </div>;
-          })}
-        </div>
-      </section>;
-    })}
-    {paths.length > limit && <div ref={sentinel}><Button onClick={() => setLimit(previous => previous + 20)}>Показать ещё · осталось {paths.length - limit}</Button></div>}
-    <div role="status" style={{ background: 'var(--raised)', padding: '14px 16px', borderTop: '1px solid var(--line)', fontVariantNumeric: 'tabular-nums', zIndex: 2 }}><Row><strong>Файлов в пакете: {selectedPaths.length}</strong><span>Исключено: {excluded.length} · масками: {excluded.filter(entry => entry.excludedBy).length}</span><span>Оставлено значений: {active.filter(f => keptSet.has(f.id)).length}</span><span>Заменено: {active.filter(f => maskedSet.has(f.id)).length}</span><strong style={{ color: undecided ? 'var(--warning)' : 'var(--text)' }}>Не решено: {undecided}</strong></Row></div>
+    <h2>Проверка данных</h2>
+    <Muted>Решения относятся к выгрузке. Исходные файлы останутся без изменений.</Muted>
+    <Workspace aria-label="Пофайловая проверка данных">
+      <Navigation aria-label="Файлы пакета">
+        <label style={{ fontSize: 12, marginBottom: 12 }}>Найти файл или совпадение<input type="search" value={query} onChange={event => { setLimit(1000); setQuery(event.target.value); }} placeholder="Путь, причина или значение…" /></label>
+        <label style={{ display: 'flex', gridTemplateColumns: 'auto 1fr', alignItems: 'center', gap: 8, margin: '10px 0 14px', fontSize: 12 }}><input type="checkbox" checked={onlyUndecided} onChange={event => { setLimit(1000); setOnlyUndecided(event.target.checked); }} />Только требующие решения</label>
+        <small>В пакете: {selectedPaths.length} из {analysis.entries.length}</small>
+        <div style={{ marginTop: 8 }}>{renderTree(tree)}</div>
+        {visibleEntries.length > limit && <Button style={{ marginTop: 8 }} disabled={busy} onClick={() => setLimit(previous => previous + 1000)}>Показать ещё · осталось {visibleEntries.length - limit}</Button>}
+        {!visibleEntries.length && <p>Файлы не найдены. Измените поиск или фильтр.</p>}
+      </Navigation>
+      <Details aria-label={selectedPath ? `Проверка файла ${selectedPath}` : 'Проверка файла'}>
+        {!selectedEntry ? <p>Выберите файл в дереве.</p> : <>
+          <Row style={{ justifyContent: 'space-between', alignItems: 'start' }}><div style={{ minWidth: 0 }}><code style={{ overflowWrap: 'anywhere' }}>{selectedPath}</code><small style={{ display: 'block', marginTop: 6 }}>{selectedEntry.excludedBy ? `Исключено правилом ${selectedEntry.excludedBy}` : isIncluded ? 'Входит в пакет' : 'Исключён из пакета'} · совпадений: {selectedFindings.length} · нерешённых: {unresolved.length}</small></div>
+            {selectedFindings[0] && <Button disabled={busy} onClick={() => open(selectedFindings[0]!)}>Показать файл</Button>}
+          </Row>
+          <Row style={{ margin: '16px 0', gap: 8 }}>
+            <Button disabled={busy || !unresolved.length || !isIncluded} onClick={() => decideFile('keep')}>Принять файл · {unresolved.length}</Button>
+            <Button disabled={busy || !replaceable.length || !isIncluded} onClick={() => decideFile('mask')}>Заменить нерешённые на * · {replaceable.length}</Button>
+            <Button disabled={busy || !!selectedEntry.excludedBy} onClick={() => togglePath(selectedPath, !isIncluded)}>{isIncluded ? 'Исключить файл' : 'Вернуть файл'}</Button>
+            <Button disabled={busy || !totalUndecided} onClick={nextUndecided}>Следующий нерешённый</Button>
+          </Row>
+          {selectedFindings.length ? selectedFindings.map(finding => {
+            const masked = maskedSet.has(finding.id); const retained = keptSet.has(finding.id); const context = finding.context;
+            return <Finding key={finding.id}>
+              <Row style={{ justifyContent: 'space-between', alignItems: 'start' }}><div><strong>{finding.reason}</strong><small style={{ display: 'block' }}>Строка {finding.line} · {finding.severity === 'block' ? 'Данные доступа' : 'Персональные данные'}</small></div>
+                <label style={{ minWidth: 210 }}>В выгрузке<select aria-label={`Решение: ${selectedPath}, строка ${finding.line}, ${finding.reason}`} disabled={busy || !isIncluded} value={masked ? 'mask' : retained ? 'keep' : 'undecided'} onChange={event => decide([finding.id], event.target.value as 'keep' | 'mask' | 'undecided')}><option value="undecided">Не решено</option><option value="keep">Оставить значение</option>{finding.canReplace && <option value="mask">Заменить на *</option>}</select></label>
+              </Row>
+              <pre><code>{context ? <>{context.before}<mark style={{ color: isIncluded ? 'var(--warning)' : 'var(--muted)', background: 'var(--raised)' }}>{context.match}</mark>{context.after}</> : finding.preview}</code></pre>
+              {masked && <small>В выгрузке: <code>{(context?.match ?? finding.preview).replace(/[^\r\n]/gu, '*')}</code> · исходник без изменений</small>}
+              {!isIncluded && <small style={{ display: 'block', marginTop: 8 }}>Файл пропущен. Решение сохранено и восстановится при возврате файла.</small>}
+            </Finding>;
+          }) : <p>{isIncluded ? 'Совпадений не найдено. Автоматическая проверка может пропустить чувствительные данные; проверьте содержимое файла.' : 'Файл исключён из пакета и не сканировался.'}</p>}
+        </>}
+      </Details>
+    </Workspace>
+    <div role="status" style={{ position: 'sticky', bottom: 0, background: 'var(--raised)', padding: '12px 16px', borderTop: '1px solid var(--line)', fontVariantNumeric: 'tabular-nums', zIndex: 2 }}>
+      <Row><strong>Файлов в пакете: {selectedPaths.length}</strong><span>Исключено: {excludedCount}</span><span>Совпадений в пакете: {includedFindingCount}</span><span>Заменено: {maskedCount}</span><strong style={{ color: totalUndecided ? 'var(--warning)' : 'var(--text)' }}>Не решено: {totalUndecided}</strong></Row>
+    </div>
   </div>;
 }

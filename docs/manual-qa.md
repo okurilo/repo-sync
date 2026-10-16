@@ -1,5 +1,12 @@
 # Ручная проверка v1
 
+## Проверка данных по файлам — 2026-10-16
+
+- `npm run build`, `node scripts/check-sync-workflow.cjs`, `node scripts/check-image-selection.cjs`, `node scripts/check-security-review.cjs` и `git diff --check` прошли. Проверены файловые статусы, правило исключения, принятие только нерешённых совпадений, маскирование только заменяемых значений, файлы без findings и отсутствие повторного `selectExport` для принятия.
+- Workflow harness с отложенным/отклонённым `selectExport` подтвердил, что Review snapshot и этап сохраняются, готовность экспорта сбрасывается до успеха и остаётся сброшенной после ошибки. Просмотр и выбор локального файла — transient renderer state; IPC-контракт и Engine не менялись.
+- Для сравнений v7 решения исходной версии используют ID `base-…` длиной 25 символов. Лимит IPC для `selectExport` увеличен до этой длины; `node scripts/check-merge-v7.cjs` подтвердил сценарий с DLP исходной версии.
+- Impeccable detector вернул `[]`. Визуальные captures light/dark 1440×900/900×700 не выполнены: запуск synthetic localhost server из sandbox завершился `listen EPERM`. Native Electron/Windows и screen reader не проверялись.
+
 ## Получение обновлений и восстановление — 2026-10-14
 
 - Actual Engine, real temporary Git repositories и mock remote I/O: `node scripts/check-conflict-resolution.cjs`, `node scripts/check-working-tree.cjs`, `node scripts/check-branch-comparison.cjs` прошли. Эти fixtures не используют реальные профили/репозитории пользователя.

@@ -82,7 +82,7 @@ export function parseFile(value: unknown): FileEntry {
 }
 export function parseTransport(value: unknown): Transport {
   const raw = object(value);
-  if (!((raw.protocolVersion === 1 && raw.schemaVersion === 1) || (raw.protocolVersion === 2 && raw.schemaVersion === 2) || (raw.protocolVersion === 3 && raw.schemaVersion === 3) || (raw.protocolVersion === 4 && raw.schemaVersion === 4) || (raw.protocolVersion === 5 && raw.schemaVersion === 5) || (raw.protocolVersion === 6 && raw.schemaVersion === 6))) throw new Error('Версия пакета не поддерживается. Проверьте версию RepoSync.');
+  if (!((raw.protocolVersion === 1 && raw.schemaVersion === 1) || (raw.protocolVersion === 2 && raw.schemaVersion === 2) || (raw.protocolVersion === 3 && raw.schemaVersion === 3) || (raw.protocolVersion === 4 && raw.schemaVersion === 4) || (raw.protocolVersion === 5 && raw.schemaVersion === 5) || (raw.protocolVersion === 6 && raw.schemaVersion === 6) || (raw.protocolVersion === 7 && raw.schemaVersion === 7))) throw new Error('Версия пакета не поддерживается. Проверьте версию RepoSync.');
   if (raw.packageType !== 'snapshot' && raw.packageType !== 'diff') throw new Error('Тип пакета не поддерживается.');
   if (!Array.isArray(raw.files) || !Array.isArray(raw.records) || raw.files.length > 100_000 || raw.records.length > 100_000) throw new Error('Некорректный список файлов или изменений в пакете.');
   const files = raw.files.map(parseFile);
@@ -101,6 +101,15 @@ export function parseTransport(value: unknown): Transport {
     if (Number(raw.protocolVersion) >= 4 && (operation === 'MODIFY' || (operation !== 'ADD' && record.beforeMode === undefined))) throw new Error('Некорректная полная операция.');
     if (item.beforeSha256 !== undefined) record.beforeSha256 = digest(item.beforeSha256);
     if (item.afterSha256 !== undefined) record.afterSha256 = digest(item.afterSha256);
+    if (item.mergeBase !== undefined) {
+      if (raw.protocolVersion !== 7) throw new Error('Исходная версия допустима только в пакете v7.');
+      const base = object(item.mergeBase); const baseEncoding = string(base.encoding);
+      if (baseEncoding !== 'RAW' && baseEncoding !== 'BASE64') throw new Error('Некорректный формат исходной версии.');
+      const mergeBase = { size: integer(base.size, 0, MAX_BYTES), sha256: digest(base.sha256), mode: integer(base.mode, 0o644, 0o755), encoding: baseEncoding, payload: string(base.payload, MAX_BYTES * 2) } as const;
+      const content = decode(mergeBase);
+      if (content.length !== mergeBase.size || sha256(content) !== mergeBase.sha256) throw new Error('Исходная версия повреждена. Получите пакет заново.');
+      record.mergeBase = mergeBase;
+    }
     if ((operation !== 'ADD' && !record.beforeSha256) || (operation !== 'DELETE' && !record.afterSha256)
       || (operation !== 'RENAME' && record.oldPath !== undefined)
       || (operation === 'RENAME' && (!record.oldPath || record.oldPath === name || record.beforeSha256 !== record.afterSha256 || (Number(raw.protocolVersion) < 4 && record.payload !== '')))
@@ -143,6 +152,7 @@ export async function loadTransport(selection: string | string[]): Promise<Trans
   const filename = files[0]!;
   const selected = files.length > 1 ? files : undefined;
   const firstBytes = await limitedRead(filename);
+  if (firstBytes.subarray(0, MERGE_HEADER.length).equals(Buffer.from(MERGE_HEADER))) return loadOpenTransport(filename, firstBytes, selected);
   if (firstBytes.subarray(0, COMPACT_HEADER.length).equals(Buffer.from(COMPACT_HEADER))) return loadOpenTransport(filename, firstBytes, selected);
   if (firstBytes.subarray(0, NATIVE_HEADER.length).equals(Buffer.from(NATIVE_HEADER))) return loadOpenTransport(filename, firstBytes, selected);
   if (firstBytes.subarray(0, FILE_HEADER.length).equals(Buffer.from(FILE_HEADER))) return loadOpenTransport(filename, firstBytes, selected);
@@ -186,31 +196,42 @@ const OPEN_HEADER = '# RepoSync transport v2\n\n';
 const OPEN_BODY = '\n\n---\n';
 interface Artifact { name: string; bytes: Buffer }
 const binaryName = (id: string, index: number, name: string): string => `${id}.binary${String(index + 1).padStart(3, '0')}${path.posix.extname(name)}`;
+const baseBinaryName = (id: string, index: number, name: string): string => `${id}.basebinary${String(index + 1).padStart(3, '0')}${path.posix.extname(name)}`;
 const COMPACT_HEADER = '# RepoSync transport v6\n\n';
+const MERGE_HEADER = '# RepoSync transport v7\n\n';
 const NATIVE_HEADER = '# RepoSync transport v5\n\n';
 const FILE_HEADER = '# RepoSync transport v4\n\n';
 const TEXT_HEADER = '# RepoSync transport v3\n\n';
 function textDocument(transport: Transport, mode: TransportMode, attachments: Artifact[]): Buffer {
-  const version = transport.protocolVersion >= 6 ? 6 : transport.protocolVersion >= 4 ? 5 : 2;
+  const version = transport.protocolVersion >= 7 ? 7 : transport.protocolVersion >= 6 ? 6 : transport.protocolVersion >= 4 ? 5 : 2;
   const readable = mode === 'readable' || version === 2;
   const bodies: Buffer[] = [];
   const records = transport.records.map((record, index) => {
     const bytes = decode(record); const raw = bytes.toString('utf8');
-    const { payload: _payload, encoding: _encoding, ...descriptor } = record;
+    const { payload: _payload, encoding: _encoding, mergeBase: internalBase, ...descriptor } = record;
     if (version === 6 && record.operation === 'DELETE') return descriptor;
+    let mergeBase: Record<string, unknown> | undefined; let basePayload: Buffer | undefined; let baseRaw = false;
+    if (version === 7 && internalBase) {
+      const base = decode(internalBase); const baseText = base.toString('utf8');
+      baseRaw = Buffer.from(baseText).equals(base) && !base.includes(0); basePayload = base;
+      if (!baseRaw) attachments.push({ name: baseBinaryName(transport.packageId, index, record.path), bytes: base });
+      mergeBase = { size: base.length, sha256: sha256(base), mode: internalBase.mode, encoding: baseRaw ? 'RAW' : 'FILE' };
+    }
     if (!Buffer.from(raw).equals(bytes) || bytes.includes(0)) {
       const name = binaryName(transport.packageId, index, record.path);
       attachments.push({ name, bytes });
-      return version === 6 ? { ...descriptor, encoding: 'FILE' } : { ...record, encoding: 'FILE', payload: name, payloadBytes: bytes.length, payloadSha256: sha256(bytes) };
+      if (baseRaw && basePayload) { if (readable) bodies.push(Buffer.from(`\n## BASE ${record.path}\n\n`)); bodies.push(basePayload); if (readable) bodies.push(Buffer.from('\n')); }
+      return version >= 6 ? { ...descriptor, ...(mergeBase ? { mergeBase } : {}), encoding: 'FILE' } : { ...record, encoding: 'FILE', payload: name, payloadBytes: bytes.length, payloadSha256: sha256(bytes) };
     }
     const payload = bytes;
     if (readable) bodies.push(Buffer.from(`\n## ${record.operation} ${record.path}\n\n`));
     bodies.push(payload);
     if (readable) bodies.push(Buffer.from('\n'));
-    return version === 6 ? { ...descriptor, encoding: 'RAW' } : { ...record, encoding: 'RAW', payload: '', payloadBytes: payload.length };
+    if (baseRaw && basePayload) { if (readable) bodies.push(Buffer.from(`\n## BASE ${record.path}\n\n`)); bodies.push(basePayload); if (readable) bodies.push(Buffer.from('\n')); }
+    return version >= 6 ? { ...descriptor, ...(mergeBase ? { mergeBase } : {}), encoding: 'RAW' } : { ...record, encoding: 'RAW', payload: '', payloadBytes: payload.length };
   });
   const { files: _files, unavailablePaths: _unavailable, ...description } = transport;
-  const metadata = { ...(version === 6 ? description : transport), protocolVersion: version, schemaVersion: version, readable, records };
+  const metadata = { ...(version >= 6 ? description : transport), protocolVersion: version, schemaVersion: version, readable, records };
   return Buffer.concat([Buffer.from(JSON.stringify(metadata) + OPEN_BODY), ...bodies]);
 }
 export function exportArtifacts(transport: Transport, maxBytes: number, mode: TransportMode = 'compact'): Artifact[] {
@@ -218,9 +239,9 @@ export function exportArtifacts(transport: Transport, maxBytes: number, mode: Tr
   const attachments: Artifact[] = [];
   const document = textDocument(transport, mode, attachments);
   if (document.length + attachments.reduce((size, file) => size + file.bytes.length, 0) > MAX_BYTES) throw new Error('Пакет превышает 512 МБ');
-  const version = transport.protocolVersion >= 6 ? 6 : transport.protocolVersion >= 4 ? 5 : 2;
+  const version = transport.protocolVersion >= 7 ? 7 : transport.protocolVersion >= 6 ? 6 : transport.protocolVersion >= 4 ? 5 : 2;
   const template = { protocolVersion: version, schemaVersion: version, packageId: transport.packageId, partNumber: MAX_PARTS, totalParts: MAX_PARTS, totalBytes: document.length, packageSha256: sha256(document), partSha256: sha256(document) };
-  const prefix = (metadata: typeof template): Buffer => Buffer.from((version === 6 ? COMPACT_HEADER : version === 5 ? NATIVE_HEADER : OPEN_HEADER) + JSON.stringify(metadata) + OPEN_BODY);
+  const prefix = (metadata: typeof template): Buffer => Buffer.from((version === 7 ? MERGE_HEADER : version === 6 ? COMPACT_HEADER : version === 5 ? NATIVE_HEADER : OPEN_HEADER) + JSON.stringify(metadata) + OPEN_BODY);
   const capacity = maxBytes - prefix(template).length;
   if (capacity < 4) throw new Error('Размер части слишком мал для описания пакета. Увеличьте его в настройках.');
   const fragments: Buffer[] = []; let offset = 0;
@@ -234,12 +255,12 @@ export function exportArtifacts(transport: Transport, maxBytes: number, mode: Tr
 }
 export function splitTransport(transport: Transport, maxBytes: number, mode: TransportMode = 'compact'): Buffer[] { return exportArtifacts(transport, maxBytes, mode).map(file => file.bytes); }
 function openPart(bytes: Buffer): { metadata: Record<string, unknown>; body: Buffer } {
-  const header = bytes.subarray(0, COMPACT_HEADER.length).equals(Buffer.from(COMPACT_HEADER)) ? COMPACT_HEADER : bytes.subarray(0, NATIVE_HEADER.length).equals(Buffer.from(NATIVE_HEADER)) ? NATIVE_HEADER : bytes.subarray(0, FILE_HEADER.length).equals(Buffer.from(FILE_HEADER)) ? FILE_HEADER : bytes.subarray(0, TEXT_HEADER.length).equals(Buffer.from(TEXT_HEADER)) ? TEXT_HEADER : OPEN_HEADER;
+  const header = bytes.subarray(0, MERGE_HEADER.length).equals(Buffer.from(MERGE_HEADER)) ? MERGE_HEADER : bytes.subarray(0, COMPACT_HEADER.length).equals(Buffer.from(COMPACT_HEADER)) ? COMPACT_HEADER : bytes.subarray(0, NATIVE_HEADER.length).equals(Buffer.from(NATIVE_HEADER)) ? NATIVE_HEADER : bytes.subarray(0, FILE_HEADER.length).equals(Buffer.from(FILE_HEADER)) ? FILE_HEADER : bytes.subarray(0, TEXT_HEADER.length).equals(Buffer.from(TEXT_HEADER)) ? TEXT_HEADER : OPEN_HEADER;
   if (!bytes.subarray(0, header.length).equals(Buffer.from(header))) throw new Error('Файл не похож на пакет RepoSync. Выберите исходную часть .md.');
   const boundary = bytes.indexOf(OPEN_BODY, header.length);
   if (boundary < 0) throw new Error('В пакете отсутствует описание содержимого.');
   const metadata = object(JSON.parse(bytes.subarray(header.length, boundary).toString('utf8')) as unknown);
-  if (metadata.protocolVersion !== (header === COMPACT_HEADER ? 6 : header === NATIVE_HEADER ? 5 : header === FILE_HEADER ? 4 : header === TEXT_HEADER ? 3 : 2) || metadata.schemaVersion !== metadata.protocolVersion) throw new Error('Версия пакета не поддерживается. Проверьте версию RepoSync.');
+  if (metadata.protocolVersion !== (header === MERGE_HEADER ? 7 : header === COMPACT_HEADER ? 6 : header === NATIVE_HEADER ? 5 : header === FILE_HEADER ? 4 : header === TEXT_HEADER ? 3 : 2) || metadata.schemaVersion !== metadata.protocolVersion) throw new Error('Версия пакета не поддерживается. Проверьте версию RepoSync.');
   const body = bytes.subarray(boundary + Buffer.byteLength(OPEN_BODY));
   integer(metadata.partNumber, 1, MAX_PARTS); integer(metadata.totalParts, 1, MAX_PARTS); integer(metadata.totalBytes, 1, MAX_BYTES);
   if (Number(metadata.partNumber) > Number(metadata.totalParts) || sha256(body) !== digest(metadata.partSha256)) throw new Error('Часть пакета повреждена. Получите исходный файл заново.');
@@ -264,21 +285,74 @@ async function loadOpenTransport(filename: string, bytes: Buffer, selected?: str
   const raw = object(JSON.parse(document.subarray(0, boundary).toString('utf8')) as unknown);
   if (raw.protocolVersion !== first.metadata.protocolVersion || raw.schemaVersion !== first.metadata.schemaVersion || raw.packageId !== id || !Array.isArray(raw.records) || raw.records.length > 100_000) throw new Error('Описание пакета повреждено или не соответствует его частям.');
   let wireRecords: unknown[] = raw.records;
-  if (raw.protocolVersion === 6) {
+  if (raw.protocolVersion === 6 || raw.protocolVersion === 7) {
     if ('files' in raw) throw new Error('В пакете v6 состав файлов вычисляется из операций.');
-    const keys = new Set(['path', 'oldPath', 'operation', 'size', 'mode', 'beforeMode', 'beforeSha256', 'afterSha256', 'encoding']);
+    const keys = new Set(['path', 'oldPath', 'operation', 'size', 'mode', 'beforeMode', 'beforeSha256', 'afterSha256', 'encoding', ...(raw.protocolVersion === 7 ? ['mergeBase'] : [])]);
     wireRecords = wireRecords.map((value: unknown, index: number) => {
       const record = object(value);
-      if (Object.keys(record).some(key => !keys.has(key)) || (record.operation === 'DELETE' ? record.encoding !== undefined : record.encoding !== 'RAW' && record.encoding !== 'FILE')) throw new Error('Некорректное описание операции v6.');
+      if (Object.keys(record).some(key => !keys.has(key)) || (record.operation === 'DELETE' ? record.encoding !== undefined && record.encoding !== 'RAW' : record.encoding !== 'RAW' && record.encoding !== 'FILE')) throw new Error('Некорректное описание операции v6/v7.');
       const name = string(record.path); validatePath(name);
       const size = integer(record.size, 0, MAX_BYTES);
+      let mergeBase: Record<string, unknown> | undefined;
+      if (raw.protocolVersion === 7 && record.mergeBase !== undefined) {
+        const base = object(record.mergeBase); const encoding = string(base.encoding);
+        if (encoding !== 'RAW' && encoding !== 'FILE') throw new Error('Некорректное описание исходной версии v7.');
+        mergeBase = { size: integer(base.size, 0, MAX_BYTES), sha256: digest(base.sha256), mode: integer(base.mode, 0o644, 0o755), encoding,
+          payload: encoding === 'FILE' ? baseBinaryName(id, index, name) : '' };
+      }
+      if (raw.protocolVersion === 7 && record.mergeBase === undefined && record.operation !== 'ADD') throw new Error('В пакете v7 отсутствует исходная версия файла.');
       return { ...record, encoding: record.encoding ?? 'RAW', payloadBytes: record.operation === 'DELETE' ? 0 : size,
-        payload: record.encoding === 'FILE' ? binaryName(id, index, name) : '', ...(record.encoding === 'FILE' ? { payloadSha256: digest(record.afterSha256) } : {}) };
+        payload: record.encoding === 'FILE' ? binaryName(id, index, name) : '', ...(record.encoding === 'FILE' ? { payloadSha256: digest(record.afterSha256) } : {}), ...(mergeBase ? { mergeBase } : {}) };
     });
     raw.files = wireRecords.map(object).filter(record => record.operation !== 'DELETE').map(record => ({ path: record.path, mode: record.mode, size: record.size, sha256: record.afterSha256 }));
     raw.records = wireRecords;
     // Validate the complete operation set before omitting unavailable attachments.
-    parseTransport({ ...raw, records: wireRecords.map(value => ({ ...object(value), encoding: 'RAW', payload: '' })) });
+    if (raw.protocolVersion === 6) parseTransport({ ...raw, records: wireRecords.map(value => ({ ...object(value), encoding: 'RAW', payload: '' })) });
+  }
+  if (raw.protocolVersion === 7) {
+    if (typeof raw.readable !== 'boolean') throw new Error('Некорректное представление пакета');
+    let offset = boundary + Buffer.byteLength(OPEN_BODY); let binaryBytes = 0; const records: RecordData[] = []; const unavailablePaths: string[] = [];
+    for (let index = 0; index < wireRecords.length; index++) {
+      const record = object(wireRecords[index]); const name = string(record.path); let after: Buffer;
+      if (record.encoding === 'FILE') {
+        const attachment = binaryName(id, index, name); const size = integer(record.payloadBytes, 0, MAX_BYTES); binaryBytes += size;
+        if (binaryBytes + document.length > MAX_BYTES || digest(record.payloadSha256) !== digest(record.afterSha256)) throw new Error('Бинарное вложение повреждено.');
+        try { after = await limitedRead(path.join(path.dirname(filename), attachment), size); }
+        catch (error) {
+          if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 'ENOENT') throw error;
+          unavailablePaths.push(name); after = Buffer.alloc(0);
+        }
+        if (after.length && (sha256(after) !== record.afterSha256 || after.includes(0) === false && Buffer.from(after.toString('utf8')).equals(after))) throw new Error('Бинарное вложение повреждено.');
+      } else {
+        const size = integer(record.payloadBytes, 0, MAX_BYTES);
+        if (raw.readable) { const header = Buffer.from(`\n## ${string(record.operation)} ${name}\n\n`); if (!document.subarray(offset, offset + header.length).equals(header)) throw new Error('Заголовок данных не соответствует описанию пакета.'); offset += header.length; }
+        after = document.subarray(offset, offset + size); offset += size;
+        if (after.length !== size || (raw.readable && document[offset++] !== 10) || !Buffer.from(after.toString('utf8')).equals(after) || after.includes(0)) throw new Error('Текст пакета повреждён.');
+      }
+      let mergeBase: RecordData['mergeBase'];
+      if (record.mergeBase !== undefined) {
+        const base = object(record.mergeBase); let bytes: Buffer;
+        if (base.encoding === 'FILE') {
+          const attachment = string(base.payload); const size = integer(base.size, 0, MAX_BYTES); binaryBytes += size;
+          if (binaryBytes + document.length > MAX_BYTES) throw new Error('Пакет превышает 512 МБ');
+          bytes = await limitedRead(path.join(path.dirname(filename), attachment), size);
+          if (sha256(bytes) !== base.sha256) throw new Error('Исходное бинарное вложение повреждено.');
+        } else {
+          const size = integer(base.size, 0, MAX_BYTES);
+          if (raw.readable) { const header = Buffer.from(`\n## BASE ${name}\n\n`); if (!document.subarray(offset, offset + header.length).equals(header)) throw new Error('Исходный блок данных не соответствует описанию пакета.'); offset += header.length; }
+          bytes = document.subarray(offset, offset + size); offset += size;
+          if (bytes.length !== size || (raw.readable && document[offset++] !== 10) || !Buffer.from(bytes.toString('utf8')).equals(bytes) || bytes.includes(0) || sha256(bytes) !== base.sha256) throw new Error('Исходная версия повреждена. Получите пакет заново.');
+        }
+        const encoded = encode(bytes);
+        mergeBase = { size: bytes.length, sha256: string(base.sha256), mode: integer(base.mode, 0o644, 0o755), encoding: encoded.encoding === 'RAW' ? 'RAW' : 'BASE64', payload: encoded.payload };
+      }
+      if (unavailablePaths.includes(name)) continue;
+      if (record.operation !== 'DELETE' && (after.length !== record.size || sha256(after) !== record.afterSha256)) throw new Error('Результат не соответствует контрольной сумме пакета.');
+      records.push({ ...record, ...encode(after), ...(mergeBase ? { mergeBase } : {}) } as unknown as RecordData);
+    }
+    if (offset !== document.length) throw new Error('Пакет содержит лишние данные.');
+    const transport = parseTransport({ ...raw, records });
+    return unavailablePaths.length ? { ...transport, unavailablePaths, files: transport.files.filter(file => !unavailablePaths.includes(file.path)), records: transport.records.filter(record => !unavailablePaths.includes(record.path)) } : transport;
   }
   if (raw.protocolVersion === 3 || Number(raw.protocolVersion) >= 4) {
     if (typeof raw.readable !== 'boolean') throw new Error('Некорректное представление пакета');
