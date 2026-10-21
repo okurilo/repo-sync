@@ -34,3 +34,14 @@ export function LocalRepositoryState({ source, state, error, busy, refresh, swit
     {state && <details><summary>Подробности Git</summary><p>HEAD: <code>{state.head ?? 'Нет коммитов'}</code></p><p>Staged: {state.workingChanges.staged} · Unstaged: {state.workingChanges.unstaged} · Untracked: {state.workingChanges.untracked} · Конфликты: {state.conflicts}</p>{state.operations.length > 0 && <p>Незавершённые операции: {state.operations.join(', ')}</p>}</details>}
   </section>;
 }
+
+export function LocalBranchSwitcher({ source, state, pending, busy, load, switchBranch }: { source: Source; state: LocalGitState | null; pending: boolean; busy: boolean; load: (source: Source) => Promise<string[]>; switchBranch: (branch: string) => void }): React.JSX.Element {
+  const [branch, setBranch] = useState(source.branch);
+  const dirty = state ? state.workingChanges.staged + state.workingChanges.unstaged + state.workingChanges.untracked > 0 : false;
+  const canSwitch = !!state?.head && !dirty && !state.conflicts && !state.operations.length && !pending && state.branches.includes(branch);
+  const reason = pending ? 'Сначала завершите ожидающую передачу пакета.' : !state ? 'Сначала проверьте состояние локального Git.' : dirty ? 'Перед переключением сохраните или уберите незакоммиченные изменения.' : state.conflicts ? 'Сначала устраните конфликты Git.' : state.operations.length ? `Завершите операцию Git: ${state.operations.join(', ')}.` : !state.branches.includes(branch) ? 'Выберите существующую локальную ветку.' : '';
+  return <section aria-label="Локальная ветка для синхронизации" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 8, alignItems: 'start', margin: '8px 0 16px', paddingBottom: 16, borderBottom: '1px solid var(--line)' }}>
+    <BranchPicker key={`${source.location}:${source.branch}`} value={branch} label="Локальная ветка" configured={!!source.location.trim()} disabled={busy || pending} sourceHint="Сначала выберите локальный репозиторий в настройках проекта." load={() => load(source)} onChange={setBranch} />
+    <div><Button disabled={busy || !canSwitch || state?.branch === branch} onClick={() => switchBranch(branch)}>Переключить локальную ветку</Button>{reason && <small role="status" style={{ display: 'block', maxWidth: 560, marginTop: 6, color: 'var(--muted)' }}>{reason}</small>}</div>
+  </section>;
+}

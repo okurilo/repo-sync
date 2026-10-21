@@ -68,7 +68,7 @@ async function start(): Promise<void> {
           value = await projectGitSummary(profile, engine.cache); break;
         }
         case 'localState': value = await localState(parseSource(args[0], 'internal')); break;
-        case 'switchLocalBranch': value = await engine.switchLocalBranch(string(args[0], 36)); break;
+        case 'switchLocalBranch': value = await engine.switchLocalBranch(string(args[0], 36), args[1] === undefined ? undefined : string(args[1], 255)); break;
         case 'settings': value = store.get(); break;
         case 'saveProfile': {
           const settings = store.get();

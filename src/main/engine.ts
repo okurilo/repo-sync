@@ -53,18 +53,38 @@ export class Engine {
     if (!profile) throw new Error('Профиль не найден');
     return { settings, profile, mode };
   }
-  async switchLocalBranch(id: string): Promise<import('../shared/types').LocalGitState> {
+  async switchLocalBranch(id: string, requestedBranch?: string): Promise<import('../shared/types').LocalGitState> {
     const { profile } = this.context(id); const source = profile.sources.internal;
     if (!source) throw new Error('Укажите локальный репозиторий в настройках.');
     if (profile.pending) throw new Error('Сначала подтвердите передачу пакета или отмените ожидание.');
     const root = await realpath(source.location);
-    const state = await localState(source);
+    const branch = requestedBranch ?? source.branch;
+    validateSource({ ...source, branch }, 'internal');
+    const target = { ...source, branch };
+    const state = await localState(target);
     if (await realpath(source.location) !== root) throw new Error('Папка репозитория изменилась. Выберите её снова.');
     if (!state.canSwitch) throw new Error(state.issue ?? 'Переключение ветки недоступно.');
+    if (state.branch !== branch) {
+      this.invalidate();
+      try { await git(root, ['switch', '--no-guess', '--', branch]); }
+      catch { throw new Error('Не удалось переключить локальную ветку. Проверьте изменения, блокировки Git и использование ветки в другом worktree, затем проверьте состояние снова.'); }
+    }
+    const switched = await localState(target);
+    if (switched.branch !== branch) throw new Error(`Git переключился не на ожидаемую ветку «${branch}». Проверьте состояние репозитория перед продолжением.`);
+    if (branch !== source.branch) {
+      try {
+        const settings = this.store.get();
+        const current = settings.profiles.find(item => item.id === id);
+        if (!current?.sources.internal || current.pending) throw new Error('Профиль изменился или ожидает подтверждения пакета.');
+        current.sources.internal.branch = branch;
+        current.lastAction = { type: 'Переключение локальной ветки', at: new Date().toISOString() };
+        await this.store.save(settings);
+      } catch {
+        throw new Error(`Git переключился на «${branch}», но сохранить ветку в настройках не удалось. Проверьте локальный Git и сохраните выбранную ветку в настройках проекта перед продолжением.`);
+      }
+    }
     this.invalidate();
-    try { await git(root, ['switch', '--no-guess', '--', source.branch]); }
-    catch { throw new Error('Не удалось переключить локальную ветку. Проверьте изменения, блокировки Git и использование ветки в другом worktree, затем проверьте состояние снова.'); }
-    return localState(source);
+    return switched;
   }
   invalidateRemote(location: string, branches: string[]): void {
     const source = this.exportSession?.resolved.source;
