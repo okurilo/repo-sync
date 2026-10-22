@@ -90,7 +90,7 @@ export interface API {
   appUpdate(branch: string): Promise<void>;
   cancelAppUpdate(): Promise<void>;
   localState(source: Source): Promise<LocalGitState>;
-  switchLocalBranch(profileId: string): Promise<LocalGitState>;
+  switchLocalBranch(profileId: string, branch?: string): Promise<LocalGitState>;
   settings(): Promise<Settings>;
   saveFilters(global: string[] | null, profileId?: string, filters?: ProjectFilters): Promise<Settings>;
   projectGit(id: string): Promise<ProjectGitSummary>;

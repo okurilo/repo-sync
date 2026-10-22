@@ -49,7 +49,7 @@ export function BranchPicker({ value, label, configured, disabled, sourceHint, l
       <input type="search" aria-label={`Поиск: ${label.toLocaleLowerCase()}`} placeholder="Найти ветку…" disabled={locked || names === null} value={query} onChange={event => setQuery(event.target.value)} />
       <select aria-label={label} size={8} disabled={locked || !matches.length} value={matches.includes(value) ? value : ''}
         onKeyDown={event => { keyboardSelection.current = true; if (event.key === 'Enter') { event.preventDefault(); close(); } }} onPointerDown={() => { keyboardSelection.current = false; }}
-        onChange={event => { if (event.target.value) { onChange(event.target.value); if (!keyboardSelection.current) close(); } }} style={{ height: 224, maxHeight: 224, overflowY: 'auto', overscrollBehavior: 'contain', padding: 4 }}>
+        onChange={event => { if (event.target.value) { onChange(event.target.value); if (!keyboardSelection.current) close(); } }} style={{ width: '100%', minWidth: 0, maxWidth: '100%', height: 224, maxHeight: 224, overflowY: 'auto', overscrollBehavior: 'contain', padding: 4 }}>
         {!matches.includes(value) && <option value="" disabled>{loading ? 'Загрузка…' : error ? 'Список недоступен' : names === null ? 'Загрузите ветки' : matches.length ? 'Выберите ветку' : names.length ? 'Нет совпадений' : 'Веток нет'}</option>}
         {matches.map(branch => <option key={branch} value={branch} style={{ padding: '6px 8px' }}>{branch}</option>)}
       </select>

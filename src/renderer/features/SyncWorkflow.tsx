@@ -17,6 +17,7 @@ interface Props {
   workingSource: boolean; overwriteConfirmed: boolean; confirmOverwrite: (checked: boolean) => void;
   fileFilters: ReactNode; redactedIds: string[]; reviewFindings?: Finding[];
   localStatus: ReactNode; sourceControls: ReactNode; profile: Profile; settings: Settings; direction: Direction; step: SyncStep;
+  localBranchControl: ReactNode;
   analysis: Analysis | null; importPreview: ImportPreview | null; comparison: CodeComparison | null;
   kept: string[]; override: boolean; exported: string[]; busy: boolean; locked: boolean;
   reviewReady: boolean; error: string; retryComparison: () => void;
@@ -28,7 +29,7 @@ interface Props {
   restore: () => void; acceptAllConflicts: () => void; resolveConflict: (path: string, accept: boolean) => void; checkSelection: () => void; apply: () => void; openRepository: () => void;
   selectedIncomingPaths: string[]; onSelectedIncomingPathsChange: (paths: string[]) => void; toggleReviewPath: (path: string, included: boolean) => void;
 }
-export function SyncWorkflow({ localProblem, operationLabel, sourceSummary, includeImages, toggleImages, failedPath, workingSource, overwriteConfirmed, confirmOverwrite, fileFilters, redactedIds, reviewFindings, reviewReady, localStatus, sourceControls, profile, settings, direction, step, analysis, importPreview, comparison, kept, override, exported, busy, locked, error, retryComparison, pending, setPreviewBusy, setStep, setOverride, close, decide, showFinding, chooseOutput, exportPackage, resolveConflict, acceptAllConflicts, checkSelection, apply, openRepository, restore, selectedIncomingPaths, onSelectedIncomingPathsChange, toggleReviewPath }: Props): React.JSX.Element {
+export function SyncWorkflow({ localProblem, operationLabel, sourceSummary, localBranchControl, includeImages, toggleImages, failedPath, workingSource, overwriteConfirmed, confirmOverwrite, fileFilters, redactedIds, reviewFindings, reviewReady, localStatus, sourceControls, profile, settings, direction, step, analysis, importPreview, comparison, kept, override, exported, busy, locked, error, retryComparison, pending, setPreviewBusy, setStep, setOverride, close, decide, showFinding, chooseOutput, exportPackage, resolveConflict, acceptAllConflicts, checkSelection, apply, openRepository, restore, selectedIncomingPaths, onSelectedIncomingPathsChange, toggleReviewPath }: Props): React.JSX.Element {
   const shownConflicts = useMemo(() => { const entry = comparison?.entries.find(item => item.path === failedPath); return entry && error ? [...(importPreview?.conflicts ?? []), { path: entry.path, operation: entry.operation, message: error }] : importPreview?.conflicts; }, [comparison?.entries, failedPath, error, importPreview?.conflicts]);
   const remainingPaths = new Set(importPreview?.entries.map(entry => entry.path));
   const working = analysis?.workingChanges ?? importPreview?.workingChanges;
@@ -49,6 +50,7 @@ export function SyncWorkflow({ localProblem, operationLabel, sourceSummary, incl
   return <>
     <Row style={{ justifyContent: 'space-between', alignItems: 'start' }}><div><h1>{direction === 'outgoing' ? 'Подготовить пакет изменений' : profile.role === 'external' ? 'Применить пакет изменений' : 'Получить изменения из Git'}</h1><Row style={{ fontSize: 13 }}><strong>{profile.name}</strong><span style={{ color: 'var(--muted)' }}>{direction === 'outgoing' ? 'Локальный репозиторий → пакет' : profile.role === 'external' ? 'Пакет → локальный репозиторий' : 'Внешний Git → локальный репозиторий'}</span></Row></div><Button disabled={locked} onClick={close}>{step === 'done' ? 'К репозиторию' : 'Закрыть'}</Button></Row>
     <StepIndicator steps={['Источник', 'Файлы', 'Проверка', 'Готово']} current={current} />
+    {localBranchControl}
     <h2 ref={heading} tabIndex={-1} style={{ outline: 'none', marginBottom: 12 }}>{step === 'loading' ? 'Загружаем источник' : step === 'source' ? direction === 'outgoing' ? 'Какие версии выгрузить' : 'Откуда получить изменения' : step === 'compare' ? 'Выберите файлы для переноса' : reviewing ? direction === 'outgoing' ? 'Проверьте пакет перед созданием' : 'Проверьте изменения перед применением' : 'Результат переноса'}</h2>
     <p role="status" aria-live="polite" style={{ color: 'var(--muted)', margin: '12px 0', minHeight: 20, visibility: busy ? 'visible' : 'hidden' }}>{busy ? operationLabel : ' '}</p>
     {error && <Status $error role="alert">{error}<p><Button disabled={locked} onClick={retryComparison}>{step === 'loading' ? 'Повторить загрузку' : profile.role === 'external' ? 'Выбрать пакет заново' : 'Повторить сравнение'}</Button></p></Status>}
