@@ -40,5 +40,11 @@ function button(node, exact) { let found; walk(node, item => { if (item.type?.di
   assert(allText(cleanView).includes('Автоматическая проверка может пропустить'), 'clean file has explicit review guidance');
   assert(button(cleanView, 'Следующий нерешённый').props.disabled === false, 'navigation remains available while unresolved findings exist');
   assert(cleanView.props?.children, 'workspace remains mounted after selection changes');
+  states.length = 0;
+  const many = Array.from({ length: 1005 }, (_, index) => ({ path: `file-${index}.txt`, operation: 'ADD' }));
+  const large = render({ ...props, analysis: { entries: many, findings: [] }, selectedPaths: [], kept: [] });
+  assert(!allText(large).includes('file-1004.txt'), 'files beyond the first batch remain hidden');
+  button(large, 'Показать ещё · осталось 5').props.onClick();
+  assert(allText(render()).includes('file-1004.txt'), 'show more reveals the remaining files');
   console.log('PASS: complete file tree, statuses, bulk keep/mask scope, clean files, rule exclusions and persistent review workspace');
 })().catch(error => { console.error(error); process.exitCode = 1; });

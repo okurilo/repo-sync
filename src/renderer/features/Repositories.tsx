@@ -11,7 +11,7 @@ export function repositoryStatus(profile: Profile): string {
   if (profile.commitRequired) return 'Нужен коммит';
   return 'Настроен';
 }
-export function RepositoryCard({ profile, gitSummary, refreshGit, busy, open, incoming, outgoing, importPackage, backups }: { profile: Profile; gitSummary?: ProjectGitSummary; refreshGit: () => void; busy: boolean; open: () => void; incoming: () => void; outgoing: () => void; importPackage: () => void; backups: () => void }): React.JSX.Element {
+export function RepositoryCard({ profile, gitSummary, refreshGit, busy, switchBranch, open, incoming, outgoing, importPackage, backups }: { profile: Profile; gitSummary?: ProjectGitSummary; refreshGit: () => void; busy: boolean; switchBranch: () => void; open: () => void; incoming: () => void; outgoing: () => void; importPackage: () => void; backups: () => void }): React.JSX.Element {
   const local = profile.sources.internal; const remote = profile.sources.global; const status = repositoryStatus(profile);
   const observed = gitSummary?.local;
   const changes = observed ? observed.workingChanges.staged + observed.workingChanges.unstaged + observed.workingChanges.untracked : 0;
@@ -23,7 +23,7 @@ export function RepositoryCard({ profile, gitSummary, refreshGit, busy, open, in
     </Row>
     <div style={{ display: 'grid', gap: 8, marginTop: 18 }}>
       <GitLine><strong>Локальный Git</strong>{observed ? <><code>{observed.branch ?? 'detached HEAD'}</code><small>{gitSummary?.localDate ? syncDate(gitSummary.localDate) : 'Нет коммитов'}</small><small>{changes ? `${changes} изменений` : 'Чистая рабочая копия'}</small></> : <small>{gitSummary?.localError ?? (!local ? 'Не настроен' : 'Чтение состояния…')}</small>}</GitLine>
-      {observed?.issue && <div style={{ fontSize: 13, color: 'var(--warning)' }}>{observed.issue}</div>}
+      {observed?.issue && <div style={{ fontSize: 13, color: 'var(--warning)' }}>{observed.issue}{observed.branch !== local?.branch && <div><Button disabled={busy || !observed.canSwitch || !!profile.pending} onClick={switchBranch}>Переключить на {local?.branch}</Button>{!observed.canSwitch && <small>Переключение требует чистой рабочей копии без конфликтов и незавершённых операций Git.</small>}{profile.pending && <small>Сначала завершите ожидающую передачу пакета.</small>}</div>}</div>}
       {remote && <GitLine><strong>Внешний Git</strong><code>{remote.branch}</code><small>{gitSummary?.remote?.date ? syncDate(gitSummary.remote.date) : 'Не загружен'}</small>{update && <><strong style={{ color: 'var(--warning)', minWidth: 0 }}>{gitSummary?.remote?.availableHead ? 'Есть обновление' : 'Ветка отсутствует на сервере'}</strong>{gitSummary?.remote?.availableHead && <Button disabled={busy} onClick={refreshGit}>Обновить</Button>}</>}{gitSummary?.remote?.error && <span style={{ color: 'var(--warning)' }}>Не удалось проверить обновления</span>}</GitLine>}
       <small>{profile.lastAction ? <>{profile.lastAction.type} · {syncDate(profile.lastAction.at)}</> : profile.syncedAt ? <>Последний перенос · {syncDate(profile.syncedAt)}</> : 'Действий пока нет'}</small>
     </div>
