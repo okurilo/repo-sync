@@ -51,7 +51,7 @@ export function SecurityReview({ analysis, kept, decide, selectedPaths, togglePa
 
   const tree = useMemo(() => {
     const root: FileNode = { folders: new Map(), paths: [] };
-    for (const entry of visibleEntries) {
+    for (const entry of treeEntries) {
       const parts = entry.path.split('/'); let node = root;
       for (const folder of parts.slice(0, -1)) { let next = node.folders.get(folder); if (!next) { next = { folders: new Map(), paths: [] }; node.folders.set(folder, next); } node = next; }
       node.paths.push(entry.path);
