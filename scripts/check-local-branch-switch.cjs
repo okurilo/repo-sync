@@ -34,8 +34,12 @@ const git = (cwd, args) => execFileSync('git', args, { cwd, stdio: 'pipe' }).toS
     store.save = async settings => { if (fail) { fail = false; throw new Error('fixture settings failure'); } return save(settings); };
     await assert.rejects(engine.switchLocalBranch(profile.id, 'alpha'), /переключился на «alpha».+сохранить ветку/);
     assert.equal(git(repo, ['branch', '--show-current']), 'alpha'); assert.equal(store.get().profiles[0].sources.internal.branch, 'beta');
+    await fs.writeFile(path.join(repo, 'dirty.txt'), 'unsaved');
     const recovered = await engine.switchLocalBranch(profile.id, 'alpha');
     assert.equal(recovered.branch, 'alpha'); assert.equal(store.get().profiles[0].sources.internal.branch, 'alpha');
+    assert.equal(await fs.readFile(path.join(repo, 'dirty.txt'), 'utf8'), 'unsaved');
+    await assert.rejects(engine.switchLocalBranch(profile.id, 'beta'), /недоступно/);
+    assert.equal(git(repo, ['branch', '--show-current']), 'alpha');
     console.log('Local branch switch checks passed: target checkout, persisted profile, baseline preservation, dirty/missing branch guards, other-worktree guard, settings failure and retry after successful checkout.');
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

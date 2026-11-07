@@ -236,8 +236,7 @@ export function App(): React.JSX.Element {
     let switched: LocalGitState;
     try { switched = await api.switchLocalBranch(profile.id, branch); }
     catch (cause) {
-      const refreshed = await readLocal(profile);
-      if (refreshed && branch && refreshed.branch === branch) setLocalError(`Git переключился на «${branch}», но состояние профиля не обновилось. Сверьте ветку в настройках проекта перед продолжением.`);
+      await readLocal(profile);
       throw cause;
     }
     setLocalGit(switched);
@@ -245,7 +244,7 @@ export function App(): React.JSX.Element {
     const current = nextSettings.profiles.find(item => item.id === profile.id);
     if (!current) throw new Error('Профиль не найден после переключения ветки.');
     if (!inWorkflow) { setNotice('Локальная ветка переключена.'); return; }
-    if (outgoingSelection.mode === 'commit') {
+    if (direction === 'outgoing' && outgoingSelection.mode === 'commit') {
       const nextSelection: OutgoingSelection = { mode: 'commit' };
       setOutgoingSelection(nextSelection);
       setCommits(await api.listCommits({ ...current.sources.internal!, commit: undefined }));
@@ -262,7 +261,16 @@ export function App(): React.JSX.Element {
   const localStatus = profile?.sources.internal ? <LocalRepositoryState source={profile.sources.internal} state={localGit} error={localError} busy={locked} refresh={() => void run(async () => { setImportPreview(null); if (step === 'apply') setStep('compare'); await readLocal(profile); })} switchBranch={() => void run(async () => {
         await switchSyncBranch();
       })} /> : null;
-  const syncBranchControl = profile?.sources.internal && localGit && step && step !== 'loading' && step !== 'done' ? <LocalBranchSwitcher key={`${profile.id}:${profile.sources.internal.location}:${profile.sources.internal.branch}`} source={profile.sources.internal} state={localGit} pending={!!profile.pending} busy={locked} load={source => api.listBranches(source)} switchBranch={branch => void run(() => switchSyncBranch(branch))} /> : null;
+  const syncBranchControl = profile?.sources.internal && step && step !== 'done' ? <LocalBranchSwitcher
+    key={`${profile.id}:${profile.sources.internal.location}:${profile.sources.internal.branch}`}
+    source={profile.sources.internal} state={localGit} pending={!!profile.pending} busy={locked}
+    load={async source => {
+      const state = await api.localState(source);
+      setLocalGit(state); setLocalError('');
+      return state.branches;
+    }}
+    switchBranch={branch => void run(() => switchSyncBranch(branch))}
+  /> : null;
   const incomingControls = profile && direction === 'incoming' && profile.role === 'internal' && step !== 'done' && <IncomingSource branch={profile.sources.global?.branch ?? ''} context={branchContext} selection={incomingSelection} commits={commits} busy={locked} change={changeSelection} reload={() => void run(async () => { if (!profile.sources.global) return; setOperationLabel('Обновление веток и истории…'); const source = { ...profile.sources.global, branch: incomingSelection.branch ?? profile.sources.global.branch }; setAnalysis(null); setImportPreview(null); setSelectedIncomingPaths([]); setStep('source'); setBranchContext(await api.branchContext(source)); await api.refreshSource(source); setCommits(await api.listCommits(source)); })} compare={selection => void run(() => compareIncoming(selection))} />;
   const sourceControls = direction === 'incoming' ? incomingControls : profile && <SourceForm aria-label="Источник пакета"><fieldset disabled={locked}><label>Источник файлов<select value={outgoingSelection.mode} onChange={event => { const mode = event.target.value; setOutgoingSelection(mode === 'working' ? { mode: 'working' } : mode === 'compare' ? { mode: 'compare', fromBranch: profile.sources.internal?.branch ?? '', toBranch: profile.sources.internal?.branch ?? '' } : { mode: 'commit' }); setAnalysis(null); setExportReview(null); setReviewReady(false); setError(''); }}><option value="commit">Из коммита</option><option value="working">Из рабочей копии</option><option value="compare">Сравнить две версии Git</option></select><small>{outgoingSelection.mode === 'working' ? 'Текущие файлы с диска, включая незакоммиченные правки и новые файлы.' : outgoingSelection.mode === 'compare' ? 'Выберите исходную A и конечную B версию внутреннего Git. Коммиты можно оставить пустыми, чтобы использовать вершины веток.' : 'Незакоммиченные изменения не входят в пакет.'}</small></label>{outgoingSelection.mode === 'commit' && <label>Коммит<select value={outgoingSelection.commit ?? ''} onChange={event => { setOutgoingSelection({ mode: 'commit', commit: event.target.value || undefined }); setAnalysis(null); setExportReview(null); setReviewReady(false); setError(''); }}><option value="">Последний в ветке {profile.sources.internal?.branch}</option>{commits.map(commit => <option key={commit.sha} value={commit.sha}>{commit.sha.slice(0, 8)} · {commit.subject ?? commit.date}</option>)}</select></label>}{outgoingSelection.mode === 'compare' && <LocalCompareSource selection={outgoingSelection} branches={localBranches} source={profile.sources.internal!} workingBranch={localGit?.branch ?? undefined} change={(selection: CompareSelection) => { setOutgoingSelection(selection); setAnalysis(null); setExportReview(null); setReviewReady(false); setError(''); }} />}</fieldset><WorkflowActions><Muted style={{ margin: 0, fontSize: 13 }}>Далее — выбор файлов и просмотр отличий.</Muted><Button $primary disabled={locked} onClick={() => void run(compareOutgoing)}>Показать изменения</Button></WorkflowActions></SourceForm>;
   const sourceSummary = direction === 'outgoing' ? outgoingSelection.mode === 'compare' ? `${outgoingSelection.fromBranch}@${outgoingSelection.fromCommit?.slice(0, 8) ?? 'HEAD'} → ${outgoingSelection.toBranch}@${outgoingSelection.toWorking ? 'рабочая копия' : outgoingSelection.toCommit?.slice(0, 8) ?? 'HEAD'}` : `${profile?.sources.internal?.branch} · ${outgoingSelection.mode === 'working' ? 'Рабочая копия' : outgoingSelection.commit ? `Коммит ${outgoingSelection.commit.slice(0, 8)}` : `Последний коммит${analysis ? ` ${analysis.state.slice(0, 8)}` : ''}`}` : profile?.role === 'external' ? 'Выбранный пакет изменений' : `${incomingSelection.branch ?? profile?.sources.global?.branch} · ${{ branch: 'Изменения ветки', branches: 'Две ветки', commit: 'Один коммит', range: 'Два коммита', repositories: 'Репозитории целиком', zero: 'Все внешние файлы' }[incomingSelection.mode]}${incomingSelection.mode === 'branch' || incomingSelection.mode === 'branches' ? ` · ${incomingSelection.baseBranch} → ${incomingSelection.branch}` : incomingSelection.mode === 'range' ? ` · ${incomingSelection.from?.slice(0, 8)} → ${(incomingSelection.commit ?? commits[0]?.sha)?.slice(0, 8)}` : incomingSelection.mode === 'commit' ? ` · ${(incomingSelection.commit ?? commits[0]?.sha)?.slice(0, 8)}` : ''}`;
