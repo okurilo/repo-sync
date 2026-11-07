@@ -103,6 +103,15 @@ async function compare() { props().sourceControls.props.compare({mode:'branch',b
   find(switcher(), 'BranchPicker').props.onChange('feature');
   const useOpen = button(switcher(), 'Использовать открытую ветку');
   assert(!useOpen.props.disabled, 'already open branch can be selected for the profile');
+  const refreshing = branchControl().props.load(profile.sources.internal);
+  await tick();
+  assert(button(switcher(), 'Использовать открытую ветку').props.disabled, 'cannot switch while local Git is being read');
+  useOpen.props.onClick();
+  await tick();
+  assert.deepEqual(queue.map(request => request.name), ['localState'], 'even a stale click cannot reach IPC');
+  assert.equal(props().comparison.token, 'package', 'the comparison remains visible');
+  await finish('localState', fresh);
+  await refreshing;
   useOpen.props.onClick();
   await tick();
   const rejectedSwitch = queue.shift();
@@ -110,6 +119,12 @@ async function compare() { props().sourceControls.props.compare({mode:'branch',b
   rejectedSwitch.reject(new Error('Не удалось сохранить ветку'));
   await finish('localState', fresh);
   assert.equal(props().error, 'Не удалось сохранить ветку');
+  const failedRead = branchControl().props.load(profile.sources.internal);
+  const readError = assert.rejects(failedRead, /Не удалось прочитать ветки/);
+  await tick();
+  queue.shift().reject(new Error('Не удалось прочитать ветки'));
+  await readError;
+  assert.equal(props().error, 'Не удалось сохранить ветку', 'picker errors do not replace the workflow error');
   assert(!button(switcher(), 'Использовать открытую ветку').props.disabled, 'branch choice remains available after error');
   button(switcher(), 'Использовать открытую ветку').props.onClick();
   const switched = await finish('switchLocalBranch', fresh);

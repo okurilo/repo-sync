@@ -52,11 +52,17 @@ export function App(): React.JSX.Element {
   const profile = settings?.profiles.find(item => item.id === selected);
   const locked = busy || previewBusy;
   useEffect(() => { if (backupView && !locked) (document.querySelector<HTMLElement>('[data-restore-action]') ?? document.querySelector<HTMLElement>('[data-backup-close]'))?.focus(); }, [!!backupView, backupView?.preview?.token, locked]);
-  async function run<T>(operation: () => Promise<T>): Promise<T | undefined> {
+  async function run<T>(operation: () => Promise<T>, errorTarget: 'workflow' | 'caller' = 'workflow'): Promise<T | undefined> {
     if (active.current) return undefined;
-    active.current = true; setBusy(true); setError(''); setFailedPath('');
+    active.current = true; setBusy(true);
+    if (errorTarget === 'workflow') { setError(''); setFailedPath(''); }
     try { await pending.current; return await operation(); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : 'Операция не выполнена'); setFailedPath(cause instanceof Error && 'syncPath' in cause && typeof cause.syncPath === 'string' ? cause.syncPath : ''); return undefined; }
+    catch (cause) {
+      if (errorTarget === 'caller') throw cause;
+      setError(cause instanceof Error ? cause.message : 'Операция не выполнена');
+      setFailedPath(cause instanceof Error && 'syncPath' in cause && typeof cause.syncPath === 'string' ? cause.syncPath : '');
+      return undefined;
+    }
     finally { active.current = false; setBusy(false); }
   }
   useEffect(() => { void run(async () => setSettings(await api.settings())); }, []);
@@ -265,9 +271,14 @@ export function App(): React.JSX.Element {
     key={`${profile.id}:${profile.sources.internal.location}:${profile.sources.internal.branch}`}
     source={profile.sources.internal} state={localGit} pending={!!profile.pending} busy={locked}
     load={async source => {
-      const state = await api.localState(source);
-      setLocalGit(state); setLocalError('');
-      return state.branches;
+      const branches = await run(async () => {
+        setOperationLabel('Чтение локальных веток…');
+        const state = await api.localState(source);
+        setLocalGit(state); setLocalError('');
+        return state.branches;
+      }, 'caller');
+      if (!branches) throw new Error('Дождитесь завершения текущей операции и обновите список веток.');
+      return branches;
     }}
     switchBranch={branch => void run(() => switchSyncBranch(branch))}
   /> : null;
