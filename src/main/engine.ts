@@ -63,7 +63,14 @@ export class Engine {
     const target = { ...source, branch };
     const state = await localState(target);
     if (await realpath(source.location) !== root) throw new Error('Папка репозитория изменилась. Выберите её снова.');
-    if (!state.canSwitch) throw new Error(state.issue ?? 'Переключение ветки недоступно.');
+    const useOpenBranch = branch !== source.branch && state.branch === branch
+      && !!state.head && !state.conflicts && !state.operations.length && state.branches.includes(branch);
+    if (!state.canSwitch && !useOpenBranch) {
+      if (state.head && !state.conflicts && !state.operations.length && state.branches.includes(branch)) {
+        throw new Error('Переключение ветки недоступно: сохраните локальные изменения и обновите список веток.');
+      }
+      throw new Error(state.issue ?? 'Переключение ветки недоступно.');
+    }
     if (state.branch !== branch) {
       this.invalidate();
       try { await git(root, ['switch', '--no-guess', '--', branch]); }

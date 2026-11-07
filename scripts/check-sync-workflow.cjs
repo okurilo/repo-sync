@@ -82,5 +82,57 @@ async function compare() { props().sourceControls.props.compare({mode:'branch',b
   const source=selection=>sourceModule.exports.IncomingSource({branch:'feature',context:{branches:['main','feature']},selection,commits:[{sha:'sha',date:'today'}],busy:false,change(){},compare(){},reload(){}});
   for(const mode of ['branch','branches','commit','range','repositories','zero'])assert(!button(source({mode,branch:'feature',baseBranch:'main',from:'from',commit:'sha'}),'Показать изменения').props.disabled,mode+' is available');
   for(const selection of [{mode:'branch',branch:'feature'},{mode:'branches',branch:'feature',baseBranch:'feature'},{mode:'range',branch:'feature',commit:'sha'}])assert(button(source(selection),'Показать изменения').props.disabled,'invalid source cannot be compared');
+  const branchControl = () => props().localBranchControl;
+  const fresh = { ...local, branch: 'feature', branches: ['main', 'feature'], conflicts: 0, operations: [], workingChanges: { staged: 0, unstaged: 1, untracked: 0 } };
+  const loadingBranches = branchControl().props.load(profile.sources.internal);
+  await finish('localState', fresh);
+  assert.deepEqual(await loadingBranches, fresh.branches);
+  assert.equal(branchControl().props.state.branch, 'feature', 'branch picker refreshes HEAD as well as branch names');
+  const repositorySettings = { exports: {} };
+  let selectedBranch = 'main';
+  vm.runInNewContext(ts.transpileModule(fs.readFileSync('src/renderer/features/RepositorySettings.tsx', 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText, {
+    exports: repositorySettings.exports,
+    require(name) {
+      if (name === 'react') return { ...React, useState: () => [selectedBranch, value => { selectedBranch = value; }] };
+      if (name === 'react/jsx-runtime') return require(name);
+      return new Proxy({}, { get: (_, key) => component(key) });
+    },
+  });
+  const switcher = () => repositorySettings.exports.LocalBranchSwitcher(branchControl().props);
+  assert(button(switcher(), 'Переключить на выбранную ветку').props.disabled, 'dirty checkout remains blocked');
+  find(switcher(), 'BranchPicker').props.onChange('feature');
+  const useOpen = button(switcher(), 'Использовать открытую ветку');
+  assert(!useOpen.props.disabled, 'already open branch can be selected for the profile');
+  const refreshing = branchControl().props.load(profile.sources.internal);
+  await tick();
+  assert(button(switcher(), 'Использовать открытую ветку').props.disabled, 'cannot switch while local Git is being read');
+  useOpen.props.onClick();
+  await tick();
+  assert.deepEqual(queue.map(request => request.name), ['localState'], 'even a stale click cannot reach IPC');
+  assert.equal(props().comparison.token, 'package', 'the comparison remains visible');
+  await finish('localState', fresh);
+  await refreshing;
+  useOpen.props.onClick();
+  await tick();
+  const rejectedSwitch = queue.shift();
+  assert.equal(rejectedSwitch.name, 'switchLocalBranch');
+  rejectedSwitch.reject(new Error('Не удалось сохранить ветку'));
+  await finish('localState', fresh);
+  assert.equal(props().error, 'Не удалось сохранить ветку');
+  const failedRead = branchControl().props.load(profile.sources.internal);
+  const readError = assert.rejects(failedRead, /Не удалось прочитать ветки/);
+  await tick();
+  queue.shift().reject(new Error('Не удалось прочитать ветки'));
+  await readError;
+  assert.equal(props().error, 'Не удалось сохранить ветку', 'picker errors do not replace the workflow error');
+  assert(!button(switcher(), 'Использовать открытую ветку').props.disabled, 'branch choice remains available after error');
+  button(switcher(), 'Использовать открытую ветку').props.onClick();
+  const switched = await finish('switchLocalBranch', fresh);
+  assert.equal(switched.args[1], 'feature');
+  await finish('settings', { ...settings, profiles: [{ ...profile, sources: { ...profile.sources, internal: { ...profile.sources.internal, branch: 'feature' } } }] });
+  await finish('loadPackage', { token: 'new-package', entries: [entries[0]], from: 'a', to: 'b' });
+  assert.equal(props().step, 'compare');
+  assert.equal(props().comparison.token, 'new-package');
+  assert.equal(props().selectedIncomingPaths.join(','), 'code.ts');
   console.log('PASS: explicit sources, no automatic analysis, back/selection/consent, single-flight, local blocker, apply, review/scan failure, export and retry');
 })().catch(error => { console.error(error); process.exitCode = 1; });
