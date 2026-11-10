@@ -44,6 +44,7 @@ const api: API = {
   applyReplacement: token => call('applyReplacement', [token]),
   prepareIncoming: (token, selectedPaths, accepted) => call('prepareIncoming', [token, selectedPaths, accepted]),
   openRepository: id => call('openRepository', [id]),
+  openOutputDirectory: () => call('openOutputDirectory'),
   preflight: (name, target, id) => call('preflight', [name, target, id]),
   applyImport: (token, overwrite) => call('applyImport', [token, overwrite]),
 };

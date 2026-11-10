@@ -302,7 +302,7 @@ export function App(): React.JSX.Element {
           chooseOutput={() => void run(async () => { const directory = await api.chooseDirectory(); if (directory) setSettings(await api.setOutputDirectory(directory)); })}
           exportPackage={() => { if (analysis && reviewReady) void run(async () => { setOperationLabel('Запись частей пакета…'); setExported(await api.exportPackage(analysis.token, kept.filter(id => exportReview?.findings.some(finding => finding.id === id)), override)); setSettings(await api.settings()); setStep('done'); }); }}
           apply={() => { if (importPreview) void run(async () => { setOperationLabel('Резервное копирование и применение…'); try { setSettings(await api.applyImport(importPreview.token, overwriteToken === importPreview.token)); } catch (cause) { setOverwriteToken(''); setImportPreview(null); setStep('compare'); throw cause; } await readLocal(profile); setStep('done'); setAnalysis(null); }); }}
-          restore={() => void run(() => openBackups(profile))} openRepository={() => void run(() => api.openRepository(profile.id))} />
+          restore={() => void run(() => openBackups(profile))} openRepository={() => void run(() => api.openRepository(profile.id))} openOutputDirectory={() => void run(() => api.openOutputDirectory())} />
       </>}
     </>}
   </AppShell>

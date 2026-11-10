@@ -39,6 +39,7 @@ async function compare() { props().sourceControls.props.compare({mode:'branch',b
   props().checkSelection(); await finish('localState',{...local,issue:'Wrong branch'}); assert.equal(queue.length,0,'local blocker prevents prepare'); assert(props().localProblem);
   props().checkSelection(); await finish('localState',local); await finish('prepareIncoming',{token:'next',entries:[entries[0]],conflicts:[],overwritePaths:[{path:'code.ts'}]});
   props().confirmOverwrite(true); props().apply(); const applied=await finish('applyImport',settings); assert.equal(applied.args[1],true); await finish('localState',local); assert.equal(props().step,'done');
+  props().openRepository(); await finish('openRepository',undefined);
   await begin(); props().checkSelection(); await finish('selectExport',{findings:[{id:'f',path:'code.ts',severity:'block'}],originalFindings:[{id:'f',path:'code.ts',severity:'block'}],parts:1,estimatedBytes:20}); await finish('settings',settings);
   assert.equal(props().step,'security'); assert(props().reviewReady);
   const reviewSnapshot=props().reviewFindings;props().decide(['f'],'keep');await tick();assert.equal(queue.length,0,'accepting without a mask does not rescan');assert(props().reviewReady);assert.equal(props().reviewFindings,reviewSnapshot,'review data remains mounted after a local decision');
@@ -48,6 +49,7 @@ async function compare() { props().sourceControls.props.compare({mode:'branch',b
   assert.equal(props().step,'security');assert.equal(props().reviewFindings,reviewSnapshot,'failed recalculation keeps the review visible');
   props().setStep('compare'); props().checkSelection(); await finish('selectExport',{findings:[],originalFindings:[],parts:1,estimatedBytes:20}); await finish('settings',settings); assert.equal(props().step,'apply','no findings still has explicit review stage');
   props().exportPackage(); await finish('exportPackage',['part.md']); await finish('settings',settings); assert.equal(props().step,'done');
+  props().openOutputDirectory(); await finish('openOutputDirectory',undefined);
   await incoming(); props().sourceControls.props.compare({mode:'branch',branch:'feature',baseBranch:'main'}); await tick(); queue.shift().reject(new Error('Git unavailable')); await tick(); assert.equal(props().step,'source'); assert.equal(props().error,'Git unavailable'); assert.equal(props().analysis,null);
   props().retryComparison(); await finish('analyze',analysis); assert.equal(props().step,'compare','manual retry recovers failed comparison');
   profile.role='external'; find(render(),'AppShell').props.repositories();
@@ -64,6 +66,10 @@ async function compare() { props().sourceControls.props.compare({mode:'branch',b
   function text(node){if(typeof node==='string'||typeof node==='number')return String(node);if(Array.isArray(node))return node.map(text).join('');return text(node?.props?.children??[]);}
   function button(node,label){if(!node||typeof node!=='object')return null;if(node.type?.displayName==='Button'&&text(node).trim()===label)return node;for(const child of Array.isArray(node.props?.children)?node.props.children:[node.props?.children]){const found=button(child,label);if(found)return found;}return null;}
   const exportProps={step:'apply',direction:'outgoing',settings:{...settings,outputDirectory:'/out'},analysis:{...analysis,findings:[]},reviewFindings:[],reviewReady:true,selectedIncomingPaths:['code.ts'],busy:false,locked:false,error:''};
+  const opened=[];
+  button(view({...exportProps,step:'done',exported:['/out/part.md'],openOutputDirectory:()=>opened.push('output'),openRepository:()=>opened.push('repository')}),'Открыть папку пакета').props.onClick();
+  button(view({...exportProps,step:'done',direction:'incoming',exported:[],importPreview:{entries:[entries[0]]},openOutputDirectory:()=>opened.push('output'),openRepository:()=>opened.push('repository')}),'Открыть репозиторий').props.onClick();
+  assert.deepEqual(opened,['output','repository'],'completion opens the folder appropriate to the transfer direction');
   assert(!button(view(exportProps),'Создать пакет').props.disabled);
   for(const change of [{reviewReady:false},{settings},{selectedIncomingPaths:[]},{locked:true},{error:'failed'},{reviewFindings:[{id:'f',path:'code.ts'}]}])assert(button(view({...exportProps,...change}),'Создать пакет').props.disabled,'unsafe export is disabled');
   const secret={id:'f',path:'code.ts',severity:'block'};
@@ -145,5 +151,5 @@ async function compare() { props().sourceControls.props.compare({mode:'branch',b
   const compared = await finish('analyze', analysis);
   assert.equal(compared.args[3].mode, 'compare', 'a local-only profile analyzes two local versions');
   await finish('settings', states[0]);
-  console.log('PASS: explicit sources, local-only A/B mode, no automatic analysis, back/selection/consent, single-flight, local blocker, apply, review/scan failure, export and retry');
+  console.log('PASS: explicit sources, local-only A/B mode, completion folder routing, no automatic analysis, back/selection/consent, single-flight, local blocker, apply, review/scan failure, export and retry');
 })().catch(error => { console.error(error); process.exitCode = 1; });
