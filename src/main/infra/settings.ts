@@ -65,7 +65,7 @@ export function parseProfile(value: unknown, existing?: Profile): Profile {
     if (result.sources[mode]) { delete result.sources[mode]!.commit; delete result.sources[mode]!.base; }
   }
   if (result.sources.internal?.kind !== 'local') throw new Error('Укажите локальный репозиторий.');
-  if (result.role === 'internal' && result.sources.global?.kind !== 'remote') throw new Error('Укажите внешний Git');
+  if (result.sources.global && result.sources.global.kind !== 'remote') throw new Error('Внешний Git должен быть удалённым репозиторием.');
   if (existing && (existing.role !== result.role || JSON.stringify(existing.sources) !== JSON.stringify(result.sources))) { result.baseline = undefined; result.syncedAt = undefined; result.commitRequired = undefined; }
   if (existing?.baseline && result.baseline && JSON.stringify(existing.exclusions) !== JSON.stringify(exclusions) && existing.exclusions.every(rule => exclusions.includes(rule))) {
     result.baseline = { ...result.baseline, scope: scopeHash(result), files: result.baseline.files.filter(file => !exclusions.some(rule => minimatch(file.path, rule, { dot: true }))) };
@@ -96,7 +96,7 @@ export function parseSettings(raw: Record<string, unknown>): Settings {
         let profile: Profile;
         if ((raw.schemaVersion === 4 || raw.schemaVersion === 5 || raw.schemaVersion === 6)) {
           if (saved.role !== 'internal' && saved.role !== 'external') throw new Error('Некорректный тип репозитория.');
-          if (object(saved.sources).internal === undefined || (saved.role === 'internal' && object(saved.sources).global === undefined)) {
+          if (object(saved.sources).internal === undefined || (raw.schemaVersion !== 6 && saved.role === 'internal' && object(saved.sources).global === undefined)) {
             profile = { id: string(saved.id, 36), name: string(saved.name, 100), role: saved.role === 'internal' ? 'internal' : 'external', transportMode: 'compact', sources: {}, exclusions: Array.isArray(saved.exclusions) ? saved.exclusions.map((v: unknown) => string(v, 512)) : [], includeIgnored: [], maxPartMB: integer(saved.maxPartMB, 1, 512) };
             for (const mode of ['internal', 'global'] as const) if (object(saved.sources)[mode]) profile.sources[mode] = parseSource(object(saved.sources)[mode], mode);
           } else profile = parseProfile(saved);

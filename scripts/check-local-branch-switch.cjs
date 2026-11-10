@@ -40,6 +40,14 @@ const git = (cwd, args) => execFileSync('git', args, { cwd, stdio: 'pipe' }).toS
     assert.equal(await fs.readFile(path.join(repo, 'dirty.txt'), 'utf8'), 'unsaved');
     await assert.rejects(engine.switchLocalBranch(profile.id, 'beta'), /недоступно/);
     assert.equal(git(repo, ['branch', '--show-current']), 'alpha');
+    await fs.rm(path.join(repo, 'dirty.txt')); git(repo, ['switch', 'beta']); await fs.writeFile(path.join(repo, 'dirty.txt'), 'unsaved');
+    fail = true;
+    await assert.rejects(engine.switchLocalBranch(profile.id, 'beta'), /уже открыта в Git, но сохранить её для синхронизации не удалось/);
+    assert.equal(git(repo, ['branch', '--show-current']), 'beta'); assert.equal(store.get().profiles[0].sources.internal.branch, 'alpha');
+    const adopted = await engine.switchLocalBranch(profile.id, 'beta');
+    assert.equal(adopted.branch, 'beta'); assert.equal(store.get().profiles[0].sources.internal.branch, 'beta');
+    assert.equal(store.get().profiles[0].lastAction.type, 'Выбор локальной ветки');
+    assert.equal(await fs.readFile(path.join(repo, 'dirty.txt'), 'utf8'), 'unsaved');
     console.log('Local branch switch checks passed: target checkout, persisted profile, baseline preservation, dirty/missing branch guards, other-worktree guard, settings failure and retry after successful checkout.');
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

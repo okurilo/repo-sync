@@ -10,10 +10,11 @@ interface Props {
 }
 interface FileNode { folders: Map<string, FileNode>; paths: string[] }
 
-const Workspace = styled('div')({ display: 'grid', gridTemplateColumns: 'minmax(220px, 280px) minmax(0, 1fr)', minHeight: 480, maxHeight: 'min(72vh, 820px)', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)', background: 'var(--surface)', '@media(max-width: 700px)': { gridTemplateColumns: 'minmax(0, 1fr)', maxHeight: 'none' } });
+const Workspace = styled('div')({ display: 'grid', gridTemplateColumns: 'minmax(220px, 280px) minmax(0, 1fr)', gridTemplateRows: 'minmax(0, 1fr)', height: 'min(72vh, 820px)', minHeight: 480, borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)', background: 'var(--surface)', '@media(max-width: 700px)': { gridTemplateColumns: 'minmax(0, 1fr)', gridTemplateRows: 'none', height: 'auto', minHeight: 0 } });
 const Navigation = styled('nav')({ minHeight: 0, overflowY: 'auto', padding: 14, background: 'var(--raised)', borderRight: '1px solid var(--line)', '@media(max-width: 700px)': { maxHeight: 300, borderRight: 0, borderBottom: '1px solid var(--line)' } });
 const Details = styled('section')({ minWidth: 0, minHeight: 0, overflowY: 'auto', padding: '20px 24px', '@media(max-width: 700px)': { minHeight: 360 } });
-const PathButton = styled('button')<{ $active: boolean }>(({ $active }) => ({ flex: 1, minWidth: 0, overflowWrap: 'anywhere', textAlign: 'left', border: 0, borderRadius: 4, padding: '6px 8px', background: $active ? 'var(--tint)' : 'transparent', color: $active ? 'var(--text)' : 'var(--muted)', fontSize: 12 }));
+const PathButton = styled('button')<{ $active: boolean }>(({ $active }) => ({ flex: 1, minWidth: 0, minHeight: 32, overflowWrap: 'anywhere', textAlign: 'left', border: 0, borderRadius: 4, padding: '6px 8px', background: $active ? 'var(--tint)' : 'transparent', color: $active ? 'var(--text)' : 'var(--muted)', fontSize: 12 }));
+const FileToggle = styled('label')({ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 32, minWidth: 32, minHeight: 32, cursor: 'pointer', '& input': { margin: 0 } });
 const Finding = styled('article')({ padding: '14px 0', borderTop: '1px solid var(--line)', '& pre': { padding: 12, background: 'var(--input)', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', lineHeight: 1.6, margin: '10px 0' } });
 
 export function SecurityReview({ analysis, kept, decide, selectedPaths, togglePath, redactedIds, open, busy }: Props): React.JSX.Element {
@@ -72,7 +73,7 @@ export function SecurityReview({ analysis, kept, decide, selectedPaths, togglePa
         const pending = unresolvedByPath.get(path) ?? 0; const included = selected.has(path) && !entry.excludedBy;
         const status = entry.excludedBy ? `Исключено правилом ${entry.excludedBy}` : !included ? 'Исключён' : pending ? `Нужно решение · ${pending}` : items.length ? 'Проверен' : 'Без совпадений';
         return <Row key={path} style={{ gap: 4, flexWrap: 'nowrap', alignItems: 'start' }}>
-          <input aria-label={`${included ? 'Исключить' : 'Включить'} файл ${path}`} type="checkbox" checked={included} disabled={busy || !!entry.excludedBy} onChange={event => togglePath(path, event.target.checked)} style={{ marginTop: 9 }} />
+          <FileToggle><input aria-label={`${included ? 'Исключить' : 'Включить'} файл ${path}`} type="checkbox" checked={included} disabled={busy || !!entry.excludedBy} onChange={event => togglePath(path, event.target.checked)} /></FileToggle>
           <div style={{ minWidth: 0, flex: 1 }}>
           <PathButton type="button" $active={path === selectedPath} aria-current={path === selectedPath ? 'page' : undefined} onClick={() => setSelectedPath(path)}>{path.split('/').at(-1)}</PathButton>
             <small style={{ display: 'block', padding: '0 8px 5px', overflowWrap: 'anywhere' }}>{status}</small>

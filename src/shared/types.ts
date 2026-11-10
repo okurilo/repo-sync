@@ -119,6 +119,7 @@ export interface API {
   applyReplacement(token: string): Promise<void>;
   prepareIncoming(token: string, selectedPaths?: string[], acceptedPaths?: string[]): Promise<ImportPreview>;
   openRepository(id: string): Promise<void>;
+  openOutputDirectory(): Promise<void>;
   preflight(path: string, target: string, profileId: string): Promise<ImportPreview>;
   applyImport(token: string, overwrite?: boolean): Promise<Settings>;
 }
