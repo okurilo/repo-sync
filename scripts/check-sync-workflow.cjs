@@ -134,5 +134,16 @@ async function compare() { props().sourceControls.props.compare({mode:'branch',b
   assert.equal(props().step, 'compare');
   assert.equal(props().comparison.token, 'new-package');
   assert.equal(props().selectedIncomingPaths.join(','), 'code.ts');
-  console.log('PASS: explicit sources, no automatic analysis, back/selection/consent, single-flight, local blocker, apply, review/scan failure, export and retry');
+  states[0] = { ...settings, profiles: [{ ...profile, role: 'internal', sources: { internal: profile.sources.internal } }] };
+  states[2] = 'p';
+  find(render(), 'AppShell').props.outgoing();
+  await finish('localState', local); await finish('listCommits', []); await finish('listBranches', ['main']);
+  assert.equal(find(props().sourceControls, 'LocalCompareSource').props.selection.mode, 'compare');
+  const sourceOptions = find(props().sourceControls, 'SourceForm').props.children[0].props.children[0].props.children[1].props.children;
+  assert(sourceOptions[0].props.disabled && sourceOptions[1].props.disabled, 'remote-dependent sources are unavailable');
+  findAction(props().sourceControls, 'Показать изменения').props.onClick();
+  const compared = await finish('analyze', analysis);
+  assert.equal(compared.args[3].mode, 'compare', 'a local-only profile analyzes two local versions');
+  await finish('settings', states[0]);
+  console.log('PASS: explicit sources, local-only A/B mode, no automatic analysis, back/selection/consent, single-flight, local blocker, apply, review/scan failure, export and retry');
 })().catch(error => { console.error(error); process.exitCode = 1; });

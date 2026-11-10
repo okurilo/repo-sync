@@ -6,7 +6,7 @@ export const syncDate = (date?: string): string => date ? new Date(date).toLocal
 export const RepositoryGrid = styled('div')({ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 0 });
 const GitLine = styled('div')({ display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: '4px 12px', fontSize: 13, '& > strong': { minWidth: 100 }, '& code': { fontSize: 13 }, '& small': { fontSize: 12 } });
 export function repositoryStatus(profile: Profile): string {
-  if (!profile.sources.internal || (profile.role === 'internal' && !profile.sources.global)) return 'Нужна настройка';
+  if (!profile.sources.internal) return 'Нужна настройка';
   if (profile.pending) return 'Пакет ждёт подтверждения';
   if (profile.commitRequired) return 'Нужен коммит';
   return 'Настроен';
@@ -19,7 +19,7 @@ export function RepositoryCard({ profile, gitSummary, refreshGit, busy, switchBr
   return <Surface style={{ borderTop: '1px solid var(--line)', background: 'transparent', padding: '24px 0', minWidth: 0, overflowWrap: 'anywhere' }}>
     <Row style={{ justifyContent: 'space-between', alignItems: 'flex-start', gap: 16 }}>
       <div><Row style={{ gap: 12 }}><h2 style={{ margin: 0 }}>{profile.name}</h2>{status !== 'Настроен' && <Badge style={{ color: 'var(--warning)' }}>{status}</Badge>}</Row><small style={{ display: 'block', marginTop: 4 }}>{profile.role === 'internal' ? 'Внутренний контур' : 'Внешний контур'}</small></div>
-      <Row style={{ gap: 8 }}>{profile.pending || status === 'Нужна настройка' ? <Button $primary disabled={busy} onClick={open}>{profile.pending ? 'Подтвердить пакет' : 'Настроить'}</Button> : profile.role === 'internal' ? <><Button $primary disabled={busy || !remote} onClick={incoming}><Icon name="import" />Получить изменения из Git</Button><Button disabled={busy} onClick={outgoing}>Подготовить пакет</Button></> : <Button $primary disabled={busy} onClick={importPackage}><Icon name="import" />Выбрать пакет</Button>}<Button disabled={busy} onClick={open}>Открыть <Icon name="arrow" /></Button></Row>
+      <Row style={{ gap: 8 }}>{profile.pending || status === 'Нужна настройка' ? <Button $primary disabled={busy} onClick={open}>{profile.pending ? 'Подтвердить пакет' : 'Настроить'}</Button> : profile.role === 'internal' ? <>{remote ? <Button $primary disabled={busy} onClick={incoming}><Icon name="import" />Получить изменения из Git</Button> : <Button disabled={busy} onClick={open}>Подключить внешний Git</Button>}<Button disabled={busy} onClick={outgoing}>Подготовить пакет</Button></> : <Button $primary disabled={busy} onClick={importPackage}><Icon name="import" />Выбрать пакет</Button>}<Button disabled={busy} onClick={open}>Открыть <Icon name="arrow" /></Button></Row>
     </Row>
     <div style={{ display: 'grid', gap: 8, marginTop: 18 }}>
       <GitLine><strong>Локальный Git</strong>{observed ? <><code>{observed.branch ?? 'detached HEAD'}</code><small>{gitSummary?.localDate ? syncDate(gitSummary.localDate) : 'Нет коммитов'}</small><small>{changes ? `${changes} изменений` : 'Чистая рабочая копия'}</small></> : <small>{gitSummary?.localError ?? (!local ? 'Не настроен' : 'Чтение состояния…')}</small>}</GitLine>

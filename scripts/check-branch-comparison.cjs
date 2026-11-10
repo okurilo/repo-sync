@@ -6,7 +6,7 @@ const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
 const gitModule = require('../dist/main/main/infra/git.js');
 const { Engine, parseIncomingSelection } = require('../dist/main/main/engine.js');
-const { SettingsStore } = require('../dist/main/main/infra/settings.js');
+const { SettingsStore, parseProfile, parseSettings } = require('../dist/main/main/infra/settings.js');
 
 (async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'reposync-branches-'));
@@ -64,6 +64,19 @@ const { SettingsStore } = require('../dist/main/main/infra/settings.js');
     comparison = await engine.analyze(profile.id, 'incoming', { ...selection, branch: 'unrelated' });
     assert.equal(comparison.state, git(remote, ['rev-parse', 'unrelated']));
     assert(comparison.entries.some(file => file.path === 'unrelated.txt' && file.operation === 'ADD'));
-    console.log('Branch comparison checks passed: direct heads, divergence/unrelated histories, legacy merge-base, validation, selected Apply/CRLF, baseline preservation and A/B advance guards. Remote I/O mocked.');
+    const localOnly = parseProfile({ ...profile, transportMode: 'readable', sources: { internal: profile.sources.internal } }, profile);
+    assert.equal(localOnly.sources.global, undefined);
+    const outputDirectory = path.join(root, 'packages'); await fs.mkdir(outputDirectory);
+    await store.save({ ...store.get(), profiles: [localOnly], outputDirectory });
+    const reloaded = parseSettings(store.get()).profiles[0];
+    assert.equal(reloaded.sources.global, undefined); assert.equal(reloaded.transportMode, 'readable');
+    assert.equal(parseSettings({ ...store.get(), schemaVersion: 5, profiles: [{ ...localOnly, transportMode: undefined }] }).profiles[0].transportMode, 'compact');
+    const fromCommit = git(local, ['rev-parse', 'HEAD~1']);
+    const outgoing = await engine.analyze(profile.id, 'outgoing', undefined, { mode: 'compare', fromBranch: 'main', fromCommit, toBranch: 'main' });
+    assert(outgoing.entries.length > 0);
+    const review = await engine.selectExport(outgoing.token, outgoing.entries.filter(file => !file.excludedBy).map(file => file.path));
+    const parts = await engine.exportPackage(outgoing.token, review.findings.map(finding => finding.id), true);
+    assert(parts.length > 0); assert.equal(store.get().profiles[0].sources.global, undefined);
+    console.log('Branch comparison checks passed: direct heads, divergence/unrelated histories, legacy merge-base, selected Apply/CRLF, A/B guards, and local-only profile reload/export. Remote I/O mocked.');
   } finally { gitModule.resolveSource = actualResolve; gitModule.refreshSource = actualRefresh; await fs.rm(root, { recursive: true, force: true }); }
 })().catch(error => { console.error(error); process.exitCode = 1; });
