@@ -249,7 +249,8 @@ export function App(): React.JSX.Element {
     const nextSettings = await api.settings(); setSettings(nextSettings);
     const current = nextSettings.profiles.find(item => item.id === profile.id);
     if (!current) throw new Error('Профиль не найден после переключения ветки.');
-    if (!inWorkflow) { setNotice('Локальная ветка переключена.'); return; }
+    setStatus({});
+    if (!inWorkflow) { setNotice(`Ветка «${switched.branch}» выбрана для синхронизации.`); return; }
     if (direction === 'outgoing' && outgoingSelection.mode === 'commit') {
       const nextSelection: OutgoingSelection = { mode: 'commit' };
       setOutgoingSelection(nextSelection);
@@ -262,12 +263,12 @@ export function App(): React.JSX.Element {
     if (filename) setPackageComparison(result as CodeComparison); else setAnalysis(result as Analysis);
     setSelectedIncomingPaths(paths.filter(path => result.entries.some(entry => entry.path === path && !entry.excludedBy)));
     setStep('compare');
-    setNotice(wasSourceStep ? 'Локальная ветка переключена. Сравнение обновлено.' : 'Локальная ветка переключена. Сравнение и проверка обновлены.');
+    setNotice(`Ветка «${switched.branch}» выбрана для синхронизации. ${wasSourceStep ? 'Сравнение обновлено.' : 'Сравнение и проверка обновлены.'}`);
   }
-  const localStatus = profile?.sources.internal ? <LocalRepositoryState source={profile.sources.internal} state={localGit} error={localError} busy={locked} refresh={() => void run(async () => { setImportPreview(null); if (step === 'apply') setStep('compare'); await readLocal(profile); })} switchBranch={() => void run(async () => {
+  const localStatus = profile?.sources.internal ? <LocalRepositoryState source={profile.sources.internal} state={localGit} error={localError} busy={locked} showQuickSwitch={!!step} refresh={() => void run(async () => { setImportPreview(null); if (step === 'apply') setStep('compare'); await readLocal(profile); })} switchBranch={() => void run(async () => {
         await switchSyncBranch();
       })} /> : null;
-  const syncBranchControl = profile?.sources.internal && step && step !== 'done' ? <LocalBranchSwitcher
+  const syncBranchControl = profile?.sources.internal && step !== 'done' ? <LocalBranchSwitcher
     key={`${profile.id}:${profile.sources.internal.location}:${profile.sources.internal.branch}`}
     source={profile.sources.internal} state={localGit} pending={!!profile.pending} busy={locked}
     load={async source => {
@@ -291,6 +292,7 @@ export function App(): React.JSX.Element {
       {!step && <><Row style={{ justifyContent: 'space-between', marginBottom: step ? 12 : 24 }}><IconButton disabled={locked} onClick={home}><Icon name="back" />Репозитории</IconButton><IconButton disabled={locked || !!step} aria-label="Настроить репозиторий" onClick={() => { setError(''); setDraft(profile); }}><Icon name="settings" /></IconButton></Row><Row><h1 style={{ margin: 0, fontSize: step ? 22 : 30 }}>{profile.name}</h1><Badge>{profile.role === 'internal' ? 'Внутренний контур' : 'Внешний контур'}</Badge></Row><Muted style={{ margin: step ? '4px 0 12px' : '10px 0 28px' }}><code>{profile.sources.internal?.location ?? 'Укажите локальный репозиторий в настройках'}</code> · {profile.sources.internal?.branch}</Muted></>}
       {!step && <Row><Button disabled={locked} onClick={() => void run(() => openBackups(profile))}>Резервные копии и восстановление</Button></Row>}
       {!step && localStatus}
+      {!step && syncBranchControl}
       {!step ? <>
         {profile.pending ? <Surface><h2>Пакет ожидает подтверждения</h2><Muted>{profile.pending.partial ? 'Подтвердите получение выбранных файлов снаружи. Подтверждение завершает ожидание передачи.' : 'Подтверждайте полный пакет после применения всех его операций. Если применили только часть, отмените ожидание, чтобы сохранить прежнее общее состояние.'}</Muted>{profile.pending.paths.map(file => <p key={file}><code>{file}</code></p>)}<Row><Button $primary disabled={locked} onClick={() => void run(async () => { setSettings(await api.confirmTransfer(profile.id)); setNotice(profile.pending?.partial ? 'Передача выбранных файлов подтверждена.' : 'Применение подтверждено. Состояние синхронизации обновлено.'); })}>Подтвердить применение</Button><Button disabled={locked} onClick={() => void run(async () => { setSettings(await api.discardPending(profile.id)); setNotice('Ожидание отменено. Файлы пакета сохранены на диске.'); })}>Отменить ожидание</Button></Row></Surface> : profile.role === 'internal' ? <Surface style={{ padding: 36 }}><h2>Синхронизация</h2><div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 48px minmax(0, 1fr)', gap: 24, margin: '32px 0' }}><div><Badge>Внешний Git</Badge><Muted><code>{profile.sources.global?.location ?? 'Настройте внешний Git'}</code><br />{profile.sources.global?.branch}</Muted><p>{status.incoming === undefined ? 'Сравните ветку с её основой' : `Изменено файлов: ${status.incoming}`}</p><Button $primary disabled={locked || !profile.sources.global || !profile.sources.internal} onClick={() => void run(() => begin('incoming'))}><Icon name="import" />Получить изменения из Git</Button></div><div style={{ alignSelf: 'center', color: 'var(--muted)' }}><Icon name="sync" /></div><div><Badge>Локальный репозиторий</Badge><Muted><code>{profile.sources.internal?.location}</code><br />{profile.sources.internal?.branch}</Muted><p>{status.outgoing === undefined ? 'Изменения ещё не проверены' : `Изменено файлов: ${status.outgoing}`}</p><Button disabled={locked || !profile.sources.internal} onClick={() => void run(() => begin('outgoing'))}><Icon name="arrow" />Подготовить пакет</Button></div></div><Row style={{ justifyContent: 'space-between' }}><small>Последняя синхронизация: {syncDate(profile.syncedAt)}</small><Button disabled={locked} onClick={() => void run(() => refresh(profile))}>Проверить изменения</Button></Row><details style={{ marginTop: 20 }}><summary>Подробности</summary><p><code>{profile.baseline?.state ?? 'Состояние синхронизации ещё не сохранено'}</code></p><small>Файлов в общем состоянии: {profile.baseline?.files.length ?? 0}.</small></details></Surface> : <EmptyState title="Пакет изменений"><Muted>Выберите любую часть пакета .md. Все части должны лежать в одной папке с исходными именами. Перед применением вы увидите изменения.</Muted><Button $primary disabled={locked || !profile.sources.internal} onClick={() => void run(() => importPackage())}><Icon name="import" />Выбрать пакет</Button></EmptyState>}
       </> : <>

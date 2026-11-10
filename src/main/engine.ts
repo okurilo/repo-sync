@@ -84,9 +84,10 @@ export class Engine {
         const current = settings.profiles.find(item => item.id === id);
         if (!current?.sources.internal || current.pending) throw new Error('Профиль изменился или ожидает подтверждения пакета.');
         current.sources.internal.branch = branch;
-        current.lastAction = { type: 'Переключение локальной ветки', at: new Date().toISOString() };
+        current.lastAction = { type: useOpenBranch ? 'Выбор локальной ветки' : 'Переключение локальной ветки', at: new Date().toISOString() };
         await this.store.save(settings);
       } catch {
+        if (useOpenBranch) throw new Error(`Ветка «${branch}» уже открыта в Git, но сохранить её для синхронизации не удалось. Проверьте настройки профиля и повторите.`);
         throw new Error(`Git переключился на «${branch}», но сохранить ветку в настройках не удалось. Проверьте локальный Git и сохраните выбранную ветку в настройках проекта перед продолжением.`);
       }
     }
