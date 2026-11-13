@@ -8,7 +8,7 @@ SHA commit — идентификатор Git состояния. Он отли�
 
 По умолчанию Diff строится от последнего подтверждённого synchronized state к выбранному target commit. Baseline хранит state ID, included inventory и scope digest. Before bytes читаются из этого commit в выбранном Git source.
 
-Git history не передаётся, поэтому corporate commit может отсутствовать во внешнем Git. Это вопрос корректного сравнения, а не киберзащита. Import сохраняет optional localRepository — путь target, в который восстановлены baseline файлы. Если source Git не содержит commit, before bytes читаются оттуда и проверяются по inventory hashes. Нет отдельной базы исходников, автоматического commit mapping или проверки общего ancestry между контурами. Если baseline bytes уже изменены/недоступны, нужен Snapshot.
+Git history не передаётся, поэтому исходный commit может отсутствовать во внешнем Git. Это вопрос корректного сравнения, а не киберзащита. Import сохраняет optional localRepository — путь target, в который восстановлены baseline файлы. Если source Git не содержит commit, before bytes читаются оттуда и проверяются по inventory hashes. Нет отдельной базы исходников, автоматического commit mapping или проверки общего ancestry между репозиториями. Если baseline bytes уже изменены/недоступны, нужен Snapshot.
 
 Версии с manually included ignored bytes идентифицируются content inventory digest; localRepository указывает их working tree. Scope fingerprint меняется вместе с exclusions / ignored opt-ins и требует Snapshot для нового scope.
 

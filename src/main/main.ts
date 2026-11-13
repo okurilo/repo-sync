@@ -64,7 +64,7 @@ async function start(): Promise<void> {
         }
         case 'refreshProject': {
           const profile = store.get().profiles.find(item => item.id === string(args[0], 36)); if (!profile) throw new Error('Профиль не найден');
-          if (command === 'refreshProject') { if (!profile.sources.global) throw new Error('Внешний Git не настроен'); const refreshed = await refreshSource(profile.sources.global, 'global', engine.cache); engine.invalidateRemote(profile.sources.global.location, refreshed.changedBranches); await store.action(profile.id, 'Обновление внешнего Git'); }
+          if (command === 'refreshProject') { if (!profile.sources.global) throw new Error('Удалённый Git не настроен'); const refreshed = await refreshSource(profile.sources.global, 'global', engine.cache); engine.invalidateRemote(profile.sources.global.location, refreshed.changedBranches); await store.action(profile.id, 'Обновление удалённого Git'); }
           value = await projectGitSummary(profile, engine.cache); break;
         }
         case 'localState': value = await localState(parseSource(args[0], 'internal')); break;

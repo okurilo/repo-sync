@@ -162,7 +162,7 @@ export class Engine {
     this.invalidate();
     const mode: Environment = direction === 'incoming' ? 'global' : 'internal';
     const { profile } = this.context(id, mode);
-    if (profile.role !== 'internal') throw new Error('Эта операция доступна только во внутреннем контуре.');
+    if (profile.role !== 'internal') throw new Error('Эта операция доступна только для локального профиля.');
     if (!profile.sources.internal) throw new Error('Укажите локальный репозиторий в настройках.');
     if (profile.pending) throw new Error('Предыдущий пакет ожидает подтверждения. Подтвердите его применение или отмените ожидание перед новой синхронизацией.');
     let source = profile.sources[mode];
@@ -182,7 +182,7 @@ export class Engine {
     let comparisonBase: ResolvedSource | undefined;
     if (comparison) {
       comparisonBase = await resolveSource({ ...source, branch: comparison.fromBranch, commit: comparison.fromCommit }, mode, this.cache);
-      if (comparisonBase.root !== resolved.root) throw new Error('Обе версии должны принадлежать выбранному внутреннему репозиторию.');
+      if (comparisonBase.root !== resolved.root) throw new Error('Обе версии должны принадлежать выбранному локальному репозиторию.');
       const fromBranch = await resolveSource({ ...source, branch: comparison.fromBranch, commit: undefined }, mode, this.cache);
       const toBranch = await resolveSource({ ...source, branch: comparison.toBranch, commit: undefined }, mode, this.cache);
       await selectedAncestor(resolved.root, comparisonBase.commit, fromBranch.commit);
@@ -244,7 +244,7 @@ export class Engine {
       baseline = { state: comparisonBase.commit, files: initial.files, scope };
     } else if (!incoming && !comparisonBase) {
       const external = profile.sources.global;
-      if (!external) throw new Error('Настройте внешний Git для сравнения исходящих файлов.');
+      if (!external) throw new Error('Настройте удалённый Git для сравнения исходящих файлов.');
       await refreshSource(external, 'global', this.cache);
       const base = await resolveSource(external, 'global', this.cache);
       const initial = await readTree(base, filteredProfile); initialBytes = initial.bytes;
@@ -374,7 +374,7 @@ export class Engine {
       }
     } else if (transport.protocolVersion >= 4) {
       const external = profile.sources.global!; await refreshSource(external, 'global', this.cache);
-      if ((await resolveSource(external, 'global', this.cache)).commit !== session.transport.sourceState) throw new Error('Внешняя ветка изменилась. Обновите сравнение.');
+      if ((await resolveSource(external, 'global', this.cache)).commit !== session.transport.sourceState) throw new Error('Удалённая ветка изменилась. Обновите сравнение.');
     }
     const base = session.resolved.source.base;
     if (session.transport.packageType === 'diff' && base && !base.commit) {
@@ -516,7 +516,7 @@ export class Engine {
     const source = session.resolved.source;
     await refreshSource({ ...source, commit: undefined }, 'global', this.cache);
     const latest = await resolveSource(source, 'global', this.cache);
-    if (latest.commit !== session.resolved.commit) throw new Error('Внешняя ветка изменилась. Обновите сравнение.');
+    if (latest.commit !== session.resolved.commit) throw new Error('Удалённая ветка изменилась. Обновите сравнение.');
     if (session.branchComparison) {
       const baseSource = { ...source, branch: session.branchComparison.baseBranch, commit: undefined };
       await refreshSource(baseSource, 'global', this.cache);
@@ -532,7 +532,7 @@ export class Engine {
   async loadPackage(filename: string | string[], profileId: string): Promise<CodeComparison> {
     this.invalidate();
     const { profile } = this.context(profileId);
-    if (profile.role !== 'external' || !profile.sources.internal) throw new Error('Для применения пакета выберите внешний контур.');
+    if (profile.role !== 'external' || !profile.sources.internal) throw new Error('Для применения пакета выберите удалённый профиль.');
     const transport = await loadTransport(filename);
     const root = await realpath(profile.sources.internal.location);
     const baseline = await this.importBaseline(root, transport, profile);
@@ -559,7 +559,7 @@ export class Engine {
   }
   async preflight(filename: string, target: string, profileId: string): Promise<ImportPreview> {
     const { profile } = this.context(profileId);
-    if (profile.role !== 'external') throw new Error('Для применения пакета выберите внешний контур.');
+    if (profile.role !== 'external') throw new Error('Для применения пакета выберите удалённый профиль.');
     this.invalidate();
     const preview = await this.prepareTransport(await loadTransport(filename), target, profileId);
     const session = this.importSession!;
@@ -789,10 +789,10 @@ export function parseIncomingSelection(value: unknown): IncomingSelection {
   if (value === undefined) throw new Error('Выберите основную ветку для сравнения.');
   if (!value || typeof value !== 'object' || !('mode' in value) || typeof value.mode !== 'string' || !['branch', 'branches', 'commit', 'range', 'repositories', 'zero'].includes(value.mode)) throw new Error('Выберите режим входящего сравнения.');
   const input = value as Record<string, unknown>;
-  for (const key of ['commit', 'from']) if (input[key] !== undefined && (typeof input[key] !== 'string' || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(input[key]))) throw new Error('Выберите полный SHA коммита из истории внешней ветки.');
+  for (const key of ['commit', 'from']) if (input[key] !== undefined && (typeof input[key] !== 'string' || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(input[key]))) throw new Error('Выберите полный SHA коммита из истории удалённой ветки.');
   if (input.mode === 'range' && (!input.from || !input.commit)) throw new Error('Выберите начало и конец диапазона.');
   if (input.mode !== 'range' && input.from !== undefined) throw new Error('Начальный коммит доступен только для диапазона.');
-  if ((input.mode === 'branch' || input.mode === 'branches' || input.mode === 'zero' || input.mode === 'repositories') && input.commit !== undefined) throw new Error('Для этого режима используется вершина внешней ветки.');
+  if ((input.mode === 'branch' || input.mode === 'branches' || input.mode === 'zero' || input.mode === 'repositories') && input.commit !== undefined) throw new Error('Для этого режима используется вершина удалённой ветки.');
   for (const key of ['branch', 'baseBranch']) if (input[key] !== undefined) { const name = input[key]; if (typeof name !== 'string') throw new Error('Некорректная ветка.'); validateSource({ kind: 'local', location: '.', branch: name }, 'internal'); }
   if ((input.mode === 'branch' || input.mode === 'branches') && !input.baseBranch) throw new Error('Выберите основную ветку.');
   return { branch: input.branch as string | undefined, baseBranch: input.mode === 'branch' || input.mode === 'branches' ? input.baseBranch as string | undefined : undefined, mode: input.mode as IncomingSelection['mode'], commit: input.commit as string | undefined, from: input.from as string | undefined };
@@ -1001,7 +1001,7 @@ async function prepare(root: string, transport: Transport, baseline: Baseline | 
       prepared.push({ path: record.path, before: null, after, beforeMode: null, afterMode });
       continue;
     }
-    else if (old === null) conflict(`Исходного файла «${name}» нет во внутреннем репозитории, поэтому применить эту операцию невозможно.`);
+    else if (old === null) conflict(`Исходного файла «${name}» нет в локальном репозитории, поэтому применить эту операцию невозможно.`);
     else if (merged) { /* retain the reviewed three-way result */ }
     else if (record.operation === 'MODIFY' || ((transport.protocolVersion >= 4 || overwriteReplacement) && record.operation === 'REPLACE')) {
       const target = canonical.get(record.path);
