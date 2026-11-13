@@ -1,75 +1,150 @@
-# Инженерный контекст RepoSync
+# Правила и инженерный контекст RepoSync
 
-## 2026-11-10 — папка после завершения переноса
+## Правила
+
+Правила этого раздела имеют приоритет над историческими записями журнала. При работе читайте записи журнала адресно по теме задачи.
+
+### Базовые инженерные правила
+
+- TypeScript только в `strict`-режиме.
+- Запрещено использовать `any`.
+- Экспорты только именованные (без `default export`).
+- На границах модулей должны быть явные типы (HTTP, парсер, БД, интеграции).
+
+### Версия приложения и зависимости
+
+- Перед каждым новым коммитом повысить patch в `package.json` ровно один раз и синхронизировать версию в `package-lock.json`. Исходную версию брать из текущего `package.json`, а не из старых записей в журнале. При amend того же коммита повторно не повышать номер.
+- Minor/major менять только по явному решению пользователя. Сборка не повышает и не переписывает версию.
+- Прямые зависимости и overrides закреплены точными версиями; не обновлять их и не убирать overrides без явного согласования пользователя. Установка — `npm ci` по закоммиченному lock-файлу.
+
+### Коммиты и релизы
+
+- «Коммит и пуш» включает проверки, коммит, push и свежие локальные macOS arm64 `.app`/DMG/ZIP. «Коммит» — то же без push. Явные ограничения пользователя важнее; исторические записи ниже не отменяют этот порядок.
+- Перед коммитом проверить scope/diff, обновить документацию по правилам ниже, выполнить релевантные регрессии, `git diff --check` и проверку версии. Для runtime-правок — `npm run build`. Версию менять по разделу выше.
+- Коммитить только файлы задачи, с русским Conventional Commit, в рабочей ветке `codex/…`, никогда в `main`. Ветку слитого/закрытого PR не переиспользовать. Git — через `git`, PR — через подключённый GitHub, без `gh`; существующий PR не дублировать, новый по запросу — draft с русским title/body.
+- После окончательного коммита/push выполнить `npm run dist:mac`. После amend пересобрать. Если Electron не скачивается, использовать локальный `electronDist` той же версии/архитектуры; зависимости и TLS не менять.
+- Проверить свежие артефакты в `release/`: packaged version/branch/SHA совпадают с manifest/HEAD, файлы `dist` — с `.app`, `app.asar` в ZIP — с `.app`; DMG проходит `hdiutil verify`. `dist/` и `release/` не коммитить, tracked файлы после финального коммита не менять.
+- Сборка без запроса коммита не разрешает commit/push и не повышает версию; незакоммиченные исходники явно отмечать. Windows, другая архитектура, GitHub Release/теги/upload и merge — по отдельной просьбе.
+- В ответе указать версию, ветку/SHA, результат push/проверок, пути артефактов и ограничения подписи. Ошибку упаковки обозначить как незавершённый шаг; старую сборку не выдавать за свежую.
+
+### Контракт snapshot
+
+- Любое изменение структуры JSON-snapshot допускается только с изменением `schemaVersion`.
+- Обратная совместимость должна быть зафиксирована явно в документации/коде миграции контракта.
+
+### Прозрачность экспорта для проверки DLP
+
+- Пользователь запрещает упаковку экспортируемых данных в Base64 в этом проекте. Запрет распространяется на текстовые и бинарные файлы, сжатые данные, фрагменты многочастного пакета и оба режима экспорта.
+- По явному решению пользователя в «Проверке данных» допускается замена выбранных чувствительных значений на звёздочки только в выгрузке. Исходник не изменяется; это документированное исключение из побайтовой точности для выбранных диапазонов, не способ обхода DLP и не обещание прохождения проверки. Остальные байты и переводы строк сохраняются.
+- Если исходный файл уже содержит Base64, сохранять его исходное содержимое без декодирования или изменения: запрет касается добавленного RepoSync кодирования при упаковке.
+- Нельзя использовать BASE64 или BROTLI_BASE64 для создания новых пакетов. Сжатие не является разрешением на последующее кодирование в Base64.
+- Цель — открытое содержимое для проверки DLP-системами, включая проверку персональных данных. Не добавлять шифрование, обфускацию, альтернативные кодировки или сжатие, скрывающие исходный текст от проверки. Не обходить DLP и не обещать прохождение проверки конкретной системой.
+- Передавать выбранные изменённые файлы целиком с точным сохранением байтов, переносов LF/CRLF, отступов, пробелов, BOM и отсутствия завершающего переноса. Минифицировать только служебные метаданные, не содержимое файлов. Если выбранный формат контейнера требует Base64, изменить способ упаковки, а не обходить запрет.
+- Согласование полного содержимого файлов, сжатия или контейнера `.md` не означает согласования Base64. Этот запрет имеет приоритет над прежними решениями и описаниями экспорта.
+
+### Документация и изменения
+
+- Каждая новая фича должна обновлять документацию адресно по смыслу файла:
+- `README.md` обновляется только если меняется внешний смысл проекта, публичный способ использования, сценарий запуска/подключения или пользовательский контракт, который должен быть понятен без чтения кода.
+- `README.md` не используется для фиксации внутренних деталей реализации, локальных технических решений, временных MVP-ограничений и хода разработки.
+- `CHANGELOG.md` используется для краткой истории изменений: что изменилось в проекте и что это меняет для разработки или использования.
+- Инженерный журнал ниже используется для архитектурных решений, локальных соглашений и причин выбора подхода.
+- Архитектурные решения фиксируются кратко и предметно в инженерном журнале ниже.
+- Изменения должны быть небольшими, ревью-пригодными и логически завершенными.
+
+### Формат завершения задачи (обязательно)
+
+- В конце каждого ответа после выполнения правок обязательно добавлять блок:
+  - `Следующая команда:`
+  - одна конкретная команда в backticks, которую нужно выполнить пользователю после правок.
+- Нельзя оставлять абстрактные рекомендации вместо команды.
+- Для деплоя указывать полный one-liner (например, `git pull origin main && make prod-update`).
+
+### Архитектурная дисциплина
+
+- Не смешивать бизнес-логику с транспортным слоем.
+- Инфраструктурные зависимости (БД, внешние HTTP-клиенты, Telegram API) должны быть изолированы в `infra`.
+
+## Инженерный журнал
+
+### 2026-11-13 — единый файл правил и решений
+
+- Правила и инженерный журнал объединены в `AGENTS.md`; правила выше имеют приоритет над историческими записями. Формат приложения, настройки и сборка не менялись.
+
+### 2026-11-13 — названия профилей в интерфейсе
+
+- Пользовательские подписи профилей — «Локальный» и «Удалённый», источник — «Удалённый Git». Сохранённые значения `internal`/`external` и ключи `sources.internal`/`sources.global` не меняются; миграция настроек не нужна. Изменены только подписи и сообщения.
+
+### 2026-11-10 — папка после завершения переноса
 
 - Failure mode: общий итоговый action всегда вызывал `openRepository`, поэтому после выгрузки открывал локальный исходник вместо `settings.outputDirectory`. Минимальная правка: отдельная IPC-команда без аргументов читает сохранённый путь в Main, проверяет существование каталога и вызывает `shell.openPath`; Renderer выбирает команду по направлению завершённого переноса. Не передаём произвольный путь из Renderer и не меняем формат настроек.
 - Оценка до правок: 5 runtime-файлов, менее 25 добавленных строк; фактически 5 runtime-файлов, +15/−4 строки. Регрессия проверяет обе итоговые кнопки и IPC-вызовы из Renderer. Build и проверка версии проходят на patch 1.0.27; зависимости и настройки не меняются. Доработка публикуется в существующий PR №14.
 
-## 2026-11-10 — внутренний профиль без внешнего Git
+### 2026-11-10 — внутренний профиль без внешнего Git
 
 - Поле внешнего Git стало необязательным при создании и изменении внутреннего профиля. Пустое поле сохраняется как отсутствие `sources.global`, без изменения `schemaVersion` и добавления состояния. Загрузчик v6 не относит такой профиль к неполному legacy-профилю, поэтому сохраняет формат пакета и остальные настройки при перезапуске; ветка миграции v4–v5 остаётся прежней.
 - Входящий Git-сценарий остаётся доступен после подключения внешнего источника. Исходящий профиль без него начинает с существующего сравнения A→B двух локальных версий; режимы коммита и рабочей копии, которым нужен внешний HEAD, в селекторе недоступны. Engine использует прежний путь пакета v7 и guard выбранных Git-версий, без новой схемы пакета и сетевого I/O.
 - Оценка до правок: 4 runtime-файла и менее 40 добавленных строк; фактически 4 runtime-файла, +9/−9 строк до patch bump. Проверены сохранение/повторная загрузка профиля без remote с форматом `readable`, реальная подготовка пакета через локальное сравнение, выбор режима в Renderer и недоступность требующих внешнего HEAD вариантов. Build, sync workflow, branch comparison, local branch switch, working tree, `git diff --check` и Impeccable detect `[]` прошли. Patch для публикации в существующий PR №14 повышен один раз с 1.0.25 до 1.0.26; зависимости не менялись.
 
-## 2026-11-10 — визуальная проверка длинного списка файлов
+### 2026-11-10 — визуальная проверка длинного списка файлов
 
 - `SecurityReview` получил определённую высоту и строку сетки `minmax(0, 1fr)`: длинные дерево и список совпадений прокручиваются внутри колонок, а следующий чекбокс остаётся после панели. На узком окне панель возвращается в поток с отдельной прокруткой дерева. Области нажатия одиночных галочек файлов в `SecurityReview` и `Comparison` увеличены до 32×32 px без изменения выбора и IPC.
 - Временный Vite-стенд с реальными компонентами и синтетическими данными: 180 файлов, 30 совпадений; экраны репозиториев, ветки, настроек, обновления, фильтров, источника, файлов, исходящей и входящей проверки, итога. Проверены ширины 1440/900/700/600 px, светлая/тёмная темы; горизонтального переполнения нет. До правки колонки выходили за панель 518 px до 8755 px; после правки обе имеют высоту 646 px при панели 648 px на 1440×900, отступ до согласия 20 px. Выбор файла изменил счётчик 180→179, чекбокс согласия нажимается на 700 px. Реальные Git, системные диалоги, нативный Electron и Windows этим стендом не проверялись.
 - Фактический scope задачи: 2 runtime-файла, +6/−4 строки; оценка до 3 файлов соблюдена. `npm run build`, проверки SecurityReview, image selection, sync workflow, branch comparison, `git diff --check` и Impeccable detect `[]` прошли. Временные QA-файлы удалены, локальный сервер остановлен.
 
-## 2026-11-10 — выбор локальной ветки на обзоре
+### 2026-11-10 — выбор локальной ветки на обзоре
 
 - Обзор использует существующий LocalBranchSwitcher и IPC смены ветки. Открытую ветку можно сохранить как цель синхронизации без Git switch; для переключения на другую остаются прежние проверки чистой копии, конфликтов, незавершённых операций и ожидающего пакета. Новых состояний, настроек и миграций нет.
 - Финальный технический проход: после успешной смены очищается рассчитанный для прежней ветки счётчик изменений; сообщение опирается на ответ Git, а ошибка сохранения уже открытой ветки не утверждает о Git switch. Отказ сохранения при грязной рабочей копии и успешный повтор покрыты локальной регрессией.
 - Публикация обеих правок идёт отдельной веткой от актуального `origin/main`, потому что прежний PR №13 уже слит. Patch повышен с 1.0.24 до 1.0.25 без изменения зависимостей. Общий runtime diff: 6 файлов, +17/−12 строк; дополнительные изменения — одна регрессия и адресная документация. Build, проверки branch switch/sync workflow/security review/image selection/branch comparison/working tree/version и writer safety/performance прошли; `git diff --check` пройден перед публикацией. Нативный Electron, Windows и системные диалоги остаются ручной проверкой.
 
-## 2026-11-07 — переключение ветки на шаге файлов
+### 2026-11-07 — переключение ветки на шаге файлов
 
 - Чтение веток и переключение используют одну блокировку Renderer. Ошибка чтения остаётся в селекторе и не заменяет ошибку переключения. Поиск в сравнении не запускает предпросмотр во время чтения Git.
 - Список и состояние локального Git берутся из одного чтения. Селектор остаётся доступен после ошибки, а успешная смена пересчитывает сравнение с пересечением выбранных путей.
 - Если нужная ветка уже открыта, сохраняется только цель в профиле. Локальные правки при этом остаются на месте. Для фактического переключения требуется чистая копия, а блокировки незавершённых операций, конфликтов и ожидающего пакета действуют в обоих случаях.
 
-## 2026-11-05 — восстановление клиентских путей
+### 2026-11-05 — восстановление клиентских путей
 
 - Обзор переключает локальную ветку без запуска analyze; активный процесс сохраняет пересчёт и сброс готовности. Карточка использует existing IPC с canSwitch/pending guards. Отказ подготовки по Git переводит фокус на причину.
 - Нерешённые конфликты по контракту v7 блокируют Apply; исправлены прежние обещания пропуска. Дерево SecurityReview строится из ограниченного treeEntries. Новых настроек, схем и зависимостей нет.
 
-## 2026-10-21 — смена локальной ветки в процессе
+### 2026-10-21 — смена локальной ветки в процессе
 
 - Селектор локальной ветки использует существующий BranchPicker на этапах источника, файлов и проверки. Отдельное действие переключает существующую чистую ветку, Main сохраняет её в профиле только после успешного Git switch; формат настроек не меняется.
 - После смены очищаются старые preview/consent tokens, повторно читается Git или пакет и сохраняется пересечение выбранных файлов. В исходящем режиме коммита выбранный SHA сбрасывается на вершину новой ветки; A→B selection остаётся явным.
 - Профиль сохраняется напрямую через SettingsStore, чтобы смена ветки не инвалидировала baseline как изменение источника. Автоматического stash/commit/push нет.
 
-## 2026-10-16 — экспорт решений исходной версии и футер окна
+### 2026-10-16 — экспорт решений исходной версии и футер окна
 
 - Пять обработчиков IPC для finding ID используют общий предел 25 символов (`base-` + 20 символов ID сканера); engine дополнительно проверяет ID по текущей сессии. Это включает экспорт, где ранее оставался предел 20 и появлялась ошибка «Некорректное строковое поле» после принятия совпадений исходной версии.
 - Нижняя панель проверки позиционируется `fixed` относительно окна, потому что DOM-блок SecurityReview со своим скроллом ограничивал `sticky`. После панели оставлен адаптивный отступ, чтобы детали не перекрывались; при высоте до 600px действие возвращается в поток.
-## 2026-10-16 — нижняя панель проверки
+### 2026-10-16 — нижняя панель проверки
 
 - Сводка по исходящему пакету находится в общей нижней панели рядом с действием «Создать пакет». Удалён отдельный sticky-элемент внутри SecurityReview: его containing block заканчивался до низа окна и визуально разрывал рабочую область.
 
-## 2026-10-16 — решения для исходной версии сравнения
+### 2026-10-16 — решения для исходной версии сравнения
 
 - IPC ограничивал идентификаторы решений исходящей проверки 20 символами, но findings исходной версии слияния имеют префикс `base-` и длину 25. Увеличен предел только для `selectExport`; движок по-прежнему принимает лишь известные идентификаторы текущей проверки. Пакетный формат и внешний API не изменены.
 
-## 2026-10-16 — пофайловая проверка данных
+### 2026-10-16 — пофайловая проверка данных
 
 - Проверка исходящего пакета использует дерево всех файлов и правую область текущего файла. Статусы derived из состава, findings и решений; bulk accept меняет только нерешённые совпадения, bulk mask — только заменяемые нерешённые. Файлы без совпадений остаются доступны для проверки состава.
 - Снимок ExportReview сохраняется на время пересчёта, `reviewReady` отдельно блокирует экспорт до успешного ответа. Переключение файла и локальные решения не запускают `selectExport`; изменение включения и звёздочек выполняет один пересчёт. Публичные типы и IPC-контракт, scanner, transport и исходники неизменны.
 - Scope: 3 runtime-файла, +169/−66 строк; 3 regression scripts, включая новые групповые решения и сохранение review snapshot при ошибке. `npm run build`, `check-sync-workflow`, `check-image-selection`, `check-security-review`, `git diff --check` прошли; Impeccable detector — `[]`. Screenshot review 1440×900/900×700 не выполнен: sandbox запретил запуск loopback сервера (`listen EPERM`); native Electron и Windows не проверялись.
 
-## 2026-10-14 — подготовка объединённого релиза
+### 2026-10-14 — подготовка объединённого релиза
 
 - Перед слиянием PR №7 версия повышена с 1.0.15 до 1.0.16; прямые зависимости и overrides не менялись. PR направлен в существующую целевую ветку `main` (ветки `master` в репозитории нет), локальный head совпадал с GitHub. Reviews, unresolved threads и GitHub CI checks отсутствовали; mergeability — чистая. Слияние выполнять после локальных регрессий и arm64 упаковки.
 
-## 2026-10-14 — компактные этапы получения и выгрузки
+### 2026-10-14 — компактные этапы получения и выгрузки
 
 - Минимальный механизм: существующие loading/source/compare/apply/security/done отображаются как «Источник → Файлы → Проверка → Готово». begin читает контекст, анализ — только по «Показать изменения»; source auto-effect удалён. Один Workbench без инспектора и одна нижняя панель; SourceForm/WorkflowActions используют прежние tokens. Выгрузка без findings тоже проходит проверку; SecurityReview сводка в потоке. Смена selection продолжает сбрасывать readiness/согласие; updateReview теперь сбрасывает exportReview до I/O. Отмена повторного выбора ошибочного пакета сохраняет recoverable error, loading-frame распространяется на исходящий Git/пакет.
 - Оценка6–9 runtime/до300 добавленных строк; фактически6 runtime,+106/−78. Backend/IPC/types/persistence/schema/deps/transport v6/writer не менялись. Ранее закоммиченные изображения, compact v6 и incoming guards сохранены. Перед публикацией patch повышен с1.0.14 до1.0.15; рабочая веткаcodex/operate-mineral-atlas продолжает существующий открытый PR№7. Build, регрессии и проверка версии прошли; локальная macOS arm64 упаковка выполняется после окончательного коммита.
 - Единый финальный проход: вход/6 способов/источник→выбор→prepare/scan→consent/решения→Apply/export→done/recovery; single-flight/pending/token guards, explicit retries и отмена chooser проверены. Новых сетевых каналов, retries, фоновых сервисов или metrics нет. Git timeouts/quit cancellation, байты, индекс, backups и recovery прежние. Normal Git details скрыты, blocker открыт; нет записи при выборе источника или проверке. Readiness при ошибке scan недоступна, секреты требуют existing override, empty selection блокируется, no-op остаётся подтверждаемым.
 - npm run build, check-sync-workflow (real App/SyncWorkflow/IncomingSource callbacks, delayed IPC), check-image-selection, branch-comparison, working-tree, conflict-resolution/restore, transport-v6(103 checks), version и diffcheck прошли. Actual Renderer/Vite с synthetic IPC: источники/сравнение, same-branch blocker, consent→Apply→done, secret keep→explicit override→export→done; light1440×900/dark900×700, overflow отсутствует, console errors[]. Две ограниченные визуальные серии, вторая подтвердила исправления. Native Electron/macOS dialogs/Windows и live Git UI не проверялись. Impeccable detect один раз: только advisory по прежнему overlay #00000070, код цвета не менялся; sidecar не обновлялся отдельной задачей.
 
-## 2026-10-14 — компактный transport v6 и необязательные изображения
+### 2026-10-14 — компактный transport v6 и необязательные изображения
 
 - Минимальный механизм: wire v6 без files/пустого payload/повторных payloadBytes и FILE name/hash; importer разворачивает existing Transport и проверяет полный состав перед пропуском ENOENT attachment. RAW size/hash проверяются при чтении, literal bytes/EOL/BOM сохраняются. DELETE readable не создаёт блока; legacy v1–v5 retained. Settings/IPC/Apply/writer/recovery неизменны, новых deps/retries/сервисов нет.
 - Transient includeImages default=true и remembered selected image paths; path/oldPath extension helper включает SVG. Disabled image operations помечены existing excludedBy, whole DELETE/RENAME исключены. Toggle вызывает existing selectExport, resets Scan decisions, пересчитывает выбранный размер; memo comparison entries предотвращает повторный preview от unrelated renders. Новая сессия возвращает default. Import missing FILE skips whole operation и сохраняет rename source; corrupt present attachment fail closed.
@@ -77,12 +152,12 @@
 - Permanent check-transport-v6:106 checks legacy/import/bytes/UTF8 multipart/RAW hashes/metadata corruption/path collisions/native FILE/symlink/partial Apply/image filtering/no baseline; check-image-selection: real App callbacks, delayed IPC, default/reset, reversible choice, bulk guards, empty selected set, stable preview. Working-tree, conflict/restore, branch и43 writer failure/concurrency/SIGKILL regressions passed; strict build/diffcheck. Real Renderer synthetic IPC checked at900/1440 light/dark, detector[] once; fresh Impeccable ship, final guard verdict resolved, documenter preserved DESIGN/sidecar. Archived finding image reinclude закрыт allowed callback и SecurityReview entries. Native Windows и power-loss не сертифицированы.
 - Пользовательский sample: исходные .md3700299 bytes;20 FILE4558719 bytes отсутствуют. Like-for-like доступный набор v5=3690822 bytes, v6=3397506 bytes; metadata saving293316 bytes (~7.95% .md) для доступного набора. Перепаковка complete original wire без создания отсутствующих bytes: document3698959→3400162, saving298797 bytes (~8.1% исходных .md), unavailablePaths20 сохранены; все доступные bytes совпали. Нет обещания восстановления отсутствующих вложений; PNG fixtures проверены отдельно.
 
-## 2026-10-14 — стабильное открытие входящего Git
+### 2026-10-14 — стабильное открытие входящего Git
 
 - Минимальный механизм: SyncStep.loading до readLocal/branchContext/refreshSource/listCommits/analyze; переход в compare после diff либо source после загрузки при неопределённой/совпадающей основе. Ошибка остаётся в loading с явным повтором begin, без автоматических retries.
 - SourceControls размещён только в Inspector независимо от comparison, поэтому пересчёт не перемонтирует форму. Адаптивное положение инспектора прежнее; проверка применения остаётся явной. IPC/Git timeouts/cancellation/persistence/Apply/recovery не меняются. Оценка: 2 runtime/<100 новых строк. Фактически 2 runtime,+13/−7; документация отдельно. Strict build, diffcheck и branch regression passed. Temporary actual-component harness с delayed IPC: все стадии initial loading, empty diff, missing/self base, отказ context/fetch/history/analyze и полный явный retry; SSR подтверждает единственный source в aside при source/compare/apply/reload и отсутствие workbench при initial loading/error. Detector [] один проход. Полный проход entry→busy/error/retry→Git I/O→preview/Apply→persistence/recovery: backend неизменён, автоматических retries/новых background effects нет. Native GUI/визуальные captures 900/1440 не выполнялись; прежний responsive CSS сохранён. По запросу пользователя правки включены отдельным коммитом, patch1.0.14 повышен один раз; ветка codex/compact-package-v6. Проверки перед commit, затем macOS arm64 .app/DMG/ZIP с identity/bytes/ZIP/DMG verification; без push.
 
-## 2026-10-14 — ускорение общего writer с проверками до реализации
+### 2026-10-14 — ускорение общего writer с проверками до реализации
 
 - До runtime-правок добавлены writer-fixture/check-writer-safety/check-writer-performance: real temporary Git/FS, mocked remote; 33 исходных сценария прошли на прежнем writer. Последующие тесты покрывают Apply и Restore, unknown external bytes/modes/symlinks, stage/HEAD/branch/operations, unrelated index edits, metadata-hidden staging, backup/write/sync/settings failures, реальные SIGKILL до/после replace/delete и перед commit, повторный recovery и cleanup, normal/split-index/worktree, legacy/v2/v3, tail/corrupt/missing progress, manual v2 restore. Итог43 сценария. Полные working-tree/incoming-update-and-restore/branch regressions сохраняются.
 - Минимальный механизм2 runtime: workingPaths --ignored=matching и поиск ignored ancestor по Map; indexEntries переиспользует existing git ls-files. writeGitGuard получает реальные index/HEAD/ref/operation/shared-index paths средствами Git, проверяет BigInt metadata перед каждым файлом, при изменении — semantic Git revalidation только выбранных записей. При завершении semantic check обязательна даже при неизменных metadata. Shared-index immutable content хранится по hash-name; Git обновляет его mtime при чтении, поэтому timestamp shared-файла не принимается за внешнее изменение. Git timeout/quit cancellation прежние, бесконечных retries нет.
@@ -91,13 +166,13 @@
 - На той же машине baseline0e84c49 и optimized, 2000 ignored files, маленькие modified файлы: Apply100/200/1000 до6.633/12.496/71.654s, после0.928/1.399/6.163s; Restore до6.284/12.988/71.319s, после0.823/1.205/5.928s. Git Apply1367/2667/13067→81/81/81; Restore1339/2639/13039→53/53/53. Журнал1000 около682MB→0.75MB, линейный рост. Тайминги не CI threshold; CI-ready test:writer проверяет counters/bytes, полный benchmark --baseline позволяет проверять2x локально.
 - Patch1.0.12 повышен ровно один раз; final commit в codex/operate-mineral-atlas, затем macOS arm64 .app/DMG/ZIP и identity/ZIP/DMG verification по регламенту. Push не запрошен и не выполняется.
 
-## 2026-10-14 — получение обновлений, объяснение расхождений и восстановление
+### 2026-10-14 — получение обновлений, объяснение расхождений и восстановление
 
 - Минимальный механизм: incoming Git автоматически проходит existing canonical acceptance; Markdown acceptance прежний. Divergences — только IPC/RAM, не блокируют обновление; fatal prepare получает allowlisted syncPath для отметки в дереве. Local snapshots хранятся по selected paths в existing CodeSession отдельно от immutable source comparison; source token снова показывает исходное сравнение. Rename показывает destination и раскрываемый source; binary/oversize/mode/BOM/EOL — метаданные, лимиты прежние. Нет three-way merge или выбора по датам.
 - Existing write loop извлечён в writeFiles для Apply и обратной транзакции. RestoreSession — только RAM/token/immutable bytes, list/prepare/apply IPC используют profile/id, без произвольного target от Renderer. Перед записью проверяются все paths/bytes/modes/HEAD/status; во время — HEAD, неизменность индекса и bytes каждого файла, затем итоговая проверка. workingPaths использует уже прочитанный index inventory и для clean paths; статус может измениться от собственных .gitignore/.gitattributes, но index identity проверяется отдельно. Пересечения операций и file/directory collisions отклоняются до записи.
 - Журнал копии schemaVersion2 добавляет profile/branch/date/action и afterMode, исходные .bin прежние. Безверсийный legacy journal читается/валидируется для startup recovery, не переписывается; ручное восстановление старых завершённых копий недоступно без достоверных branch/afterMode, причина и расположение видны. Settings v6 и transport v1–v5 неизменны. Restore возвращает файлы/права, не index/history; сбрасывает baseline/syncedAt только своего профиля, не возвращает старые глобальные настройки. Сам Restore сохраняет обратную копию и использует тот же journal/recovery.
 
-## 2026-10-16 — прямое сравнение внутренних версий и слияние v7
+### 2026-10-16 — прямое сравнение внутренних версий и слияние v7
 
 - Минимальный механизм: существующие `readTree`/`readWorkingTree`/`buildDiff` напрямую сравнивают выбранные A и B без merge-base. Полные конечные файлы и исходные байты выбранных операций кодируются в transport/schema v7; получатель делает three-way через системный `git merge-file` в закрытом временном каталоге, затем показывает фактический результат и использует прежние prepare/backup/writer/rollback/recovery. Зависимости, настройки и постоянные состояния не добавлены; import v1–v6 прежний.
 - UI выбирает независимые внутренние ветки и необязательные SHA; полный SHA проверяется принадлежностью выбранной истории. B может быть рабочей копией только фактически открытой ветки. Плавающие исходные/конечные вершины и выбранные файлы перепроверяются перед экспортом; выбранные коммиты остаются закреплёнными. Одинаковые версии дают пустое сравнение. Сравнение не требует внешнего Git.
@@ -107,35 +182,35 @@
 - Единый список рисков закрыт: (1) operations/no-op/executable modes — canonical bytes и fixtures; (2) selected/source preview, rename и filters — token separation, обе стороны и actual Renderer; (3) paths/symlinks/collisions — safePath, parser и prewrite validation; (4) concurrent bytes/index/HEAD/status — повторные guards; (5) backup/write/settings failure и interruption — общая транзакция, checksum rollback и recovery fixtures; (6) compatibility/IPC/errors — legacy recovery, прежний package conflict, typed token/id interfaces и конкретные сообщения. Нет новых retries, background services, metrics/config/deps; Git timeout/quit cancellation прежние. GUI Windows, live remote/auth, реальные power-loss/syscall races не сертифицированы.
 - Исходная оценка9 runtime/до300 добавленных строк; фактически10 runtime,+246/−87. Десятый файл (git infra) нужен для различения собственного изменения Git-статуса и внешнего изменения индекса. Новых infrastructure layers нет; writer переиспользован. Strict build, conflict/update/restore, working-tree и branch regressions прошли с real temporary Git/mock remote. UI — actual production Renderer/mock IPC, light900 и dark1440, rename/binary/filter/dirty consent, restoration/card/restart/focus/Tab, fatal path marker. Подробности итоговых проверок в manual-qa. Версия1.0.10 не повышена, commit/push/package не выполнялись.
 
-## 2026-10-14 — принять все текущие конфликты
+### 2026-10-14 — принять все текущие конфликты
 
 - Минимальный механизм: общий Renderer resolveConflicts принимает список путей, проверяет принадлежность текущим conflicts, объединяет с ранее acceptedPaths и вызывает existing prepare один раз. Кнопка массового принятия locked вместе с отдельными решениями. Выбор файлов не расширяется, backend/session/guards/backup/recovery прежние; новых persisted/config/IPC контрактов нет. IPC limit acceptedPaths согласован с прежним пределом выбранного набора100000 (redactions остаются10000). Оценка2 runtime/<20 строк, фактически3 runtime/<20 строк с устранением меньшего лимита решений.
 - Проверяется full chain выбора/готовности/preview/prepare/Apply, повторные token/bytes/status/HEAD guards и rollback остаются existing. Build, version/diff checks и conflict regression; component harness для bulk callback и единичного prepare. Native GUI другого Mac не проверен. Patch1.0.10, commit и macOS arm64 артефакты без push.
 
-## 2026-10-14 — явное принятие входящей версии при конфликте
+### 2026-10-14 — явное принятие входящей версии при конфликте
 
 - Минимальный механизм: acceptedPaths только IPC/RAM и ImportSession token, без persisted/schema/config изменений. Keep снимает операцию с выбора; accept повторяет prepare с allowlisted путём и canonical checksum-verified bytes. Для ADD — замена существующего файла, DELETE — удаление с backup, RENAME — удаление источника и замена назначения с backup обеих локальных версий. Принятие не пишет репозиторий до Apply; изменение выбора сбрасывает решения. Прежние dirty consent, bytes/modes/status/HEAD/source checks и backup/journal/rollback/recovery сохраняются.
 - Полный проход entry/IPC/validation→read/prepare→preview→Apply→backup/write/persistence/recovery, timeout/cancellation/retries, source I/O, безопасность/совместимость выполнен. При конфликтном переименовании «До» показывает локальное назначение, UI явно описывает удаление источника. Никаких новых фоновых side effects или metrics. Оценка7 runtime/<150 новых строк; фактически6 runtime/<100 новых строк.
 - Постоянная проверка на реальных temporary Git: partial/keep, preview локальных версий, ADD/DELETE/RENAME acceptance и rename без source/с готовым destination, allowed/unknown/duplicate paths, stale bytes, dirty consent, index и backup всех изменяемых локальных версий, rollback после отказа записи назначения, входящий Markdown-пакет. Component/SSR harness: обе кнопки вызывают правильное решение, all-conflict не даёт ложного успеха, accepted banner/Apply доступны. Remote I/O mocked; native GUI другого Mac не проверен. Strict build, branch/working-tree regressions пройдены. Patch1.0.9; по запросу выполняются commit и локальная macOS arm64 упаковка, без push.
 
-## 2026-10-14 — частичное продолжение при конфликтах входящих файлов
+### 2026-10-14 — частичное продолжение при конфликтах входящих файлов
 
 - Один конфликт в выбранном наборе раньше прерывал prepare и сбрасывал готовность для всех путей. Теперь prepare собирает известные path-specific conflicts отдельно, создаёт import session только для применимых records/files и показывает конфликтные пути/причины в предпросмотре. Применение остальных путей сохраняет backup/journal/rollback и повторные guards; конфликтные пути не попадают в backup или запись, не помечаются как применённые, а `updateCommon` остаётся выключен. Если к моменту Apply возник новый конфликт, применение безопасно остановится с конкретным сообщением.
 - После частичного успеха экран показывает пропущенные пути и повторный запуск сравнения; если конфликтуют все выбранные операции, пользователь возвращается к выбору. Общие ошибки безопасности, повреждённого пакета и Git остаются фатальными и не конвертируются в пропуск файла.
 - Четыре runtime-файла, ожидаемый объём меньше 100 добавленных строк; без snapshot/persistence/config/dependency изменений. Strict build пройден. Рабочая копия другого Mac и GUI не проверены. Commit/push не выполнялись.
 
-## 2026-10-14 — IPC анализа Git
+### 2026-10-14 — IPC анализа Git
 
 - Причина отказа в 1.0.6: preload всегда передаёт analyze четыре аргумента, включая undefined; общий IPC guard разрешал только три. Минимальное исправление: максимум четыре только для analyze, для остальных команд прежние три. Один runtime-файл, одна заменённая строка; без новых состояний, конфигурации и зависимостей.
 - IPC harness исполняет существующий handler: incoming branch, outgoing commit/working и legacy три аргумента доходят до Engine без потери параметров; пять аргументов, не-массив, четыре для других команд и чужой sender отклоняются, busy guard сохранён. Strict build, branch-comparison и working-tree regressions прошли (remote I/O mocked). Проверены entry/validation, Git timeout/cancellation, side effects, persistence/recovery и совместимость: изменение только в раннем guard; Engine и Apply прежние. GUI другого Mac не проверен. Commit/push/упаковка не выполнялись.
 
-## 2026-10-14 — быстрый выбор файлов и папок
+### 2026-10-14 — быстрый выбор файлов и папок
 
 - Минимальный механизм: changePaths только RAM; checkSelection по явной кнопке в incoming/outgoing. Initial branch comparison сохранён; после выбора сбрасываются import/export readiness, решения и overwriteToken. Existing run/pending/token guards, Engine checks/Apply/backup/recovery и IPC/settings/transport прежние. Проверка данных внутри SecurityReview по явному решению пользователя сохраняется.
 - Allowlist Set вместо paths×entries.find; shown removal через Set; memoized prefix groups/folder counts и JSX diff table. При prepared token сохраняется доступный текущий preview path. Без deps, новых schema/config/background/retries/metrics. Оценка3–4 runtime/<250; фактически3,+41/-22 строки.
 - Temporary component harness: 1000/10000 paths с прежним отображением1000, checkbox/folder limits, exclusions/unknown/duplicates, readiness/overwrite reset, explicit incoming/outgoing check и empty selection. Synthetic component execution с500 изменёнными строками: до16–19ms, после2.6–3.4ms; не browser paint/INP. Strict production build, branch comparison/selected Apply и working-tree regressions; detector[] один проход. Live GUI/native Windows не проверены. Commit/push/release не запрашивались.
 
-## 2026-10-14 — Electron после npm ci
+### 2026-10-14 — Electron после npm ci
 
 - Фото с другого Mac: installed1.0.3, source65e8926, отказ «Сборка новой версии… код1». Шаг npm ci пройден. В закреплённом пакете electron44.4.5 нет install/postinstall hook; обычный build не импортирует electron runtime. Поэтому forced electronDist=node_modules/electron/dist после свежего ci указывает на отсутствующий бинарный каталог. Проблема подтверждена контрактом пакета/порядком вызовов; точный stdout другой машины старый updater отбрасывал.
 - Минимальный механизм: existing command(Node,electron/install.js) после ci и перед dist; cache/checksum/version/arch — штатный installer закреплённого пакета, TLS/CA/зависимости не меняются. При отказе install приложение не заменяется. Текущие Git dirty/HEAD, timeout/cancel/group kill, backup/rollback/relaunch и persistence сохранены.
@@ -143,7 +218,7 @@
 - Полный проход input/tools→ci/bootstrap/dist→timeout/cancel/process I/O→failure/backup/install→persistence/config/security/compatibility выполнен. Добавление pipe не убирает существующий timeout/group kill. Permanent fixture: real child bounded tail/error/timeout/cancel; 32 lifecycle checks real temporary Git/mock npm/bootstrap с отсутствующим dist и обязательной подготовкой, success/build failure/cancel/divergence/Windows helper rollback. Strict build/diffcheck прошли. Другой Mac/native Windows не проверены.
 - Публикация запрошена пользователем: patch1.0.6 синхронизирован с lock, dependencies/overrides прежние; один runtime-файл,+6/-2. После commit/push выполняется macOS arm64 упаковка и проверка artifact identity/bytes/ZIP/DMG по регламенту.
 
-## 2026-10-13 — Node.js в Applications и .bash_profile
+### 2026-10-13 — Node.js в Applications и .bash_profile
 
 - Фото с другого Mac уточнило реальную конфигурацию: PATH содержит /Applications/Node.js/ARM/node-v22.16.0-darwin-arm64/bin в .bash_profile; NODE_EXTRA_CA_CERTS задан там же. Данные фото — основание для поддержки сценария, не доказательство исполнения на другом Mac.
 - В прежнем минимальном fallback дополнены уникальные shell-кандидаты SHELL/zsh/bash. Фиксированный node -p возвращает process.execPath и только PATH/Node CA/TLS; command -v npm находит CLI. JSON/paths проверяются, шум профиля пропускается. Не hardcode версии или пользовательский каталог; настройки и файлы профиля не переписываются.
@@ -152,7 +227,7 @@
 - Один runtime-файл, +25/-11 относительно предыдущего исправления; scope ниже10/<300. Полный проход по entry/env/timeout/cancel/network/build/install/rollback/persistence/config/security/compatibility выполнен; после исправлений финальный проход без новых material findings для этого сценария.
 - Постоянный fixture точно воспроизводит Applications путь, echo из bash_profile, zsh→bash fallback, передачу CA, strict TLS и игнорирование TLS0; abort запрещает второй shell. Updater/version checks, build/diffcheck прошли; remote Mac/native Windows не проверены. Patch1.0.3 синхронизирован, dependencies/overrides прежние. Финальная упаковка после коммита.
 
-## 2026-10-13 — поиск Node.js/npm из macOS приложения
+### 2026-10-13 — поиск Node.js/npm из macOS приложения
 
 - Пользователь сообщил ошибку в старой macOS сборке (на два коммита ниже). После проверки пользователь уточнил, что ошибка на другом Mac. Прямая проверка текущего Electron с Finder PATH=/usr/bin:/bin на машине разработки нашла nvm Node22.14.0/npm10.9.2; это не проверка пользовательского компьютера, исходный отказ там не воспроизведён. Поэтому не объявляем отсутствие установленного Node или доказанную причину старой ошибки.
 - Минимальный механизм: прежние каталоги плюс NVM_DIR; Node X_OK, npm R_OK (JS запускается через найденный Node); проверенные absolute realpaths и PATH пары. Если каталоги не дали результата на macOS — фиксированный command -v node/npm через пользовательскую shell -ilc, 5s/SIGKILL/maxBuffer8KB, без подстановки пользовательских строк в команду. Шум shell отфильтровывается, ошибочный/относительный/отсутствующий путь не принимается. Ошибка описывает поиск, не установку.
@@ -160,7 +235,7 @@
 - Regression fixtures: npm readable/non-executable, обычный PATH без shell, custom NVM_DIR, login-shell с шумом, timeout/error и Windows path без shell. Реальный Electron: Finder PATH нашёл и запустил node --version/npm --version; отдельно fallback shell получил те же пути. Strict build, updater/version checks и diffcheck прошли. Native Windows и пользовательский GUI запуск не сертифицированы.
 - Patch1.0.2 синхронизирован с lock; зависимости/overrides сохранены. Предыдущее пользовательское изменение .gitignore включено в этот коммит; tracked .impeccable файлы не удалены из индекса. Финальная сборка после коммита сохраняет его SHA.
 
-## 2026-10-13 — простое версионирование
+### 2026-10-13 — простое версионирование
 
 - package.json — единственный источник числовой версии; patch повышается перед новым коммитом один раз, package-lock синхронизируется, amend повторно не повышает. Начальная 1.0.1, minor/major — по явному решению. Сборка и dev не переписывают manifest.
 - Единственный writeAppRevision используется build/dev; app-revision.json schemaVersion2 добавляет version, поля branch/commit прежние. Updater читает установленную identity один раз при создании, до сетевой проверки. SchemaVersion1 читается, номер берётся из соседнего установленного package.json (в packaged app — внутри app.asar), без обращения к source checkout. Неизвестный формат не даёт installed SHA; fallback номера не разрешает установку.
@@ -169,7 +244,7 @@
 - Оценка до6 runtime/<150 строк; фактически8 build/runtime (общий writer и dev вызов добавлены для свежих dev метаданных), 42 добавленные/16 удалённых строк. Scope меньше10/<300. Полный проход metadata→IPC→Renderer→SHA availability→build/install/rollback→persistence/config/compatibility; fail-safe неизвестного формата, immutable identity, timeout/cancel updater прежние.
 - Проверки: main/branch/detached/archive, manifest не меняется от сборки, exact lock/overrides, v1/v2/malformed/unknown metadata, offline сохранение версии, updater и branch comparison, strict build/diffcheck passed. Impeccable: detector[] один раз, bounded capture/fix/confirm в обеих темах 900/1440, selected update branch не меняет installed label; console errors[]. DESIGN/sidecar сохранены. Финальная упаковка выполняется после коммита для точного SHA; native Windows execution не проверялся.
 
-## 2026-10-13 — упрощение проверки обновлений
+### 2026-10-13 — упрощение проверки обновлений
 
 - Минимальный механизм: startup inspect и прежний updater state; automatic source candidate selection вместо UI picker; app-revision.json schemaVersion1 в dist (SHA/branch сборки). Installed SHA считывается один раз и не заменяется HEAD исходников. Heads выбранной ветки сравниваются с installed SHA; equal/unknown/error скрывают установку и main CTA. Settings/transport schemas прежние. Выбор ветки сохраняется в текущем Renderer, новая сборка естественно наследует установленную ветку.
 - Источники: валидный cached candidate → предки app path → managed копия в userData. Manifest/Git root/origin проверяются, невалидные пользовательские/managed каталоги не удаляются. Clone temporary→rename, interrupted temp cleanup с bounded filesystem retries; manual retry одним действием. Fetch/clone check timeout15s; никаких автоматических network retries/fetch по таймеру. Сетевые запросы только startup/manual; state polling активен лишь при загрузке/операции, idle не перерисовывает весь App каждую секунду.
@@ -177,13 +252,13 @@
 - Полный проход input/metadata→candidate trust→network/timeout/cancel/concurrency→availability→build/install/persistence/recovery→configuration/compatibility/tests. Fresh reviewer fix: scoped cancellation и существующий невалидный cached path; оба resolved/ship. Documenter сохраняет DESIGN/sidecar, PRODUCT/brief адресно обновлены; detector [] один проход, две bounded UI rounds с актуальным Renderer.
 - Оценка 7 runtime/<200 добавленных строк; фактически 8 runtime (один Git helper для scoped cancellation), +89/−55. Permanent checks: installed vs source SHA, equality/offline, invalid/missing cached root, interrupted clone retry, preservation, two concurrent Git processes и own cancel; 32 full updater temp checks, startup IPC while pending, branch comparison и 8 Git summary checks. Build/diffcheck passed. Live network/native Windows/installed replacement не сертифицированы. Release собирается после commit, чтобы metadata соответствовала публикуемым исходникам.
 
-## 2026-10-13 — прямое сравнение веток внешнего Git
+### 2026-10-13 — прямое сравнение веток внешнего Git
 
 - Пользователь уточнил: обе ветки принадлежат выбранному внешнему Git. IncomingSelection.mode=branches только в IPC/RAM; прежний baseBranch задаёт A, branch задаёт B. Minimal path: resolve/readTree A и B → existing buildDiff/selection/canonical Apply. Existing branchComparison хранит baseHead A и source resolved B для stale checks в prepare/Apply.
 - «Изменения ветки» сохраняет merge-base семантику. Новый режим не требует ancestry; нет checkout/нового API/deps/persistence схем или advance common baseline. Совпадающие ветки/пустая A/неуместный commit/from rejected. Filters, source/path/HEAD/dirty checks, backup/journal/recovery прежние. Fetch/timeout/cancel/retries и нет metrics новых.
 - Оценка 3 runtime/<80 новых строк; фактически 3, +21/−11. Regression script использует настоящие временные Git-ветки и Engine, remote I/O mocked: divergence/unrelated, direct heads vs legacy merge-base, parser, selected Apply/CRLF/сохранение остальных путей, baseline и A/B advance guards. Production build/diffcheck и UI passed; native network/Windows не сертифицированы. Impeccable detector [] один раз; fresh full review recapture→ship (wide resize capture artifact, live scrollWidth=clientWidth=1440). Documenter сохранил DESIGN/sidecar, PRODUCT/brief дополнены адресно.
 
-## 2026-10-13 — обновление приложения по ветке
+### 2026-10-13 — обновление приложения по ветке
 
 - Минимальный механизм: существующий исходный checkout RepoSync (определяется по месту .app/win-unpacked, иначе пользователь выбирает папку), existing git/stopGit, общий busy IPC и текущий Dialog. Исходники отдельного installed app запоминаются в локальном app-update-source.txt, без изменений snapshot/settings схемы. Начальная оценка 350–450 для отдельного клона отозвана после упрощения: 6 runtime/<300; фактически 6 runtime, +195/−3 строки. Без новых зависимостей, update-сервера или фоновой установки.
 - Вход: main-frame/source IPC validation → root realpath/identity/origin allowlist → fetch branch list → branch allowlist/ref check, tracked dirty/in-progress Git guards → switch/pull --ff-only --no-rebase --no-autostash → command re-detection from selected package.json → npm ci → OS/arch electron-builder output вне работающей app → copy → detached helper ready → quit → wait PID exit → rename backup/new → relaunch. Никаких reset/clean или удаления untracked; Git сам запрещает перекрывающий switch.
@@ -191,13 +266,13 @@
 - Windows пути git/Node сравниваются через path.win32.resolve без регистра (P1 fresh reviewer resolved), POSIX strict. Windows folder replacement сохраняет NSIS uninstaller; registry version не обновляется. Защищённая папка установки требует write permission без UAC обхода. Backup и staging намеренно сохраняются, служебный отчёт installer лежит в userData/app-build-UUID.
 - Комплексный проход: entry/cancel/timeouts/retries/I/O → Git mutation/progress → install rollback/persistence → config/source trust/compatibility/tests. 28 fixture checks real temporary Git + simulated npm/installer/Windows VM, permanent script regression, strict production build/diffcheck. No metrics/new background service. Impeccable detector [] один раз; fresh review fix→P1 resolved/ship; documenter preserve DESIGN/sidecar, scoped brief и product updated. Native Windows и actual installed replacement/relaunch не сертифицированы.
 
-## 2026-10-13 — упрощение главной и сообщения о ветке
+### 2026-10-13 — упрощение главной и сообщения о ветке
 
 - Минимальный механизм: только перекомпозиция RepositoryCard/LocalRepositoryState и текст существующего localState.issue. Нет новых состояний, API, I/O, настроек или схем. Фактически 3 runtime-файла, +25/−13 строк относительно начала этой задачи; оценка 3 файла/<100 новых строк соблюдена.
 - Git-ветки/даты, изменения, remote-update и lastAction остаются в сводке; paths/HEAD/check-time раскрываются. Для старых профилей syncedAt служит подписанным последним переносом, без выдумывания lastAction. Normal status «Настроен» и сценарные повторы удалены.
 - Комплексный проход: callbacks входа/выбора/обновления и busy не меняются; canSwitch/requireLocalReady, priority conflicts/operations/dirty/missing-branch прежние; ветка/detached текст проверены на временном Git. Новых cancellation/retry/persistence/metrics/recovery/remote effects нет. Strict production build и diff-check прошли. Impeccable detector [] один проход; fresh reviewer ship для узкого scope. Native dialogs/live remote и большой прежний dirty diff данным ревью не сертифицированы.
 
-## 2026-10-13 — фильтры, лента проверки и главная
+### 2026-10-13 — фильтры, лента проверки и главная
 
 - Расширенный scope согласован: сначала 10–12/450–650, затем дополнение Git summaries и последняя команда пользователя «Реализуй» для всего плана; итоговая оценка 14–16 runtime/<1100 строк. Минимальный механизм: shared effectiveRules/excludedRule, существующие selected paths/token guards, immutable ExportSession с отдельным selectedTransport; native select и обычная лента с порциями по 20 файлов/IntersectionObserver/content-visibility. Новых зависимостей и фонового сервиса нет.
 - Settings v6: общий шаблон и ProjectFilters.extra/disabled плюс lastAction; migration backup v1–v5, atomic save. Legacy Profile.exclusions остаётся только для совместимости scope; копируется в проектные маски. readTree симметрично фильтрует выбранные деревья до blob I/O, но отдаёт metadata исключений для disabled entries. Все prepare/export/apply проверяют актуальные правила; RENAME учитывает оба пути. Выбор при поиске ограничен shown eligible; снятие маски не выбирает файл автоматически.
@@ -205,17 +280,17 @@
 - Git summary: cache refs/commit dates + localState, remote ls-remote в простое startup/focus/5min, sequential poll, timeout remote-check 15s (обычный Git 120s). Ни fetch, ни ref writes при обнаружении; refreshProject использует существующий refreshSource. Полные операции/перенос останавливают новые проверки, ответы старого source fingerprint/удалённого профиля игнорируются. Фоновая проверка не пишет lastAction; успешные операции записывают type/date.
 - Комплексный проход: IPC validation → effective policy/selection/token → immutable transforms/scan/decision guards → read-only Git check и существующие I/O → selected export и Apply → settings/pending/backup/journal/recovery → no new retries/telemetry/network transport/deps → миграции/темы/desktop900/1440. Прежняя отмена foreground Git отдельно; live network/native dialogs/Windows/full screenreader не сертифицированы. Проверки и evidence — manual-qa.
 
-## 2026-10-13 — отсутствующие бинарные вложения v5
+### 2026-10-13 — отсутствующие бинарные вложения v5
 
 - По требованию пользователя ENOENT для native FILE не блокирует перенос: после проверки всех частей/метаданных record и inventory отсутствующего пути исключаются из RAM transport; unavailablePaths передаётся в CodeComparison и отображается предупреждением. Это transient поле, persisted protocol/schema неизменны. Файлы не подменяются пустыми bytes и пропущенные REPLACE/RENAME не попадают в prepare/Apply; локальные пути сохраняются. V5 не продвигает common baseline. Legacy версии остаются строгими.
 - Лимиты учитывают заявленные bytes всех вложений. Только ENOENT разрешён: EACCES, symlinks, неверный размер/hash блокируют. Полный parseTransport проверяет metadata до исключения. Existing busy/token guards, branch/HEAD, backup/journal/recovery не меняются. Оценка 4 runtime-файла/<60 добавленных строк; production build и реальный временный Git prepare/Apply подтвердили сохранение картинки, применение текста и отсутствие baseline; corrupt/symlink rejected.
 
-## 2026-10-13 — множественный выбор частей
+### 2026-10-13 — множественный выбор частей
 
 - Причина: choosePackage использовал openFile без multiSelections и возвращал только filePaths[0]. Минимальный механизм: массив путей через прежние preload/IPC/loadPackage; loadTransport принимает string либо string[], несколько путей задают точный набор, один сохраняет discovery. Renderer хранит весь набор для повторной загрузки после switchLocalBranch. Новых состояний, зависимостей, transport/settings schemas или операций записи нет.
 - IPC ограничивает набор 1–10 000, каждый путь проверяется string; loader сохраняет limitedRead, полноту/уникальность номеров, checksum, размер и проверки единого пакета. Вложения читаются прежним безопасным путём рядом с первой частью. Отмена диалога возвращает null, busy/finally и Apply/backup/recovery прежние. Scope фактически 5 runtime-файлов, +30/−25 строк (оценка <80); полная сборка и временные multipart проверки прошли, подробности manual-qa. Native macOS/Windows диалог вручную не проверен; release не пересобран.
 
-## 2026-10-10 — редизайн Operate, вариант A
+### 2026-10-10 — редизайн Operate, вариант A
 
 - Пользователь выбрал «Минеральный атлас» из трёх HTML-макетов. Code-led контракт: `.impeccable/surfaces/src-renderer-app-tsx.md`; одобренная композиция `assigned.html` и `direction-a.jpg`. Минимальный механизм — перекомпозиция существующих ReactNode localStatus/sourceControls и action callbacks, palette/style changes без новых состояний, IPC, backend, persistence схем и зависимостей.
 - Навигация 88px; дерево 250px с прежним resize; инспектор 280px справа, при <=1100px под diff. Поиск/фильтры сохраняют выбор. Обзор профилей — список; default light только для отсутствующего сохранённого dark выбора. Новые навигационные действия используют существующий run/locked и configured source guards. Ошибки security/done доступны явно.
@@ -223,7 +298,7 @@
 - Комплексный проход: input/selection/source nodes → preview/foreground queue, timeout/cancellation/no new retries → неизменённые Git/IPC I/O → same selected export/Apply callbacks → settings/pending/backup/journal/recovery unchanged → отсутствие metrics/background/network → темы/конфигурация/доступные состояния/совместимость. Незакрытый прежний риск отмены длительного Git не изменён; полноценная backend/Windows сертификация не заявляется.
 - Strict production build и git diff --check прошли. Один Impeccable detector scan — []; две ограниченные серии actual Renderer + mock IPC, desktop1440×900 и narrow900×700, затем независимый finish review ship без material findings. Результаты и ограничения — docs/manual-qa.md. Release .app/DMG/ZIP не пересобирались; запуск текущего интерфейса — npm run dev. Commit/push не выполнялись.
 
-## 2026-10-09 — impeccable polish существующего интерфейса
+### 2026-10-09 — impeccable polish существующего интерфейса
 
 - Использован snapshot critique `2026-10-09T20-26-58Z__src-renderer-app-tsx.md` и отдельный проход по текущему Renderer. Минимальный механизм: существующий details для фильтров, derived счётчики, optional existing remove callback, локальные CSS/ARIA/copy. Новых состояний, зависимостей, IPC, настроек и backend-изменений нет.
 - Исправлены приоритетные UI замечания 2–5: свернуты фильтры с индикатором активных правил; split diff получил текстовые/доступные маркеры строк и aria-pressed переключателей; новый профиль не предлагает удаление; карточки показывают нейтральный статус и следующий шаг вместо повторов неизвестного состояния. Дополнительно уплотнён блок локального Git, уточнено действие «Выбрать пакет», выровнены controls/цифры/отступы; пустой поиск объясняет сохранение выбора. Недонастроенная карточка ведёт сразу в существующую форму настройки.
@@ -231,26 +306,26 @@
 - Финальный комплексный проход: существующие inputs/selection/preview queue/token guards → timeout/no retries → Git I/O и локальные guards → selected export/Apply side effects → settings/pending/backup/journal/recovery → отсутствие новых metrics/background/network → конфигурация/совместимость → accessibility/layout и пропорциональность diff. Изменения находятся только в Renderer; выбор, фильтрация payload и запреты записи сохранены. Это не повторная сертификация backend или Windows.
 - Исходная оценка 7 runtime-файлов/<200 добавленных строк; фактически 7 файлов, +29/−22 строки. Strict production build прошёл. Выполнен один detector scan (0 findings) и две ограниченные визуальные серии с actual production Renderer и mock IPC; детали и ограничения в docs/manual-qa.md. Временный localhost сервер остановлен, вкладка закрыта, viewport сброшен. Release .app/ZIP/DMG не пересобирались; для текущего интерфейса запускать npm run dev. Commit/push не выполнялись.
 
-## 2026-10-09 — продуктовый контекст impeccable init
+### 2026-10-09 — продуктовый контекст impeccable init
 
-- Создан PRODUCT.md: пользователь подтвердил основную аудиторию разработчиков, перенос между существующими изолированными Git-репозиториями и постоянные принципы русскоязычного desktop-продукта macOS/Windows, прозрачности DLP, сохранения байтов и проверки/backup перед записью. Commit/push остаются действиями пользователя.
+- Создан PRODUCT.md: пользователь подтвердил основную аудиторию разработчиков, синхронизацию Git-репозиториев и постоянные принципы русскоязычного desktop-продукта macOS/Windows, прозрачности DLP, сохранения байтов и проверки/backup перед записью. Commit/push остаются действиями пользователя.
 - Platform `web` означает React-интерфейс в Electron, а не публичный сайт или нативный iOS/Android UI. Контекст ссылается на текущие сценарии и контракты; визуальная система не менялась. Дополнительный стандарт доступности не определён.
 - Пользователь выбрал не сохранять buildPath для будущих лендингов/демонстрационных страниц; конфигурация impeccable не изменена. Экраны приложения создаются сразу кодом. Browser live setup не добавлен: штатный запуск требует Electron и preload IPC, отдельного браузерного приложения нет.
 - Масштаб: два документа, ноль runtime-файлов; сборка и тесты не требуются для настройки контекста. Commit/push не выполнялись.
 
-## 2026-10-09 — пересборка и публикация контуров
+### 2026-10-09 — пересборка и публикация профилей
 
 - По запросу пользователя обновлены arm64 .app/ZIP/DMG с установленным локальным Electron. DMG собран после одобренного расширения sandbox для hdiutil; подписи Developer ID нет, как в прежних сборках. Все 11 dist-файлов совпадают с .app, ZIP app.asar идентичен .app, hdiutil verify подтвердил VALID checksum. Strict build и 23 временных Git-проверки прошли повторно.
 - Для commit/push создана отдельная ветка codex/local-git-state. В scope входят только runtime/docs этой задачи; существующая неотслеживаемая .agents/ и игнорируемые release/dist не добавляются в Git.
 
-## 2026-10-09 — контуры и локальная готовность к применению
+### 2026-10-09 — профили и локальная готовность к применению
 
-- Минимальный механизм: localState/requireLocalReady поверх существующего Git runner, IPC чтения и переключения, transient Renderer state. Persisted settings v5 и transport не изменены. Роль означает контур, sources.internal остаётся локальной папкой в обоих контурах; sources.global нужен только внутреннему.
+- Минимальный механизм: localState/requireLocalReady поверх существующего Git runner, IPC чтения и переключения, transient Renderer state. Persisted settings v5 и transport не изменены. Роль относится к профилю, sources.internal остаётся локальной папкой для обоих типов профилей; sources.global нужен только внутреннему.
 - Чистота требуется для обоих Apply, не для committed просмотра. Проверка до prepare, до backup и после journal перед первой записью; ImportSession хранит localHead. Переключение existing branch через switch --no-guess без force/stash/reset, инвалидирует сессии; Renderer перечитывает пакет/сравнение и сохраняет выбранный subset. Маркеры Git получены через --git-path для linked worktree. Ожидаемый exit 1 разрешён только quiet HEAD probes; timeout/отмена/прочие ошибки не становятся detached/empty.
 - Локальные refs/status читаются по запросу, без polling карточек и новых persisted состояний. После выбора новой папки ветка считывается из Git; прежний профиль сохраняет явный выбор. Ответ предыдущей папки игнорируется. Scope: 9 runtime-файлов, менее 300 добавленных строк. Постоянные тесты/зависимости не добавлялись.
-- Фактический runtime diff: 9 файлов, 153 добавленные / 41 удалённая строка; оценка ≤10/≤300 соблюдена. Strict production build, 23 временные Git-проверки и actual Renderer с mock IPC прошли; подробности/платформенные ограничения в manual-qa. Финальный комплексный проход: IPC validation → refs/status и очередь UI → timeout/cancellation/no retries → внешний refresh → selected paths/HEAD → backup/journal/проверка до записи → existing rollback/recovery → settings/pending/compatibility → причины отказа/контуры. Новых фоновых side effects, метрик, зависимостей, persisted схем нет. Коммит/push и release packaging не выполнялись.
+- Фактический runtime diff: 9 файлов, 153 добавленные / 41 удалённая строка; оценка ≤10/≤300 соблюдена. Strict production build, 23 временные Git-проверки и actual Renderer с mock IPC прошли; подробности/платформенные ограничения в manual-qa. Финальный комплексный проход: IPC validation → refs/status и очередь UI → timeout/cancellation/no retries → внешний refresh → selected paths/HEAD → backup/journal/проверка до записи → existing rollback/recovery → settings/pending/compatibility → причины отказа/профили. Новых фоновых side effects, метрик, зависимостей, persisted схем нет. Коммит/push и release packaging не выполнялись.
 
-## 2026-10-09 — компактный экспорт без перекодирования
+### 2026-10-09 — компактный экспорт без перекодирования
 
 - По прямому требованию пользователя экспорт больше не добавляет Base64/Brotli. Компактность — только JSON.stringify метаданных и отсутствие декоративных заголовков. Исходные текстовые байты (LF/CRLF, BOM, отступы, табы, пробелы, пустой файл и отсутствие завершающего newline) не минифицируются, не сжимаются и восстанавливаются без преобразований. Base64, уже содержащийся в исходном файле, сохраняется.
 - Минимальный механизм: existing RAW length-delimited multipart и binaryName/limitedRead native sidecars из v2. Новый protocol/schema v5 вводит FILE descriptor в полный selected-file контракт v4; текст RAW, binary — отдельный файл исходных bytes с расширением, размером/hash. Лимит части относится к .md, бинарное вложение целое; общий лимит 512 MiB. FILE пути вычисляются, symlinks/повреждение/отсутствие отклоняются до Apply. Оба режима прозрачны, DLP обходить нельзя; прохождение конкретной DLP не гарантируется.
@@ -258,37 +333,37 @@
 - Оценка 3 runtime-файла/<100 новых строк уточнена до 5 из-за подсказки формата и исправления счётчика/инструкции передачи вложений. Фактический runtime diff: 5 файлов, 66 добавленных / 48 удалённых строк. Новых зависимостей, API, persisted настроек или тестовой инфраструктуры нет. Docs/README/specs/ADR адресно обновлены.
 - Финальный комплексный проход: входы/version/selected paths → расчёт размера/очередь → неизменённые Git guards → RAW/FILE bytes/hash/лимиты → выбранный Scan → экспорт всех artifacts и cleanup при ошибке → pending/confirmation → проверка до записи/backup/recovery → legacy/security/конфигурация/UI copy. Strict production build и 11 групп временных fixtures прошли; результаты и ограничения в manual-qa. macOS .app/ZIP/DMG обновлены без подписи, как прежние сборки; все 11 dist-файлов и ZIP app.asar совпадают. Коммит/push этой правки не выполнялись.
 
-## 2026-10-09 — запрет Base64 при упаковке
+### 2026-10-09 — запрет Base64 при упаковке
 
-- Пользователь повторно явно запретил упаковку в Base64. Обязательное правило закреплено в CODEX-RULES.MD; распространяется на весь новый экспорт, включая бинарные файлы, сжатые данные и multipart.
-- Уточнение пользователя: Base64, уже являющийся содержимым исходного файла, допустим и сохраняется без преобразований. Запрещено добавлять кодирование при упаковке. Причина — экспорт должен быть доступен корпоративной DLP для проверки содержимого, в том числе персональных данных; RepoSync не должен скрывать данные за шифрованием, обфускацией или непрозрачным сжатием. Это уточнение отменяет прежнее согласование сжатия внутри .md там, где оно скрывает текст от проверки.
+- Пользователь повторно явно запретил упаковку в Base64. Обязательное правило закреплено в AGENTS.md; распространяется на весь новый экспорт, включая бинарные файлы, сжатые данные и multipart.
+- Уточнение пользователя: Base64, уже являющийся содержимым исходного файла, допустим и сохраняется без преобразований. Запрещено добавлять кодирование при упаковке. Причина — экспорт должен быть доступен DLP для проверки содержимого, в том числе персональных данных; RepoSync не должен скрывать данные за шифрованием, обфускацией или непрозрачным сжатием. Это уточнение отменяет прежнее согласование сжатия внутри .md там, где оно скрывает текст от проверки.
 - Сохранение BROTLI_BASE64 в компактном v4 и BASE64 для бинарных файлов было ошибкой: перенос полных файлов и согласование сжатия не разрешают Base64. Прежние записи об этих механизмах — история реализации, а не разрешение повторять подход.
 - При первоначальной фиксации запрета изменены только правила и журнал; затем runtime исправлен в transport v5, как описано выше.
 
-## 2026-10-09 — полные изменённые файлы и автоматические проверки
+### 2026-10-09 — полные изменённые файлы и автоматические проверки
 
 - Пользователь согласовал два сценария: Incoming branch diff относительно основы и Outgoing external committed HEAD → local committed HEAD. Репозитории уже существуют; primary snapshot/common initialization для нового исходящего переноса отменён. Пользователь выбрал надёжность: только изменённые selected файлы, но целиком, со сжатием внутри .md; перенос патчами в новом экспорте отменён.
 - Минимальный механизм: existing readTree/buildDiff(fullFiles)/selected records/multipart/prepare/backup/recovery. Protocol/schema v4 разрешает только ADD/REPLACE/RENAME с полными bytes и DELETE intent; beforeMode/hash защищают DELETE/RENAME. Files inventory содержит только selected after paths. V4 materialize не требует before bytes/common commit; legacy v1–v3 остаются прежним путём. Incoming selected REPLACE, как MODIFY, заменяет файл целиком; legacy package REPLACE guards сохраняются. Новых зависимостей/API/infrastructure нет.
-- Outgoing проверяет оба HEAD перед экспортом. Selected Scan включает все bytes выбранных файлов, в том числе RENAME; analyze не сканирует неотмеченные файлы. Existing settings v5 Pending.partial=true запрещает продвижение общей baseline для любого v4, включая полный выбор; confirmation только завершает ожидание. Пока внешний Git не содержит переданные changes, последующий compare показывает их снова. Удаления по умолчанию сняты. Сеть между контурами, auto commit/push не добавлены.
+- Outgoing проверяет оба HEAD перед экспортом. Selected Scan включает все bytes выбранных файлов, в том числе RENAME; analyze не сканирует неотмеченные файлы. Existing settings v5 Pending.partial=true запрещает продвижение общей baseline для любого v4, включая полный выбор; confirmation только завершает ожидание. Пока внешний Git не содержит переданные changes, последующий compare показывает их снова. Удаления по умолчанию сняты. Прямой сетевой обмен между репозиториями и auto commit/push не добавлены.
 - Renderer автоматически prepare/selectExport после расчёта/изменения выбора через существующую foreground/preview очередь, с source token/profile/direction/paths guard. Error не запускает повторный цикл. Пустой Review пропускается, создание рядом с Comparison; secret override остаётся отдельным. Другие способы сравнения раскрываются; ветка и основа видны. KPI-плитки удалены, найденные устаревшие masked/sidecar тексты исправлены. Остальные параметры/галочки/фильтры и реальные local before/canonical after сохранены.
 - Счётчик v4 текстовых изменений имеет суммарный бюджет 1 s, до 50 ms на файл, затем считает полную замену; full-file buildDiff не создаёт patch или лишние текстовые копии. Сжатие/part size/bytes не изменяются.
 - Фактический runtime diff: 8 файлов, 115 добавленных / 77 удалённых строк; оценка 7 файлов/<300 уточнена до 8 из-за устаревшего текста SecurityReview, порог 10/<300 соблюдён. SDD/specs/README/ADR 0006 адресно синхронизированы; settings schema не менялась, transport schema повышена.
 - Комплексный проход: inputs/paths/selectors → queue/tokens/timeouts/no retries → Git HEAD guards/I/O → full bytes/hashes/modes/selected Scan → export pending/atomic settings → Apply backup/rollback/recovery → IPC/security/migrations/legacy → desktop layout и пропорциональность diff. Фактические проверки и ограничения ниже в manual-qa.
 - Strict build и 20 групп временных Git/transport fixtures прошли, actual Renderer с mock IPC проверен при 900×700 и 1220×840. Mac arm64 .app/ZIP/DMG собраны с локальным Electron; DMG потребовал разрешённый выход hdiutil из sandbox. Упаковка без подписи, как прежде; все 11 dist-файлов совпали с .app, ZIP app.asar идентичен. Коммит/push/PR не выполнялись.
 
-## 2026-10-09 — плотные метаданные читаемого пакета
+### 2026-10-09 — плотные метаданные читаемого пакета
 
 - Минимальный механизм: убрать pretty-print только у JSON документа и заголовков частей в transport.ts. Payload, readable file headings, encoding, hashes и лимиты прежние; compact выдаёт прежние bytes. JSON структура не меняется, schema/protocol v3 сохраняются; JSON.parse принимает прежнюю и новую запись. Минификация исходников и извлечение отдельных символов из старого snapshot-скрипта отвергнуты из-за потерь и изменения семантики. Масштаб: один runtime-файл, две замены строк.
 - Проверки: npm run build; взаимное чтение старым/новым v3 импортёром, точное восстановление UTF-8/CRLF/шаблонных строк/комментариев, binary и пустого файла, modes и inventory, multipart ≤4096 байт, отказ при недостающей/повреждённой части, побайтовая идентичность compact. Упакованное release-приложение не пересобиралось.
 
-## 2026-10-05 — реализация v1
+### 2026-10-05 — реализация v1
 
 - Репозиторий начинался пустым. Пользователь явно согласовал масштаб новой v1 сверх 10 runtime-файлов / 300 строк. Коммиты и публикация не запрашивались.
 - Исходное ТЗ и приложенная инструкция сохранены в `docs/`. Применены strict TypeScript, именованные exports, отсутствие `any` и object syntax styled-components.
 - Автоматические тесты и тестовая инфраструктура не добавляются по инструкции пользователя. Проверки: typecheck, Vite build, компиляция Electron Main/preload, упаковка и ручные сценарии.
 - Минимальный механизм: системный Git без shell → committed inventory → lossless records → локальный Scan → `.md` parts. Import полностью готовит результат в памяти до backup и Apply.
 - Важные решения и ограничения описаны в ADR/specs. Не добавлять hidden redaction, автоматические commits/push, telemetry, auto-updater и форматирование payload.
-- Пользователь уточнил, что SHA — идентификатор выбранного Git commit, а его просьба об упрощении относилась к киберрискам. В обоих контурах добавлены загрузка веток, список 256 commits и explicit commit selection. Ошибочную трактовку как запрет функционального foreign baseline убрали: Import сохраняет путь local repository, его файлы могут служить baseline, если commit отсутствует в source Git. Отдельного source cache / commit mapping не добавляется.
+- Пользователь уточнил, что SHA — идентификатор выбранного Git commit, а его просьба об упрощении относилась к киберрискам. Для обоих типов профилей добавлены загрузка веток, список 256 commits и explicit commit selection. Ошибочную трактовку как запрет функционального foreign baseline убрали: Import сохраняет путь local repository, его файлы могут служить baseline, если commit отсутствует в source Git. Отдельного source cache / commit mapping не добавляется.
 - Local Diff с uncommitted payload не реализуется: ТЗ допускает отдельный workflow, но не требует его. Статусы staged/unstaged/untracked доступны, основной перенос — committed states.
 - Symlinks, submodules, конфликт файла/каталога и несовместимые с Windows пути отклоняются; не эмулировать их молча.
 - Scope fingerprint защищает от построения Diff после изменения exclusions. Вручную возвращённые ignored files используют content state и localRepository baseline; если baseline bytes изменены, нужен Snapshot.
@@ -296,7 +371,7 @@
 - Git fetch не делает автоматических retries: пользователь повторяет явную операцию после ошибки. Timeout 120 s, остановка дерева Git/helper процессов на timeout/quit; Git stderr не сохраняется, credentials не отображаются. Local fsmonitor hooks отключены.
 - Журнал восстановления защищает от закрытия/падения процесса. Это не гарантия целостности при внезапном отказе диска/питания: для неё потребовалась бы отдельная модель durability.
 
-## Единый список рисков комплексной проверки
+### Единый список рисков комплексной проверки
 
 1. Bytes / line endings / executable mode — encode/decode lossless, patch fuzz=0 и отключённая конверсия EOL, before/after SHA256, inventory verification.
 2. Baseline / изменённые exclusions — commit читается из выбранного Git source; при отсутствии используется импортированный localRepository. Before hashes и scope fingerprint обеспечивают корректность Diff.
@@ -346,10 +421,10 @@
 
 - 2026-10-06: focus fix — 2 runtime-файла, менее 30 новых строк. Failure mode: previewBusy отключал fieldset через 150ms после ввода, browser снимал focus. Поля disabled только при явной foreground операции; footer guards прежние. Shared pending Promise ref сериализует previewComparison/previewCode и foreground run, effect active flag пропускает отменённые queued jobs, generation guard не публикует устаревший выбранный code. Main IPC busy guard не ослаблен.
 
-## 2026-10-06 — два направления и desktop redesign
+### 2026-10-06 — два направления и desktop redesign
 
 - Пользователь поручил реализацию обеих REPOSYNC_UI_REDESIGN_SPEC/REPOSYNC_UX_SYNC_REWORK_SPEC и явно согласовал масштаб >10 runtime-файлов / >300 новых строк. Исходные документы сохранены в docs/specs. Коммиты/push не запрашивались.
-- Минимальный механизм: прежние readTree/buildDiff/transport/backup/journal переиспользованы. Role принадлежит Profile; direction выбирает local или external HEAD. Вместо baseline по глобальным средам — одна canonical common state. Immutable common/pending bytes сохраняются по SHA256 в existing git-cache/sync-bytes: чужой commit может отсутствовать, mutable working tree непригоден как baseline. Нового Git-клиента, merge, сети между контурами, метрик или retries нет.
+- Минимальный механизм: прежние readTree/buildDiff/transport/backup/journal переиспользованы. Role принадлежит Profile; direction выбирает local или external HEAD. Вместо baseline по общим настройкам — одна canonical common state. Immutable common/pending bytes сохраняются по SHA256 в existing git-cache/sync-bytes: чужой commit может отсутствовать, mutable working tree непригоден как baseline. Нового Git-клиента, merge, прямого сетевого обмена между репозиториями, метрик или retries нет.
 - Settings v4 нормализует также recovery snapshots. Исходный JSON v1–v3 сохраняется в settings.vN.backup.json; profiles/sources/pending сохранены, explicit SHA/base сняты. Старые независимые baselines не объявляются common автоматически: требуется первичный перенос. Старый pending без immutable bytes можно отменить и создать заново. Не повторять прежнее смешение направлений и fallback на изменяемые receiving files.
 - Canonical пакет проверяется отдельно от направленного local Apply. Unchanged receiving files не сравниваются с external inventory. Входящий MODIFY применяет целиком проверенные canonical bytes; DELETE/RENAME/REPLACE по-прежнему проверяют исходные bytes и modes. Planned bytes/modes проверяются до settings save. Branch/root/bytes/mode guards повторяются при Apply; ошибки восстанавливают touched files и settingsBefore. Incoming Apply выставляет commitRequired, чтобы старый committed local HEAD не экспортировал отмену ещё незакоммиченного Apply.
 - protocol/schema v3: только .md, binary inline BASE64/BROTLI_BASE64, length-delimited payload blocks и fragmentation общего UTF-8 документа. Compact default, minified metadata и Brotli quality 4 только при выигрыше; Readable literal text + Base64 binary. Legacy v1/v2 read-only import retained. Это отменяет прежние требования нового открытого v2 экспорта с sidecars. Форматирование исходников запрещено по-прежнему.
@@ -396,7 +471,7 @@
 - 2026-10-06: повторяющийся конфликт `MODIFY` возникал из-за ложного предположения: prepare искал точный старый hunk со всеми неизменёнными context-строками и называл несовпадение пересечением. По уточнению пользователя локальный файл из входящего diff заменяется целиком на checksum-verified canonical target. Другие пути не затрагиваются; существующие guards для mode, branch, path и Apply остаются. Контракт/settings/transport не меняется.
 - 2026-10-06: incoming commit/range/repositories/zero получили выбор файлов в Renderer с allowlist-проверкой путей в Engine. Apply готовит только выбранные records, повторно сверяет тот же набор перед mutation; частичный выбор не обновляет common baseline, чтобы пропущенные файлы не считались синхронизированными. Полный выбор сохраняет прежнее поведение. Высота Comparison увеличена без новых состояний и settings.
 
-## 2026-10-06 — ветка относительно основы, единый выбор и обзор
+### 2026-10-06 — ветка относительно основы, единый выбор и обзор
 
 - Пользователь согласовал расширенный scope: до 13 runtime-файлов / 550 новых строк. Минимальный механизм — existing readTree/buildDiff/materialize/prepare с allowlisted subset records, без новых зависимостей, фонового сканирования главного экрана или отдельной модели health. Фактический runtime diff: 13 файлов, 289 добавленных / 112 удалённых строк; меньше оценки 400–550 новых строк.
 - Входящий default branch: единственный merge-base основы и внешней ветки → branch HEAD. Remote HEAD / local origin/HEAD дают достоверный default только при наличии ветки; main/master/develop — предложения для явного выбора. Основа и ветка видны и сменяемы; ambiguous/unrelated/self-base не становятся whole/snapshot. Вершины проверяются перед preflight и Apply. Селекторы живут в IPC/RAM.
@@ -414,7 +489,7 @@
 - Итог: combined рабочее дерево 16 runtime-файлов, +368/−166 (включает прежние multipart/missing-attachment fix), ниже оценки 14–16/<1100. 45 flow + 8 summary checks passed, strict build/diffcheck passed. Независимое Impeccable review: full pass fix по source lookup, затем lookup resolved/ship; дополнительный selected-only finding resolved/ship. Documenter подтвердил обычное расширение прежнего DESIGN/sidecar. Arm64 .app/ZIP/DMG обновлены с local electronDist; 12 packaged dist-файлов совпадают с .app, ZIP app.asar совпадает, DMG checksum VALID. Developer ID подписи нет. QA server остановлен, tab закрыт, viewport reset; временные fixture roots удалены. Commit/push не выполнялись.
 
 
-## 2026-10-14 — синхронизация без обязательного коммита
+### 2026-10-14 — синхронизация без обязательного коммита
 
 - Минимальный механизм: outgoing selection только в IPC/RAM, readWorkingTree из Git inventory + файлов диска; существующие immutable session/materialize/scan/transport v5. Commit default — последний настроенной ветки, выбранный SHA проверяется по её истории. Рабочее состояние content hash, index не экспортируется вместо диска. Новый persisted контракт и зависимости не добавлены.
 - Уточнение плана по текущему коду: outgoing уже сравнивается с внешним HEAD (решение 13 октября), а не common baseline. Сохранён этот действующий контракт и sourceState/external advance guard; старый bootstrap не возвращён.
@@ -425,14 +500,14 @@
 - Публикация: patch повышен ровно один раз до 1.0.4 в package.json/package-lock.json; зависимости/overrides неизменны. Используется существующая рабочая ветка codex/operate-mineral-atlas с открытым PR №7. Русский Conventional Commit и push выполняются обычным git; упаковка не входит в публикацию исходников.
 
 
-## 2026-10-14 — единый регламент публикации
+### 2026-10-14 — единый регламент публикации
 
-- По выбору пользователя commit/push включает свежие локальные macOS .app/DMG/ZIP после окончательного коммита. Краткий обязательный порядок — в CODEX-RULES.MD, раздел «Коммиты и релизы»; исторические исключения его не отменяют. Публикация регламента: patch 1.0.5 синхронизирован с lock; runtime и зависимости не изменены. Финальная упаковка выполняется после коммита по новому порядку.
+- По выбору пользователя commit/push включает свежие локальные macOS .app/DMG/ZIP после окончательного коммита. Краткий обязательный порядок — в AGENTS.md, раздел «Коммиты и релизы»; исторические исключения его не отменяют. Публикация регламента: patch 1.0.5 синхронизирован с lock; runtime и зависимости не изменены. Финальная упаковка выполняется после коммита по новому порядку.
 
 - Публикация исправления IPC и ранее подготовленного быстрого выбора: patch1.0.7 синхронизирован с lock; 4 runtime-файла, +42/−23 строки. Ветка codex/operate-mineral-atlas с открытым PR №7 сохранена. Проверки перед публикацией; после окончательного commit/push — свежая macOS arm64 упаковка и проверка identity/bytes/ZIP/DMG.
 
 - Публикация обработки конфликтов в существующую ветку codex/operate-mineral-atlas: patch1.0.8 синхронизирован с lock; после build и push собрать свежую macOS arm64 упаковку, сверить HEAD/version/dist/ZIP и проверить DMG.
 
-## 2026-10-14 — публикация получения обновлений и восстановления
+### 2026-10-14 — публикация получения обновлений и восстановления
 
 - По запросу пользователя commit/push: patch повышен ровно один раз с 1.0.10 до 1.0.11, package-lock синхронизирован; зависимости/overrides прежние. Текущая codex/operate-mineral-atlas имеет открытый PR №7 и сохраняется. Scope — ранее реализованный incoming/preview/restore, регрессии и адресная документация; чужих изменений в рабочем дереве нет. Перед коммитом — build, regression/version/diff checks. После окончательного commit/push — свежие macOS arm64 .app/DMG/ZIP, проверка manifest/HEAD/dist/ZIP/DMG; Developer ID подпись не добавляется.

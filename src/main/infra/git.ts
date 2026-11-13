@@ -325,7 +325,7 @@ export async function projectGitSummary(profile: Profile, cache: string): Promis
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
       remote.availableHead = (await remoteHeads(source, cache, 15_000)).get(source.branch) ?? null;
       remote.checkedAt = new Date().toISOString();
-    } catch (error) { remote.error = error instanceof Error ? error.message : 'Не удалось проверить внешний Git.'; }
+    } catch (error) { remote.error = error instanceof Error ? error.message : 'Не удалось проверить удалённый Git.'; }
   }
   return result;
 }

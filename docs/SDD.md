@@ -18,7 +18,7 @@ Renderer: React/strict TypeScript/styled-components, theme/ui foundation и feat
 
 Preload: typed allowlist API. Main: sender/main frame validation, foreground busy guard, dialogs/orchestration. Sandbox, context isolation, CSP, запреты renderer network/navigation/windows/permissions сохранены.
 
-Engine: выбранные immutable Git trees, compare/full-file records, selected scan, tokens, prepare, Apply/recovery. Infra/git запускает системный Git без shell; timeout 120 s/kill tree, hooks/fsmonitor/prompts/redirects отключены, credentials системные. Private bare cache обновляет только выбранные external refs. Нового Git client, retries, telemetry или прямой сети между контурами нет.
+Engine: выбранные immutable Git trees, compare/full-file records, selected scan, tokens, prepare, Apply/recovery. Infra/git запускает системный Git без shell; timeout 120 s/kill tree, hooks/fsmonitor/prompts/redirects отключены, credentials системные. Private bare cache обновляет только выбранные external refs. Нового Git client, retries, telemetry или прямой прямого сетевого обмена между репозиториями нет.
 
 ## Контракты и persistence
 

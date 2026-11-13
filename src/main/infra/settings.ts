@@ -54,7 +54,7 @@ export function parseProfile(value: unknown, existing?: Profile): Profile {
   if (raw.includeIgnored.length) throw new Error('В синхронизацию входят только файлы, сохранённые в коммите.');
   const includeIgnored = raw.includeIgnored.map((name: unknown) => { const result = string(name); validatePath(result); return result; });
   if (new Set(includeIgnored).size !== includeIgnored.length) throw new Error('Пути файлов, исключённых Git, не должны повторяться.');
-  if (raw.role !== 'internal' && raw.role !== 'external') throw new Error('Выберите тип репозитория: внутренний или внешний.');
+  if (raw.role !== 'internal' && raw.role !== 'external') throw new Error('Выберите тип профиля: локальный или удалённый.');
   if (raw.transportMode !== 'compact' && raw.transportMode !== 'readable') throw new Error('Выберите формат пакета.');
   const result: Profile = { id, name, role: raw.role, transportMode: raw.transportMode, sources: {}, baseline: existing?.baseline, pending: existing?.pending, syncedAt: existing?.syncedAt, commitRequired: existing?.commitRequired, exclusions, includeIgnored,
     maxPartMB: integer(raw.maxPartMB, 1, 512) };
@@ -65,7 +65,7 @@ export function parseProfile(value: unknown, existing?: Profile): Profile {
     if (result.sources[mode]) { delete result.sources[mode]!.commit; delete result.sources[mode]!.base; }
   }
   if (result.sources.internal?.kind !== 'local') throw new Error('Укажите локальный репозиторий.');
-  if (result.sources.global && result.sources.global.kind !== 'remote') throw new Error('Внешний Git должен быть удалённым репозиторием.');
+  if (result.sources.global && result.sources.global.kind !== 'remote') throw new Error('Источник Git должен быть удалённым репозиторием.');
   if (existing && (existing.role !== result.role || JSON.stringify(existing.sources) !== JSON.stringify(result.sources))) { result.baseline = undefined; result.syncedAt = undefined; result.commitRequired = undefined; }
   if (existing?.baseline && result.baseline && JSON.stringify(existing.exclusions) !== JSON.stringify(exclusions) && existing.exclusions.every(rule => exclusions.includes(rule))) {
     result.baseline = { ...result.baseline, scope: scopeHash(result), files: result.baseline.files.filter(file => !exclusions.some(rule => minimatch(file.path, rule, { dot: true }))) };

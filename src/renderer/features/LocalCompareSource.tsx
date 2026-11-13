@@ -24,6 +24,6 @@ export function LocalCompareSource({ selection, branches, source, workingBranch,
     {side('B · Конечная версия', selection.toBranch, selection.toCommit, toCommits, toQuery, setToQuery,
       (toBranch, toCommit) => change({ ...selection, toBranch, toCommit, toWorking: false }), toError, !!selection.toWorking)}
     <label style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '8px 0' }}><input type="checkbox" disabled={workingBranch !== selection.toBranch} checked={!!selection.toWorking} onChange={event => change({ ...selection, toCommit: undefined, toWorking: event.target.checked })} />Взять B из текущей рабочей копии выбранной ветки{workingBranch !== selection.toBranch && <small> · сейчас открыта «{workingBranch ?? 'неизвестная ветка'}»</small>}</label>
-    <small>Выберите две версии внутреннего Git. Если коммит не выбран, берётся вершина ветки. SHA проверяется по истории выбранной ветки. A → B попадёт в пакет.</small>
+    <small>Выберите две версии локального Git. Если коммит не выбран, берётся вершина ветки. SHA проверяется по истории выбранной ветки. A → B попадёт в пакет.</small>
   </div>;
 }

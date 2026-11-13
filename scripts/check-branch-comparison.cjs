@@ -58,7 +58,7 @@ const { SettingsStore, parseProfile, parseSettings } = require('../dist/main/mai
     await assert.rejects(engine.prepareIncoming(comparison.token, ['common.txt']), /Исходная ветка A изменилась/);
     comparison = await engine.analyze(profile.id, 'incoming', selection);
     git(remote, ['checkout', 'feature']); await fs.writeFile(path.join(remote, 'new-b.txt'), 'advance'); commit(remote, 'advance B');
-    await assert.rejects(engine.prepareIncoming(comparison.token, ['common.txt']), /Внешняя ветка изменилась/);
+    await assert.rejects(engine.prepareIncoming(comparison.token, ['common.txt']), /Удалённая ветка изменилась/);
     git(remote, ['checkout', '--orphan', 'unrelated']); git(remote, ['rm', '-rf', '.']);
     await fs.writeFile(path.join(remote, 'unrelated.txt'), 'root'); commit(remote, 'unrelated root');
     comparison = await engine.analyze(profile.id, 'incoming', { ...selection, branch: 'unrelated' });
