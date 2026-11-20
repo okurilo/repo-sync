@@ -296,9 +296,11 @@ export async function localState(source: Source): Promise<LocalGitState> {
     if (/[RC]/.test(code)) i++;
   }
   const operations: string[] = [];
-  for (const [marker, label] of [['MERGE_HEAD', 'merge'], ['rebase-merge', 'rebase'], ['rebase-apply', 'rebase / am'], ['CHERRY_PICK_HEAD', 'cherry-pick'], ['REVERT_HEAD', 'revert'], ['sequencer', 'sequencer']]) {
-    const name = (await git(root, ['rev-parse', '--git-path', marker!])).toString().trim();
-    try { await lstat(path.resolve(root, name)); operations.push(label!); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  const markers = [['MERGE_HEAD', 'merge'], ['rebase-merge', 'rebase'], ['rebase-apply', 'rebase / am'], ['CHERRY_PICK_HEAD', 'cherry-pick'], ['REVERT_HEAD', 'revert'], ['sequencer', 'sequencer']] as const;
+  const paths = (await git(root, ['rev-parse', ...markers.flatMap(([marker]) => ['--git-path', marker])])).toString().trimEnd().split('\n');
+  if (paths.length !== markers.length) throw new Error('Не удалось проверить состояние операций Git.');
+  for (const [index, name] of paths.entries()) {
+    try { await lstat(path.resolve(root, name)); operations.push(markers[index]![1]); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   }
   const dirty = workingChanges.staged + workingChanges.unstaged + workingChanges.untracked > 0;
   const issue = !headText ? 'В репозитории нет коммитов. Создайте первый коммит.' : conflicts ? `Неразрешённых конфликтов: ${conflicts}. Устраните их в Git.` : operations.length ? `Незавершённая операция Git: ${operations.join(', ')}. Завершите или отмените её в Git.` : !branches.includes(source.branch) ? `Выбранная ветка «${source.branch}» отсутствует. Выберите существующую локальную ветку.` : branchText !== source.branch ? `Для применения нужна ветка «${source.branch}». ${branchText ? `Сейчас открыта «${branchText}».` : 'Сейчас HEAD не привязан к ветке.'}` : null;
