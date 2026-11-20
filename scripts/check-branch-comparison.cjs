@@ -47,6 +47,7 @@ const { SettingsStore, parseProfile, parseSettings } = require('../dist/main/mai
     assert(!legacy.entries.some(file => file.path === 'a-only.txt'));
     comparison = await engine.analyze(profile.id, 'incoming', selection);
     const preview = await engine.prepareIncoming(comparison.token, ['common.txt']);
+    await assert.rejects(fs.access(path.join(engine.cache, 'sync-bytes')), { code: 'ENOENT' });
     await engine.applyImport(preview.token);
     assert.equal(await fs.readFile(path.join(local, 'common.txt'), 'utf8'), 'feature\r\n');
     assert.equal(await fs.readFile(path.join(local, 'a-only.txt'), 'utf8'), 'A');

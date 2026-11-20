@@ -22,13 +22,14 @@ const local = { branch: 'main', head: 'h', workingChanges: {staged:0,unstaged:0,
 async function incoming() {
   find(render(), 'AppShell').props.incoming(); await finish('localState', local);
   await finish('branchContext', { branches: ['main','feature'], defaultBranch: 'main' });
-  await finish('refreshSource', {}); await finish('listCommits', [{sha:'sha',date:'today'}]);
   assert.equal(props().step, 'source'); assert.equal(queue.length, 0, 'no automatic incoming analysis');
 }
 async function compare() { props().sourceControls.props.compare({mode:'branch',branch:'feature',baseBranch:'main'}); await finish('analyze', analysis); assert.equal(props().step, 'compare'); }
 (async () => {
   await incoming();
   props().sourceControls.props.change({mode:'branches',branch:'main',baseBranch:'feature'}); await tick(); assert.equal(queue.length, 0, 'changing mode does not analyze');
+  props().sourceControls.props.change({mode:'commit',branch:'main'}); await finish('refreshSource',{commits:[{sha:'sha',date:'today'}]});
+  assert.equal(props().sourceControls.props.commits.length,1); assert.equal(queue.length,0);
   await compare();
   props().checkSelection(); props().checkSelection(); await finish('localState', local);
   await finish('prepareIncoming', {token:'prepared',entries:[entries[0]],conflicts:[],overwritePaths:[{path:'code.ts'}]});
@@ -40,6 +41,16 @@ async function compare() { props().sourceControls.props.compare({mode:'branch',b
   props().checkSelection(); await finish('localState',local); await finish('prepareIncoming',{token:'next',entries:[entries[0]],conflicts:[],overwritePaths:[{path:'code.ts'}]});
   props().confirmOverwrite(true); props().apply(); const applied=await finish('applyImport',settings); assert.equal(applied.args[1],true); await finish('localState',local); assert.equal(props().step,'done');
   props().openRepository(); await finish('openRepository',undefined);
+  await incoming(); await compare();
+  props().checkSelection(true); props().checkSelection(true); await finish('localState',local);
+  await finish('prepareIncoming',{token:'clean',entries:[entries[0]],conflicts:[],overwritePaths:[],divergences:[]});
+  const quick = await finish('applyImport',settings); assert.deepEqual(quick.args,['clean',false]);
+  await finish('localState',local); assert.equal(props().step,'done'); assert.equal(queue.length,0);
+  for (const blocker of [{conflicts:[{path:'code.ts'}]}, {overwritePaths:[{path:'code.ts'}]}, {divergences:[{path:'code.ts'}]}, {entries:[]}]) {
+    await incoming(); await compare(); props().checkSelection(true); await finish('localState',local);
+    await finish('prepareIncoming',{token:'review',entries:[entries[0]],...blocker});
+    assert.equal(props().step,'apply'); assert.equal(queue.length,0);
+  }
   await begin(); props().checkSelection(); await finish('selectExport',{findings:[{id:'f',path:'code.ts',severity:'block'}],originalFindings:[{id:'f',path:'code.ts',severity:'block'}],parts:1,estimatedBytes:20}); await finish('settings',settings);
   assert.equal(props().step,'security'); assert(props().reviewReady);
   const reviewSnapshot=props().reviewFindings;props().decide(['f'],'keep');await tick();assert.equal(queue.length,0,'accepting without a mask does not rescan');assert(props().reviewReady);assert.equal(props().reviewFindings,reviewSnapshot,'review data remains mounted after a local decision');

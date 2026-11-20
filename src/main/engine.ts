@@ -174,7 +174,7 @@ export class Engine {
     if (comparison) source = { ...source, branch: comparison.toBranch, commit: comparison.toWorking ? undefined : comparison.toCommit };
     if (comparison?.toWorking) await requireLocalReady({ ...profile.sources.internal, branch: comparison.toBranch });
     if (incoming) source = { ...source, branch: incoming.branch ?? source.branch, commit: incoming.commit, base: undefined };
-    if (source.kind === 'remote') await refreshSource(source, 'global', this.cache);
+    if (source.kind === 'remote') await refreshSource(incoming?.baseBranch ? { ...source, base: { branch: incoming.baseBranch } } : source, 'global', this.cache);
     const branch = incoming ? await resolveSource({ ...source, branch: incoming?.branch ?? source.branch, commit: undefined, base: undefined }, mode, this.cache) : undefined;
     const resolved = await resolveSource(source, mode, this.cache);
     if (branch) await selectedAncestor(resolved.root, resolved.commit, branch.commit);
@@ -204,7 +204,6 @@ export class Engine {
           const baseBranch = incoming.baseBranch!;
           if (baseBranch === source.branch) throw new Error('Выберите две разные ветки для сравнения.');
           const baseSource = { ...source, branch: baseBranch, commit: undefined, base: undefined };
-          if (baseSource.kind === 'remote') await refreshSource(baseSource, 'global', this.cache);
           const base = await resolveSource(baseSource, mode, this.cache);
           state = base.commit; initial = await readTree(base, filteredProfile);
           branchComparison = { branch: source.branch, baseBranch, baseHead: base.commit };
@@ -212,7 +211,6 @@ export class Engine {
           const baseBranch = incoming.baseBranch!;
           if (baseBranch === source.branch) throw new Error('Выбрана основная ветка. Смените ветку или способ сравнения.');
           const baseSource = { ...source, branch: baseBranch, commit: undefined, base: undefined };
-          if (baseSource.kind === 'remote') await refreshSource(baseSource, 'global', this.cache);
           const base = await resolveSource(baseSource, mode, this.cache);
           let ancestors: string[];
           try { ancestors = (await git(resolved.root, ['merge-base', '--all', base.commit, resolved.commit])).toString().trim().split('\n').filter(Boolean); }
@@ -288,7 +286,7 @@ export class Engine {
     parseTransport(transport);
     const findings: PrivateFinding[] = [];
     const maxBytes = profile.maxPartMB * 1024 * 1024;
-    const parts = splitTransport(transport, maxBytes, profile.transportMode);
+    const parts = incoming ? [] : splitTransport(transport, maxBytes, profile.transportMode);
     const target: Baseline = { state: targetState, files: tree.files, scope };
     if (profile.includeIgnored.length) target.localRepository = resolved.root;
     this.exportSession = { outgoing, compareSelection: comparison, incomingMode: incoming?.mode, branchComparison, sourceBaseline: baseline, sourceBytes: before, token: randomUUID(), profileId: id, environment: mode, resolved, tree, workingChanges: { staged: 0, unstaged: 0, untracked: 0 }, transport, findings, target, maxBytes };
@@ -297,7 +295,18 @@ export class Engine {
     const entries = this.codeFor(this.exportSession.token, transport, before, tree.bytes, new Map(baseline?.files.map(file => [file.path, file.mode]) ?? []));
     const beforeExcluded = new Map(initialExcluded.map(file => [file.path, file])); const afterExcluded = new Map((tree.excluded ?? []).map(file => [file.path, file]));
     for (const name of new Set([...beforeExcluded.keys(), ...afterExcluded.keys()])) { const old = beforeExcluded.get(name); const next = afterExcluded.get(name); if (old?.oid !== next?.oid) entries.push({ path: name, operation: !old ? 'ADD' : !next ? 'DELETE' : 'REPLACE', size: next?.size ?? 0, excludedBy: excludedRule(name, undefined, filteredProfile.exclusions) }); }
-    for (const entry of entries) { if (entry.operation !== 'ADD' || entry.excludedBy) continue; const oid = tree.gitEntries?.find(file => file.path === entry.path)?.oid; const prior = initialExcluded.find(file => file.oid === oid && !tree.gitEntries?.some(next => next.path === file.path)); if (prior) { entry.oldPath = prior.path; entry.excludedBy = excludedRule(prior.path, undefined, filteredProfile.exclusions); } }
+    if (initialExcluded.length) {
+      const targetOids = new Map(tree.gitEntries?.map(file => [file.path, file.oid]));
+      const removedByOid = new Map<string, string>();
+      for (const file of initialExcluded) {
+        if (!targetOids.has(file.path) && !removedByOid.has(file.oid)) removedByOid.set(file.oid, file.path);
+      }
+      for (const entry of entries) {
+        if (entry.operation !== 'ADD' || entry.excludedBy) continue;
+        const prior = removedByOid.get(targetOids.get(entry.path) ?? '');
+        if (prior) { entry.oldPath = prior; entry.excludedBy = excludedRule(prior, undefined, filteredProfile.exclusions); }
+      }
+    }
     entries.sort((a, b) => a.path.localeCompare(b.path));
     await this.store.action(id, direction === 'outgoing' ? 'Сравнение для выгрузки' : 'Сравнение входящих изменений');
     return { incomingMode: incoming?.mode, branchComparison, token: this.exportSession.token, state: targetState, sourceState: transport.sourceState, packageType: type,
@@ -514,12 +523,11 @@ export class Engine {
   }
   private async checkIncoming(session: ExportSession): Promise<void> {
     const source = session.resolved.source;
-    await refreshSource({ ...source, commit: undefined }, 'global', this.cache);
+    await refreshSource({ ...source, commit: undefined, base: session.branchComparison ? { branch: session.branchComparison.baseBranch } : source.base }, 'global', this.cache);
     const latest = await resolveSource(source, 'global', this.cache);
     if (latest.commit !== session.resolved.commit) throw new Error('Удалённая ветка изменилась. Обновите сравнение.');
     if (session.branchComparison) {
       const baseSource = { ...source, branch: session.branchComparison.baseBranch, commit: undefined };
-      await refreshSource(baseSource, 'global', this.cache);
       const base = await resolveSource(baseSource, 'global', this.cache);
       if (base.commit !== session.branchComparison.baseHead) throw new Error(session.incomingMode === 'branches' ? 'Исходная ветка A изменилась. Обновите сравнение.' : 'Основная ветка изменилась. Обновите сравнение.');
     }
@@ -552,7 +560,6 @@ export class Engine {
     const session = this.session(token);
     if (session.environment !== 'global') throw new Error('Для применения нужно сравнение входящих изменений.');
     const { profile } = this.context(session.profileId);
-    await requireLocalReady(profile.sources.internal!);
     await this.checkIncoming(session);
     const records = this.permitted(session.profileId, selectRecords(session.transport.records, selectedPaths));
     return this.prepareTransport(session.transport, profile.sources.internal!.location, profile.id, session, records, acceptedPaths);
@@ -622,25 +629,24 @@ export class Engine {
     const root = await realpath(target);
     const configured = profile.sources.internal;
     if (!configured || root !== await realpath(configured.location)) throw new Error('Выбранная папка не совпадает с локальным репозиторием в настройках. Проверьте путь.');
-    const top = (await git(root, ['rev-parse', '--show-toplevel'])).toString().trim();
-    if (await realpath(top) !== root) throw new Error('Выберите корневую папку Git-репозитория.');
     const local = await requireLocalReady(configured);
     const baseline = incoming ? incoming.sourceBaseline : await this.importBaseline(root, transport, profile);
     const before = incoming?.sourceBytes ?? (baseline ? await this.baselineContent(baseline) : transportBaseContent(transport));
-    if (baseline) await this.saveBaseline(before);
+    if (baseline && !incoming) await this.saveBaseline(before);
     this.permitted(profileId, selectedRecords);
     const selectedNames = new Set(selectedRecords.map(record => record.path)); const acceptedNames = new Set(acceptedPaths);
     if (acceptedNames.size !== acceptedPaths.length || acceptedPaths.some(name => !selectedNames.has(name))) throw new Error('Решение относится к файлу вне выбранного набора. Повторите проверку.');
-    const prepared = await prepare(root, transport, baseline, before, selectedRecords, Boolean(incoming), acceptedNames);
+    const canonical = materialize(transport, before);
+    const prepared = await prepare(root, transport, baseline, canonical, selectedRecords, Boolean(incoming), acceptedNames);
     const files = prepared.files;
     const conflictPaths = new Set(prepared.conflicts.map(conflict => conflict.path));
     const applicableRecords = selectedRecords.filter(record => !conflictPaths.has(record.path));
-    const canonical = materialize(transport, before);
-    await this.saveBaseline(canonical);
     const token = randomUUID();
     const completeSelection = selectedRecords.length === transport.records.length && !incoming?.tree.excluded?.length && prepared.conflicts.length === 0;
+    const updateCommon = transport.protocolVersion < 4 && completeSelection && !transport.targetState.startsWith('content:partial:') && (!incoming || incoming.incomingMode === 'repositories' || incoming.incomingMode === 'zero');
+    if (updateCommon) await this.saveBaseline(canonical);
     const dirty = await affectedWorkingPaths(root, files);
-    this.importSession = { acceptedPaths: [...acceptedPaths], unresolvedPaths: prepared.conflicts.map(conflict => conflict.path), dirtyStatus: dirty.status, overwritePaths: dirty.paths, localHead: local.head!, incoming, token, profileId, environment: 'internal', target: root, transport, records: applicableRecords, files, baseline, updateCommon: transport.protocolVersion < 4 && completeSelection && !transport.targetState.startsWith('content:partial:') && (!incoming || incoming.incomingMode === 'repositories' || incoming.incomingMode === 'zero') };
+    this.importSession = { acceptedPaths: [...acceptedPaths], unresolvedPaths: prepared.conflicts.map(conflict => conflict.path), dirtyStatus: dirty.status, overwritePaths: dirty.paths, localHead: local.head!, incoming, token, profileId, environment: 'internal', target: root, transport, records: applicableRecords, files, baseline, updateCommon };
     const changedPaths = new Set(files.map(file => file.path));
     const previewTransport = { ...transport, records: applicableRecords.filter(record => changedPaths.has(record.path) || (record.oldPath && changedPaths.has(record.oldPath))) };
     const entries = previewTransport.records.map(record => ({ path: record.path, oldPath: record.oldPath, operation: record.operation, size: record.size }));
@@ -656,7 +662,7 @@ export class Engine {
       }
       this.codeSession = { ...code, localFiles, mergePreview: transport.protocolVersion === 7, sourceToken: code.sourceToken ?? code.token, token };
     }
-    return { overwritePaths: dirty.paths, incomingMode: incoming?.incomingMode, token, workingChanges: await workingStatus(root), packageId: transport.packageId, sourceState: transport.sourceState, targetState: transport.targetState,
+    return { overwritePaths: dirty.paths, incomingMode: incoming?.incomingMode, token, workingChanges: local.workingChanges, packageId: transport.packageId, sourceState: transport.sourceState, targetState: transport.targetState,
       packageType: transport.packageType, changes: counts(previewTransport.records), files: transport.files.length, lineChanges: textChanges(previewTransport, before),
       entries, conflicts: prepared.conflicts, divergences: prepared.divergences, acceptedPaths: incoming ? [] : acceptedPaths };
   }
@@ -677,7 +683,8 @@ export class Engine {
     if (session.incoming) await this.checkIncoming(session.incoming);
     const baseline = session.baseline;
     this.permitted(session.profileId, session.records);
-    const prepared = await prepare(session.target, session.transport, baseline, baseline ? await this.baselineContent(baseline) : new Map(), session.records, Boolean(session.incoming), new Set(session.acceptedPaths));
+    const before = session.incoming?.sourceBytes ?? (baseline ? await this.baselineContent(baseline) : new Map());
+    const prepared = await prepare(session.target, session.transport, baseline, materialize(session.transport, before), session.records, Boolean(session.incoming), new Set(session.acceptedPaths));
     if (prepared.conflicts.length) throw new Error(`После проверки обнаружены конфликты:\n${prepared.conflicts.map(conflict => conflict.message).join('\n')}`);
     const files = prepared.files;
     if (files.length !== session.files.length || files.some((file, i) => file.path !== session.files[i]?.path || !sameBuffer(file.before, session.files[i]?.before ?? null) || file.beforeMode !== session.files[i]?.beforeMode)) throw new Error('Локальные файлы изменились после просмотра. Запустите синхронизацию заново.');
@@ -854,6 +861,7 @@ function buildDiff(previous: FileEntry[], tree: Tree, before: Map<string, Buffer
   const removed = previous.filter(f => !current.has(f.path));
   const added = tree.files.filter(f => !old.has(f.path));
   const consumed = new Set<string>();
+  const patchDeadline = Date.now() + 1000;
   const renamedCandidates = new Map<string, FileEntry[]>();
   for (const file of added) {
     const candidates = renamedCandidates.get(file.sha256) ?? [];
@@ -877,10 +885,11 @@ function buildDiff(previous: FileEntry[], tree: Tree, before: Map<string, Buffer
       const oldText = fullFiles ? '' : prior.toString('utf8');
       const newText = fullFiles ? '' : bytes.toString('utf8');
       const text = !fullFiles && !prior.includes(0) && !bytes.includes(0) && Buffer.from(oldText).equals(prior) && Buffer.from(newText).equals(bytes);
-      const patch = text && !fullFiles ? createTwoFilesPatch(`a/${file.path}`, `b/${file.path}`, oldText, newText, '', '', { context: 3 }) : '';
-      if (text && !fullFiles && applyPatch(oldText, patch, { fuzzFactor: 0, autoConvertLineEndings: false }) !== newText) throw new Error('Не удалось построить изменения с точным сохранением байтов. Пакет не создан.');
-      records.push({ path: file.path, operation: text && !fullFiles ? 'MODIFY' : 'REPLACE', size: file.size, mode: file.mode,
-        beforeSha256: previous.sha256, afterSha256: file.sha256, ...encode(text && !fullFiles ? Buffer.from(patch) : bytes) });
+      const remaining = patchDeadline - Date.now();
+      const patch = text && remaining > 0 ? createTwoFilesPatch(`a/${file.path}`, `b/${file.path}`, oldText, newText, '', '', { context: 3, timeout: Math.min(50, remaining) }) : undefined;
+      if (patch !== undefined && applyPatch(oldText, patch, { fuzzFactor: 0, autoConvertLineEndings: false }) !== newText) throw new Error('Не удалось построить изменения с точным сохранением байтов. Пакет не создан.');
+      records.push({ path: file.path, operation: patch !== undefined ? 'MODIFY' : 'REPLACE', size: file.size, mode: file.mode,
+        beforeSha256: previous.sha256, afterSha256: file.sha256, ...encode(patch !== undefined ? Buffer.from(patch) : bytes) });
     }
   }
   return records;
@@ -923,12 +932,12 @@ function materialize(transport: Transport, before: Map<string, Buffer>): Map<str
   if (result.size !== transport.files.length || transport.files.some(file => { const bytes = result.get(file.path); return !bytes || bytes.length !== file.size || sha256(bytes) !== file.sha256; })) throw new Error('Состав файлов не соответствует результату пакета. Получите исходный пакет заново.');
   return result;
 }
-async function prepare(root: string, transport: Transport, baseline: Baseline | undefined, before: Map<string, Buffer>, records: RecordData[] = transport.records, overwriteReplacement = false, acceptedPaths: ReadonlySet<string> = new Set()): Promise<{ files: PreparedFile[]; conflicts: NonNullable<ImportPreview['conflicts']>; divergences: NonNullable<ImportPreview['divergences']> }> {
+async function prepare(root: string, transport: Transport, baseline: Baseline | undefined, canonical: Map<string, Buffer>, records: RecordData[] = transport.records, overwriteReplacement = false, acceptedPaths: ReadonlySet<string> = new Set()): Promise<{ files: PreparedFile[]; conflicts: NonNullable<ImportPreview['conflicts']>; divergences: NonNullable<ImportPreview['divergences']> }> {
   if (transport.protocolVersion < 4 && transport.packageType === 'diff' && (!baseline || baseline.state !== transport.sourceState || baseline.scope !== transport.scope)) throw new Error('Общее состояние не соответствует пакету. Проверьте порядок применения пакетов и выбранный профиль.');
-  const canonical = materialize(transport, before);
   if (baseline) {
     const metadata = new Map(baseline.files.map(file => [file.path, file]));
-    for (const record of transport.records) { metadata.delete(record.oldPath ?? record.path); if (record.operation !== 'DELETE') metadata.set(record.path, transport.files.find(file => file.path === record.path)!); }
+    const targetFiles = new Map(transport.files.map(file => [file.path, file]));
+    for (const record of transport.records) { metadata.delete(record.oldPath ?? record.path); if (record.operation !== 'DELETE') metadata.set(record.path, targetFiles.get(record.path)!); }
     if (metadata.size !== transport.files.length || transport.files.some(file => { const old = metadata.get(file.path); return !old || old.mode !== file.mode || old.sha256 !== file.sha256 || old.size !== file.size; })) throw new Error('Права доступа к файлам не соответствуют результату пакета. Получите исходный пакет заново.');
   }
   const inventory = new Map(baseline?.files.map(file => [file.path, file]) ?? []);
