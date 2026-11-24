@@ -20,7 +20,7 @@ interface Props {
   localBranchControl: ReactNode;
   analysis: Analysis | null; importPreview: ImportPreview | null; comparison: CodeComparison | null;
   kept: string[]; override: boolean; exported: string[]; busy: boolean; locked: boolean;
-  reviewReady: boolean; error: string; retryComparison: () => void;
+  reviewReady: boolean; error: string; retryComparison?: () => void;
   pending: React.MutableRefObject<Promise<void> | null>; setPreviewBusy: (busy: boolean) => void;
   setStep: (step: SyncStep) => void; setOverride: (override: boolean) => void;
   close: () => void; decide: (ids: string[], choice: 'keep' | 'mask' | 'undecided') => void;
@@ -55,11 +55,11 @@ export function SyncWorkflow({ localProblem, operationLabel, sourceSummary, loca
     {localBranchControl}
     <h2 ref={heading} tabIndex={-1} style={{ outline: 'none', marginBottom: 12 }}>{step === 'loading' ? 'Загружаем источник' : step === 'source' ? direction === 'outgoing' ? 'Какие версии выгрузить' : 'Откуда получить изменения' : step === 'compare' ? 'Выберите файлы для переноса' : reviewing ? direction === 'outgoing' ? 'Проверьте пакет перед созданием' : 'Проверьте изменения перед применением' : 'Результат переноса'}</h2>
     <p role="status" aria-live="polite" style={{ color: 'var(--muted)', margin: '12px 0', minHeight: 20, visibility: busy ? 'visible' : 'hidden' }}>{busy ? operationLabel : ' '}</p>
-    {error && <Status $error role="alert">{error}<p><Button disabled={locked} onClick={retryComparison}>{step === 'loading' ? 'Повторить загрузку' : profile.role === 'external' ? 'Выбрать пакет заново' : 'Повторить сравнение'}</Button></p></Status>}
+    {error && <Status $error role="alert">{error}{retryComparison && <p><Button disabled={locked} onClick={retryComparison}>{step === 'loading' ? 'Повторить загрузку' : profile.role === 'external' ? 'Выбрать пакет заново' : 'Повторить сравнение'}</Button></p>}</Status>}
     {step === 'loading' && !error && <div aria-busy="true" aria-label="Загрузка источника"><div className="reposync-skeleton" style={{ height: 260, maxWidth: 760, marginTop: 24 }} /></div>}
     {step === 'source' && sourceControls}
     {(step === 'compare' || reviewing) && <>
-      <Row style={{ justifyContent: 'space-between', padding: '8px 0 16px', fontSize: 13 }}><div style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{sourceSummary}</div><Button disabled={locked} onClick={() => profile.role === 'external' ? retryComparison() : setStep('source')}>{profile.role === 'external' ? 'Выбрать другой пакет' : 'Изменить источник'}</Button></Row>
+      <Row style={{ justifyContent: 'space-between', padding: '8px 0 16px', fontSize: 13 }}><div style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{sourceSummary}</div><Button disabled={locked} onClick={() => profile.role === 'external' ? retryComparison?.() : setStep('source')}>{profile.role === 'external' ? 'Выбрать другой пакет' : 'Изменить источник'}</Button></Row>
       {analysis?.incomingMode === 'repositories' && <Status>Файлы, которые есть только в локальной ветке, предложены к удалению. Проверьте их перед применением.</Status>}
       {!!comparison?.unavailablePaths?.length && <Status role="status"><strong>Не хватает вложений: {comparison.unavailablePaths.length}</strong><p>Эти файлы пропущены, их локальные версии сохранятся. Остальные изменения можно применить.</p><details><summary>Какие файлы пропущены</summary>{comparison.unavailablePaths.map(name => <p key={name}><code>{name}</code></p>)}</details></Status>}
     </>}

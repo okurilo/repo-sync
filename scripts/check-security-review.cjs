@@ -22,7 +22,7 @@ const analysis = { entries: [{ path: 'src/a.txt', operation: 'REPLACE' }, { path
 let lastProps; const actions = [];
 function render(props = lastProps) { stateIndex = 0; lastProps = props; return moduleReview.exports.SecurityReview(props); }
 const props = { analysis, kept: ['already-kept'], selectedPaths: ['src/a.txt', 'src/clean.ts'], redactedIds: [], decide: (...args) => actions.push(args), togglePath: (...args) => actions.push(args), open: (...args) => actions.push(['open', ...args]), busy: false };
-function walk(node, visit) { if (!node || typeof node !== 'object') return; visit(node); const children = Array.isArray(node.props?.children) ? node.props.children : [node.props?.children]; for (const child of children) walk(child, visit); }
+function walk(node, visit) { if (Array.isArray(node)) { for (const child of node) walk(child, visit); return; } if (!node || typeof node !== 'object') return; visit(node); const children = Array.isArray(node.props?.children) ? node.props.children : [node.props?.children]; for (const child of children) walk(child, visit); }
 function textOf(node) { if (node === null || node === undefined || typeof node === 'boolean') return ''; if (typeof node === 'string' || typeof node === 'number') return String(node); if (Array.isArray(node)) return node.map(textOf).join(''); return textOf(node.props?.children); }
 function allText(node) { return textOf(node); }
 function button(node, exact) { let found; walk(node, item => { if (item.type?.displayName === 'Button' && textOf(item).trim() === exact) found = item; }); return found; }
@@ -40,6 +40,29 @@ function button(node, exact) { let found; walk(node, item => { if (item.type?.di
   assert(allText(cleanView).includes('Автоматическая проверка может пропустить'), 'clean file has explicit review guidance');
   assert(button(cleanView, 'Следующий нерешённый').props.disabled === false, 'navigation remains available while unresolved findings exist');
   assert(cleanView.props?.children, 'workspace remains mounted after selection changes');
+  states.length = 0;
+  const paths = ['first.txt', 'resolved.txt', 'masked.txt', 'omitted.txt', 'blocked.txt', 'last.txt'];
+  const navigation = { ...props, analysis: {
+    entries: paths.map(path => ({ path, operation: 'ADD', ...(path === 'blocked.txt' ? { excludedBy: '*.txt' } : {}) })),
+    findings: paths.map(path => ({ id: path, path, line: 1, reason: 'Email', preview: 'email', canReplace: true }))
+  }, selectedPaths: paths.filter(path => path !== 'omitted.txt'), kept: ['resolved.txt'], redactedIds: ['masked.txt'] };
+  view = render(navigation);
+  states[0] = 'first.txt';
+  view = render(navigation);
+  button(view, 'Принять файл · 1').props.onClick();
+  assert.equal(states[2], 'last.txt', 'accept advances past resolved, masked and excluded files');
+  view = render(navigation);
+  let activePath;
+  walk(view, node => { if (node.props?.['aria-current'] === 'page') activePath = textOf(node); });
+  assert.equal(activePath, 'last.txt', 'next file remains visible in the tree despite the search filter');
+  button(view, 'Принять файл · 1').props.onClick();
+  assert.equal(states[2], 'first.txt', 'accept wraps to an earlier unresolved file');
+  view = render({ ...navigation, kept: ['resolved.txt', 'last.txt'] });
+  button(view, 'Принять файл · 1').props.onClick();
+  assert.equal(states[2], 'first.txt', 'accepting the last unresolved file preserves selection');
+  view = render(navigation);
+  button(view, 'Заменить нерешённые на * · 1').props.onClick();
+  assert.equal(states[2], 'first.txt', 'mask does not automatically navigate');
   states.length = 0;
   const many = Array.from({ length: 1005 }, (_, index) => ({ path: `file-${index}.txt`, operation: 'ADD' }));
   const large = render({ ...props, analysis: { entries: many, findings: [] }, selectedPaths: [], kept: [] });

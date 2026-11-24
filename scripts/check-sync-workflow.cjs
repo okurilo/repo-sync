@@ -7,8 +7,12 @@ const settings = { profiles: [profile], globalExclusions: [] };
 const react = { ...React, useState(init) { const i = si++; if (!(i in states)) states[i] = i === 0 ? settings : i === 2 ? 'p' : typeof init === 'function' ? init() : init; return [states[i], v => states[i] = typeof v === 'function' ? v(states[i]) : v]; }, useRef(init) { const i = ri++; return refs[i] ?? (refs[i] = { current: init }); }, useEffect() {}, useMemo(fn, deps) { const i = mi++; if (!memos[i] || deps.some((v, j) => !Object.is(v, memos[i].deps[j]))) memos[i] = { value: fn(), deps }; return memos[i].value; } };
 const components = new Map(); const component = name => { if (!components.has(name)) components.set(name, Object.assign(() => null, { displayName: name })); return components.get(name); };
 const api = new Proxy({}, { get(_, name) { return (...args) => new Promise((resolve, reject) => queue.push({ name, args, resolve, reject })); } });
+const preferences = new Map();
+const storage = { getItem: key => preferences.get(key) ?? null, setItem: (key, value) => preferences.set(key, value), removeItem: key => preferences.delete(key) };
+const preferenceModule = { exports: {} };
+vm.runInNewContext(ts.transpileModule(fs.readFileSync('src/renderer/features/incomingPreferences.ts', 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText, { exports: preferenceModule.exports, localStorage: storage });
 const moduleApp = { exports: {} }; const code = ts.transpileModule(fs.readFileSync('src/renderer/App.tsx', 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
-vm.runInNewContext(code, { exports: moduleApp.exports, require(name) { if (name === 'react') return react; if (name === 'react/jsx-runtime') return require('react/jsx-runtime'); if (name === '../shared/fileRules') return require('../dist/main/shared/fileRules.js'); return new Proxy({}, { get(_, key) { if (key === 'appVersionLabel') return () => ''; return component(key); } }); }, window: { reposync: api }, localStorage: { getItem: () => null }, crypto, console, Error });
+vm.runInNewContext(code, { exports: moduleApp.exports, require(name) { if (name === './features/incomingPreferences') return preferenceModule.exports; if (name === 'react') return react; if (name === 'react/jsx-runtime') return require('react/jsx-runtime'); if (name === '../shared/fileRules') return require('../dist/main/shared/fileRules.js'); return new Proxy({}, { get(_, key) { if (key === 'appVersionLabel') return () => ''; return component(key); } }); }, window: { reposync: api }, localStorage: storage, crypto, console, Error });
 function find(node, name) { if (!node || typeof node !== 'object') return null; if (node.type?.displayName === name) return node; for (const child of Array.isArray(node.props?.children) ? node.props.children : [node.props?.children]) { const result = find(child, name); if (result) return result; } return null; }
 function render() { si = ri = mi = 0; return moduleApp.exports.App(); }
 const props = () => find(render(), 'SyncWorkflow').props;
@@ -30,6 +34,58 @@ async function compare() { props().sourceControls.props.compare({mode:'branch',b
   props().sourceControls.props.change({mode:'branches',branch:'main',baseBranch:'feature'}); await tick(); assert.equal(queue.length, 0, 'changing mode does not analyze');
   props().sourceControls.props.change({mode:'commit',branch:'main'}); await finish('refreshSource',{commits:[{sha:'sha',date:'today'}]});
   assert.equal(props().sourceControls.props.commits.length,1); assert.equal(queue.length,0);
+  props().sourceControls.props.change({mode:'commit',branch:'feature',commit:'old-sha'});
+  await finish('refreshSource',{commits:[{sha:'old-sha',date:'yesterday'}]});
+  find(render(), 'AppShell').props.incoming(); await finish('localState',local);
+  await finish('branchContext',{branches:['main','feature'],defaultBranch:'main'});
+  const refreshed = await finish('refreshSource',{commits:[{sha:'new-sha',date:'today'}]});
+  assert.equal(refreshed.args[0].branch,'feature');
+  assert.equal(props().sourceControls.props.selection.mode,'commit');
+  assert.equal(props().sourceControls.props.selection.commit,undefined,'SHA is never restored');
+  assert.equal(props().sourceControls.props.commits[0].sha,'new-sha');
+  const pref = preferenceModule.exports;
+  const pinned = { ...profile, sources: { global: { ...profile.sources.global, commit: 'source-sha', base: { branch: 'feature', commit: 'base-sha' } } } };
+  pref.rememberIncomingSelection(pinned, { mode: 'range', branch: 'feature', from: 'from-sha', commit: 'to-sha' });
+  assert.doesNotMatch(preferences.get('reposync-incoming:p'), /source-sha|base-sha|from-sha|to-sha/);
+  pref.rememberIncomingSelection(profile, { mode: 'commit', branch: 'feature' });
+  const context = {branches:['main','feature'],defaultBranch:'main'};
+  assert.equal(pref.readIncomingSelection({...profile,id:'other'},context).mode,'branch','profiles are isolated');
+  assert.equal(pref.readIncomingSelection({...profile,sources:{global:{location:'/other',branch:'main'}}},context).mode,'branch','changed source resets preference');
+  assert.equal(pref.readIncomingSelection(profile,{branches:['main'],defaultBranch:'main'}).branch,'main','deleted branch falls back');
+  pref.rememberIncomingSelection(profile,{mode:'range',branch:'feature',from:'old-a',commit:'old-b'});
+  assert.equal(pref.readIncomingSelection(profile,context).from,undefined,'range SHA is not restored');
+  for (const mode of ['commit', 'range']) {
+    pref.rememberIncomingSelection(profile, { mode, branch: 'feature' });
+    find(render(), 'AppShell').props.incoming();
+    await finish('localState', local);
+    await finish('branchContext', context);
+    const history = queue.shift();
+    assert.equal(history.name, 'refreshSource');
+    assert.equal(props().sourceControls.props.busy, true);
+    history.reject(new Error('История недоступна'));
+    await tick();
+    assert.equal(props().step, 'source');
+    assert.equal(props().error, 'История недоступна');
+    assert.equal(props().sourceControls.props.busy, false);
+    assert.equal(props().retryComparison, undefined);
+    if (mode === 'commit') {
+      props().sourceControls.props.reload();
+      await finish('branchContext', context);
+      await finish('refreshSource', { commits: [{ sha: 'fresh', date: 'today' }] });
+      assert.equal(props().sourceControls.props.commits[0].sha, 'fresh');
+      assert.equal(props().error, '');
+    }
+  }
+  props().sourceControls.props.reset();
+  assert.equal(props().sourceControls.props.selection.mode,'branch');
+  assert.equal(props().sourceControls.props.selection.branch,'main');
+  assert.equal(props().sourceControls.props.commits.length,0);
+  assert.equal(props().error, '');
+  assert.equal(queue.length, 0);
+  assert.equal(preferences.size,0,'reset removes saved preference');
+  preferences.set('reposync-incoming:p','{broken');
+  assert.equal(pref.readIncomingSelection(profile,context).mode,'branch','corrupt preference falls back');
+  preferences.clear();
   await compare();
   props().checkSelection(); props().checkSelection(); await finish('localState', local);
   await finish('prepareIncoming', {token:'prepared',entries:[entries[0]],conflicts:[],overwritePaths:[{path:'code.ts'}]});
