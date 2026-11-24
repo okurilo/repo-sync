@@ -2,7 +2,7 @@ import { useState } from 'react';
 import type { BranchContext, CommitOption, IncomingSelection } from '../../shared/types';
 import { Button, Muted, Row, SourceForm, WorkflowActions } from '../ui/components';
 
-export function IncomingSource({ branch, context, selection, commits, busy, change, compare, reload }: { branch: string; context: BranchContext; selection: IncomingSelection; commits: CommitOption[]; busy: boolean; change: (selection: IncomingSelection) => void; compare: (selection: IncomingSelection) => void; reload: () => void }): React.JSX.Element {
+export function IncomingSource({ branch, context, selection, commits, busy, change, compare, reload, reset }: { branch: string; context: BranchContext; selection: IncomingSelection; commits: CommitOption[]; busy: boolean; change: (selection: IncomingSelection) => void; compare: (selection: IncomingSelection) => void; reload: () => void; reset: () => void }): React.JSX.Element {
   const [query, setQuery] = useState('');
   const { mode, baseBranch, from } = selection;
   const selected = selection.commit || commits[0]?.sha || '';
@@ -18,7 +18,7 @@ export function IncomingSource({ branch, context, selection, commits, busy, chan
     zero: 'Все файлы удалённого репозитория предлагаются к добавлению. Выбранные существующие файлы получат входящую версию после проверки.',
   }[mode];
   return <SourceForm aria-label="Источник изменений">
-    <Row style={{ justifyContent: 'space-between', marginBottom: 24 }}><strong>Удалённый Git</strong><Button disabled={busy} onClick={reload}>Обновить ветки</Button></Row>
+    <Row style={{ justifyContent: 'space-between', marginBottom: 24 }}><strong>Удалённый Git</strong><Row><Button disabled={busy} onClick={() => { setQuery(''); reset(); }}>Сбросить настройки</Button><Button disabled={busy} onClick={reload}>Обновить ветки</Button></Row></Row>
     <fieldset disabled={busy}>
       <label style={{ gridColumn: '1 / -1' }}>Что сравнить<select value={mode} onChange={event => change({ mode: event.target.value as IncomingSelection['mode'], branch: selection.branch ?? branch, baseBranch })}><optgroup label="Обычные способы"><option value="branch">Изменения ветки</option><option value="branches">Две ветки</option><option value="commit">Один коммит</option></optgroup><optgroup label="Дополнительные способы"><option value="range">Два коммита</option><option value="repositories">Репозитории целиком</option><option value="zero">Все файлы удалённого репозитория</option></optgroup></select><small>{explanation}</small></label>
       {(mode === 'branch' || mode === 'branches') && <label>{mode === 'branches' ? 'Исходная ветка A' : 'Основная ветка'}<select value={baseBranch ?? ''} onChange={event => change({ ...selection, baseBranch: event.target.value || undefined })}><option value="">Выберите ветку</option>{context.branches.map(name => <option key={name}>{name}</option>)}</select></label>}

@@ -36,7 +36,7 @@ export function SecurityReview({ analysis, kept, decide, selectedPaths, togglePa
   const visibleEntries = analysis.entries.filter(entry => {
     const items = findingsByPath.get(entry.path) ?? [];
     const matches = !term || `${entry.path} ${items.map(item => `${item.reason} ${item.preview} ${item.context?.before ?? ''} ${item.context?.after ?? ''}`).join(' ')}`.toLocaleLowerCase().includes(term);
-    return matches && (!onlyUndecided || (unresolvedByPath.get(entry.path) ?? 0) > 0 || entry.path === selectedPath);
+    return entry.path === selectedPath || (matches && (!onlyUndecided || (unresolvedByPath.get(entry.path) ?? 0) > 0));
   });
   const treeEntries = visibleEntries.slice(0, limit);
   if (visibleEntries.slice(limit).some(entry => entry.path === selectedPath)) {
@@ -85,7 +85,10 @@ export function SecurityReview({ analysis, kept, decide, selectedPaths, togglePa
 
   function decideFile(choice: 'keep' | 'mask'): void {
     const ids = (choice === 'keep' ? unresolved : replaceable).map(item => item.id);
-    if (ids.length) decide(ids, choice);
+    if (ids.length) {
+      decide(ids, choice);
+      if (choice === 'keep') nextUndecided();
+    }
   }
   function nextUndecided(): void {
     const paths = analysis.entries.filter(entry => selected.has(entry.path) && !entry.excludedBy && (unresolvedByPath.get(entry.path) ?? 0) > 0).map(entry => entry.path);
