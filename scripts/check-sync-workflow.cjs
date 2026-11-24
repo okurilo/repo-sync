@@ -54,10 +54,34 @@ async function compare() { props().sourceControls.props.compare({mode:'branch',b
   assert.equal(pref.readIncomingSelection(profile,{branches:['main'],defaultBranch:'main'}).branch,'main','deleted branch falls back');
   pref.rememberIncomingSelection(profile,{mode:'range',branch:'feature',from:'old-a',commit:'old-b'});
   assert.equal(pref.readIncomingSelection(profile,context).from,undefined,'range SHA is not restored');
+  for (const mode of ['commit', 'range']) {
+    pref.rememberIncomingSelection(profile, { mode, branch: 'feature' });
+    find(render(), 'AppShell').props.incoming();
+    await finish('localState', local);
+    await finish('branchContext', context);
+    const history = queue.shift();
+    assert.equal(history.name, 'refreshSource');
+    assert.equal(props().sourceControls.props.busy, true);
+    history.reject(new Error('История недоступна'));
+    await tick();
+    assert.equal(props().step, 'source');
+    assert.equal(props().error, 'История недоступна');
+    assert.equal(props().sourceControls.props.busy, false);
+    assert.equal(props().retryComparison, undefined);
+    if (mode === 'commit') {
+      props().sourceControls.props.reload();
+      await finish('branchContext', context);
+      await finish('refreshSource', { commits: [{ sha: 'fresh', date: 'today' }] });
+      assert.equal(props().sourceControls.props.commits[0].sha, 'fresh');
+      assert.equal(props().error, '');
+    }
+  }
   props().sourceControls.props.reset();
   assert.equal(props().sourceControls.props.selection.mode,'branch');
   assert.equal(props().sourceControls.props.selection.branch,'main');
   assert.equal(props().sourceControls.props.commits.length,0);
+  assert.equal(props().error, '');
+  assert.equal(queue.length, 0);
   assert.equal(preferences.size,0,'reset removes saved preference');
   preferences.set('reposync-incoming:p','{broken');
   assert.equal(pref.readIncomingSelection(profile,context).mode,'branch','corrupt preference falls back');
