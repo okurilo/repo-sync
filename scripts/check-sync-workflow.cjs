@@ -152,9 +152,18 @@ async function compare() { props().sourceControls.props.compare({mode:'branch',b
   const sourceView=view({...selectionProps,step:'source'});assert(!find(sourceView,'Comparison'),'source stage has no diff or stale actions');
   const sourceModule={exports:{}};
   vm.runInNewContext(ts.transpileModule(fs.readFileSync('src/renderer/features/IncomingSource.tsx','utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText,{exports:sourceModule.exports,require(name){if(name==='react')return {...React,useState:init=>[init,()=>{}]};if(name==='react/jsx-runtime')return require(name);return new Proxy({},{get:(_,key)=>component(key)});}});
-  const source=selection=>sourceModule.exports.IncomingSource({branch:'feature',context:{branches:['main','feature']},selection,commits:[{sha:'sha',date:'today'}],busy:false,change(){},compare(){},reload(){}});
-  for(const mode of ['branch','branches','commit','range','repositories','zero'])assert(!button(source({mode,branch:'feature',baseBranch:'main',from:'from',commit:'sha'}),'Показать изменения').props.disabled,mode+' is available');
+  const source=(selection, change=()=>{})=>sourceModule.exports.IncomingSource({branch:'feature',context:{branches:['main','feature']},selection,commits:[{sha:'sha',date:'today'}, {sha:'older',date:'yesterday'}],busy:false,change,compare(){},reload(){}});
+  for(const mode of ['branch','branches','commit','range','repositories','zero'])assert(!button(source({mode,branch:'feature',baseBranch:'main',from:'older',commit:'sha'}),'Показать изменения').props.disabled,mode+' is available');
   for(const selection of [{mode:'branch',branch:'feature'},{mode:'branches',branch:'feature',baseBranch:'feature'},{mode:'range',branch:'feature',commit:'sha'}])assert(button(source(selection),'Показать изменения').props.disabled,'invalid source cannot be compared');
+  const range = { mode: 'range', branch: 'feature', from: 'older' };
+  let swapped;
+  button(source(range, selection => { swapped = selection; }), 'Поменять начало и конец').props.onClick();
+  assert.deepEqual({ ...swapped }, { ...range, from: 'sha', commit: 'older' }, 'swap includes the default end commit');
+  assert(button(source({ ...range, from: 'sha' }), 'Показать изменения').props.disabled, 'identical endpoints cannot proceed');
+  for (const stale of [{ ...range, from: 'gone' }, { ...range, commit: 'gone' }]) {
+    assert(button(source(stale), 'Показать изменения').props.disabled, 'missing endpoint blocks comparison');
+    assert(button(source(stale), 'Поменять начало и конец').props.disabled, 'missing endpoint blocks swap');
+  }
   const branchControl = () => props().localBranchControl;
   const fresh = { ...local, branch: 'feature', branches: ['main', 'feature'], conflicts: 0, operations: [], workingChanges: { staged: 0, unstaged: 1, untracked: 0 } };
   const loadingBranches = branchControl().props.load(profile.sources.internal);

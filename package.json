@@ -1,6 +1,6 @@
 {
   "name": "reposync",
-  "version": "1.0.32",
+  "version": "1.0.33",
   "private": true,
   "description": "Приложение для синхронизации Git-репозиториев",
   "author": "RepoSync",

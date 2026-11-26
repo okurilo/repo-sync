@@ -37,6 +37,14 @@ const { SettingsStore, parseProfile, parseSettings } = require('../dist/main/mai
     assert.throws(() => parseIncomingSelection({ ...selection, commit: 'a'.repeat(40) }));
     assert.throws(() => parseIncomingSelection({ ...selection, from: 'a'.repeat(40) }));
     await assert.rejects(engine.analyze(profile.id, 'incoming', { ...selection, branch: 'main' }), /две разные ветки/);
+    const first = git(remote, ['rev-parse', 'feature^']);
+    const last = git(remote, ['rev-parse', 'feature']);
+    for (const [from, target, operation] of [[first, last, 'ADD'], [last, first, 'DELETE']]) {
+      const range = await engine.analyze(profile.id, 'incoming', { mode: 'range', branch: 'feature', from, commit: target });
+      assert.equal(range.sourceState, from);
+      assert.equal(range.state, target);
+      assert(range.entries.some(file => file.path === 'b-only.txt' && file.operation === operation));
+    }
     let comparison = await engine.analyze(profile.id, 'incoming', selection);
     assert.equal(comparison.sourceState, git(remote, ['rev-parse', 'main']));
     assert.equal(comparison.state, git(remote, ['rev-parse', 'feature']));
